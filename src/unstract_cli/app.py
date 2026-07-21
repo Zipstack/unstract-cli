@@ -17,6 +17,7 @@ drift from the commands actually registered.
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 import click
@@ -98,8 +99,42 @@ def _endpoint_info(endpoint: Endpoint, command: click.Command) -> dict[str, Any]
     return entry
 
 
-def dump_commands() -> dict[str, Any]:
-    """Build the machine-readable index of every command."""
+#: Fields kept at `--detail summary`. Enough to choose a command, not to call it.
+_SUMMARY_FIELDS = ("command", "kind", "summary")
+
+#: Detail levels, cheapest first. Full detail for all 143 commands is ~63k tokens
+#: -- far too much for an agent to read speculatively -- so the default is the
+#: cheap index and the agent drills in from there.
+DETAIL_LEVELS = ("summary", "full")
+
+
+def _matches(entry: dict[str, Any], group: str | None, command: str | None) -> bool:
+    """Filter one entry by group and/or command prefix.
+
+    `command` matches on a path prefix, so "whisper webhook" selects all four
+    webhook commands while "whisper extract" selects exactly one.
+    """
+    if group and entry["path"][0] != group:
+        return False
+    if command:
+        wanted = command.removeprefix("unstract ").split()
+        if entry["path"][: len(wanted)] != wanted:
+            return False
+    return True
+
+
+def dump_commands(
+    *,
+    group: str | None = None,
+    command: str | None = None,
+    detail: str = "summary",
+) -> dict[str, Any]:
+    """Build the machine-readable index of the command surface.
+
+    Selection (`group`, `command`) and verbosity (`detail`) are independent, so
+    any combination works: a summary of one group, full detail for one command,
+    or full detail for everything.
+    """
     groups = build_group_tree(list(ALL_ENDPOINTS))
     commands: list[dict[str, Any]] = []
 
@@ -131,10 +166,47 @@ def dump_commands() -> dict[str, Any]:
             }
         )
 
-    return {
+    commands = [c for c in commands if _matches(c, group, command)]
+    if detail == "summary":
+        commands = [
+            {k: c[k] for k in _SUMMARY_FIELDS if k in c} for c in commands
+        ]
+
+    envelope: dict[str, Any] = {
         "cli": "unstract",
         "version": __version__,
         "description": "Unified CLI for the Unstract suite of products.",
+        "detail": detail,
+        "count": len(commands),
+    }
+    if group:
+        envelope["group"] = group
+    if command:
+        envelope["command_filter"] = command
+
+    if detail == "summary":
+        # The whole point of the summary level is that an agent reads it first,
+        # so it has to say how to get the rest.
+        envelope["drill_down"] = {
+            "one_group": "unstract --dump-commands --group <group> --detail full",
+            "one_command": "unstract --dump-commands --command '<group> <cmd>' --detail full",
+            "everything": "unstract --dump-commands --detail full",
+            "note": (
+                "Full detail for every command is large (~60k tokens). Prefer "
+                "filtering by group or command."
+            ),
+        }
+        envelope["groups"] = sorted({c["command"].split()[1] for c in commands})
+
+    # The exit-code table and conventions are global facts, not per-command ones.
+    # An agent that has already read the unfiltered index knows them, and on a
+    # narrow query they would outweigh the answer itself -- so they ship only
+    # with the unfiltered view, which is the entry point.
+    if group or command:
+        return {**envelope, "commands": commands}
+
+    return {
+        **envelope,
         "exit_codes": {
             "0": "success",
             "1": "generic error",
@@ -203,26 +275,81 @@ class UnstractCLI(click.Group):
     "dump",
     is_flag=True,
     default=False,
-    help="Emit the full command tree as JSON, for programmatic discovery.",
+    help="Emit the command tree as JSON, for programmatic discovery.",
+)
+@click.option(
+    "--group",
+    default=None,
+    help="Limit --dump-commands to one product group (whisper, platform, ...).",
+)
+@click.option(
+    "--command",
+    "command_filter",
+    default=None,
+    help="Limit --dump-commands to one command or command prefix, e.g. 'whisper extract'.",
+)
+@click.option(
+    "--detail",
+    type=click.Choice(DETAIL_LEVELS),
+    default="summary",
+    show_default=True,
+    help="How much per command: 'summary' is names and one-liners; 'full' adds flags and API paths.",
 )
 @click.option("--profile", "-p", default=None, help="Config profile to use.")
 @click.pass_context
-def cli(ctx: click.Context, dump: bool, profile: str | None) -> None:
+def cli(
+    ctx: click.Context,
+    dump: bool,
+    group: str | None,
+    command_filter: str | None,
+    detail: str,
+    profile: str | None,
+) -> None:
     """Unified, LLM-friendly CLI for the Unstract suite.
 
     Products: LLMWhisperer text extraction (`whisper`), deployed API workflows
     (`deployment`), platform management (`platform`), human review (`hitl`) and
     API Hub vertical extraction (`apihub`).
 
-    Machine-readable discovery:
-
-      unstract --dump-commands
+    \b
+    Machine-readable discovery -- start cheap, then drill in:
+      unstract --dump-commands                         # all names + summaries
+      unstract --dump-commands --group whisper         # one product
+      unstract --dump-commands --command 'whisper extract' --detail full
+      unstract --dump-commands --detail full           # everything (large)
 
     Output defaults to JSON whenever stdout is not a terminal, so piping the CLI
     needs no extra flags.
     """
     if dump:
-        click.echo(json.dumps(dump_commands(), indent=2))
+        payload = dump_commands(
+            group=group, command=command_filter, detail=detail
+        )
+        if not payload["commands"]:
+            click.echo(
+                json.dumps(
+                    {
+                        "error": {
+                            "code": "usage_error",
+                            "message": (
+                                "No commands matched"
+                                + (f" --group {group}" if group else "")
+                                + (f" --command {command_filter!r}" if command_filter else "")
+                                + "."
+                            ),
+                            "exit_code": 2,
+                            "hint": "Run `unstract --dump-commands` to list valid groups.",
+                        }
+                    },
+                    indent=2,
+                ),
+                err=True,
+            )
+            ctx.exit(2)
+        # Compact when piped: pretty-printing costs ~36% more tokens for an agent
+        # that is only going to parse it anyway.
+        indent = 2 if sys.stdout.isatty() else None
+        click.echo(json.dumps(payload, indent=indent))
         ctx.exit(0)
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())

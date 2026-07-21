@@ -44,15 +44,34 @@ themselves.
 
 ## For agents
 
-Discover the entire surface without documentation:
+Discover the entire surface without documentation. Start cheap, then drill in —
+selection (`--group` / `--command`) and verbosity (`--detail`) are independent,
+so any combination works:
 
 ```bash
-unstract --dump-commands      # full command tree as JSON
+unstract --dump-commands                                  # all 143, names + summaries
+unstract --dump-commands --group whisper                  # one product
+unstract --dump-commands --command 'whisper webhook'      # one subtree
+unstract --dump-commands --command 'whisper extract' --detail full
+unstract --dump-commands --detail full                    # everything
 ```
 
-Each entry carries the underlying HTTP method and path, every flag with type,
-default, enum and required-ness, plus whether the command supports `--wait`, and
-whether its result is one-shot.
+At `--detail full` each entry carries the underlying HTTP method and path, every
+flag with type, default, enum and required-ness, plus whether the command
+supports `--wait` and whether its result is one-shot.
+
+**Token cost** matters when an agent reads this into context, so the default is
+the cheap index:
+
+| Invocation | Tokens |
+| --- | --- |
+| `--dump-commands` (default) | ~4,500 |
+| `--group whisper` | ~470 |
+| `--command 'whisper extract' --detail full` | ~1,900 |
+| `--group whisper --detail full` | ~4,200 |
+| `--detail full` (everything) | ~50,000 |
+
+Output is compact JSON when piped and pretty-printed on a terminal.
 
 ### Output
 

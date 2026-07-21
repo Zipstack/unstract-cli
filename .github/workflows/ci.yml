@@ -29,6 +29,10 @@ jobs:
         run: pytest -q
 
       # The machine-readable index is the CLI's discovery contract, so a broken
-      # tree must fail the build rather than surface at runtime.
+      # tree must fail the build rather than surface at runtime. Check the full
+      # detail level too: that is where flag introspection actually runs.
       - name: Verify command index
-        run: unstract --dump-commands | python -c "import json,sys; json.load(sys.stdin)"
+        run: |
+          unstract --dump-commands | python -c "import json,sys; json.load(sys.stdin)"
+          unstract --dump-commands --detail full | python -c "import json,sys; json.load(sys.stdin)"
+          unstract --dump-commands --group whisper --detail full | python -c "import json,sys; json.load(sys.stdin)"

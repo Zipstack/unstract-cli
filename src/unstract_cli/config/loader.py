@@ -228,8 +228,13 @@ class ResolvedConfig:
         hints: list[str] = []
         if env_vars := ENV_VARS.get((product, key)):
             hints.append(f"set ${env_vars[0]}")
-        hints.append(f"add `{key}` to the [profiles.<name>.{product}] block")
-        hints.append(f"or pass --{key.replace('_', '-')}")
+        block = BLOCK_ALIASES.get(product, (product,))[0]
+        hints.append(f"or add `{key}` to the [profiles.<name>.{block}] block")
+        # Only suggest a flag that actually exists. Credentials have no flag by
+        # design -- a secret on the command line lands in shell history and
+        # process listings.
+        if key != "api_key":
+            hints.append(f"or pass --{key.replace('_', '-')}")
         raise ConfigError(
             f"Missing required setting {product}.{key}. To fix: {'; '.join(hints)}."
         )

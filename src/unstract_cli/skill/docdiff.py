@@ -183,6 +183,37 @@ def parse_markdown_doc(path: Path) -> list[DocEndpoint]:
     ]
 
 
+def _prop_entries(block: str, prop: str) -> list[tuple[str, str]]:
+    """Return ``(name, raw_object)`` pairs from one `<ApiEndpoint>` prop array.
+
+    Extracts ``prop={[ {...}, {...} ]}`` by scanning for the matching bracket, so
+    a nested brace inside a description cannot terminate the array early.
+    """
+    match = re.search(rf"\b{prop}=\{{\[", block)
+    if not match:
+        return []
+
+    depth = 0
+    start = match.end() - 1
+    end = start
+    for index in range(start, len(block)):
+        char = block[index]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    else:
+        return []
+
+    return [
+        (m.group(1), m.group(0))
+        for m in re.finditer(r'\{\s*name:\s*"([^"]+)"[^}]*\}', block[start : end + 1])
+    ]
+
+
 def parse_mdx_doc(path: Path) -> list[DocEndpoint]:
     """Parse `<ApiEndpoint>` components from a Platform v1 MDX page."""
     text = path.read_text(encoding="utf-8")
@@ -196,20 +227,35 @@ def parse_mdx_doc(path: Path) -> list[DocEndpoint]:
         if not method or not path_match:
             continue
 
-        params = [
-            DocParam(
-                name=name,
-                required="required: true" in props or "required={true}" in props,
-                type=(t.group(1) if (t := re.search(r'type:\s*"([^"]+)"', props)) else ""),
-            )
-            # Prop arrays list one object per parameter.
-            for name, props in (
-                (m.group(1), m.group(0))
-                for m in re.finditer(r'\{\s*name:\s*"([^"]+)"[^}]*\}', block)
-            )
-            # responseBody entries describe output, not input.
-            if "." not in name
-        ]
+        params: list[DocParam] = []
+        seen: set[str] = set()
+        # Only request-side props. `responseBody` describes output: treating it
+        # as input makes every response field look like a missing flag, which is
+        # the MDX equivalent of the response-table problem in Markdown.
+        for prop in ("pathParams", "queryParams", "requestBody"):
+            for entry in _prop_entries(block, prop):
+                name = entry[0]
+                # `members[].id`-style rows document nested response shapes, and
+                # prose placeholders like "(any writable field)" are descriptions
+                # of a whole class of fields rather than a named parameter.
+                if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_-]*", name):
+                    continue
+                if name in seen:
+                    continue
+                seen.add(name)
+                params.append(
+                    DocParam(
+                        name=name,
+                        required="required: true" in entry[1]
+                        or "required={true}" in entry[1],
+                        type=(
+                            t.group(1)
+                            if (t := re.search(r'type:\s*"([^"]+)"', entry[1]))
+                            else ""
+                        ),
+                    )
+                )
+
         endpoints.append(
             DocEndpoint(
                 method=method.group(1).upper(),

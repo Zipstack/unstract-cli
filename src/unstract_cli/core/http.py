@@ -323,6 +323,10 @@ def execute(
     silently consume a result the first attempt already delivered.
     """
     owns_client = client is None
+    # Note: following redirects means a wrong trailing slash would be silently
+    # "corrected" by the server rather than failing loudly, which softens the P11
+    # literal-path guarantee. Redirects are kept because these APIs legitimately
+    # use them; the `no_trailing_slash` test is what actually protects paths.
     client = client or httpx.Client(timeout=timeout, follow_redirects=True)
     last_error: httpx.HTTPError | None = None
 

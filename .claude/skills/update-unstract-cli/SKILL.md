@@ -55,6 +55,14 @@ Read the relevant `endpoints/*.py`. `unstract --dump-commands` gives the same
 information as JSON and is often easier to diff against — but remember it reflects
 the *installed* package, so re-install after editing if you use it.
 
+Filter it rather than reading the whole thing: unfiltered `--detail full` is
+~50k tokens.
+
+```bash
+unstract --dump-commands --group whisper --detail full
+unstract --dump-commands --command 'whisper extract' --detail full
+```
+
 ### 4. Diff on three axes
 
 1. **In docs, missing from CLI** → new capability to add.

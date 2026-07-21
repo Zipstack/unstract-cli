@@ -28,8 +28,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LLMW_DOCS = _REPO_ROOT / "llmwhisperer-docs/docs/llm_whisperer/apis"
 _DEPLOY_DOCS = _REPO_ROOT / "unstract-docs/docs/unstract_platform/api_deployment"
 
+_PLATFORM_DOCS = (
+    _REPO_ROOT / "unstract-docs/docs/unstract_platform/api_documentation/versions"
+)
+
 requires_docs = pytest.mark.skipif(
     not _LLMW_DOCS.exists(), reason="documentation repos not checked out alongside"
+)
+requires_platform_docs = pytest.mark.skipif(
+    not _PLATFORM_DOCS.exists(), reason="unstract-docs not checked out alongside"
 )
 
 
@@ -105,6 +112,35 @@ class TestZeroDriftRegression:
         findings = [
             f
             for f in diff(parse_docs(_DEPLOY_DOCS), endpoints_for("deployment"))
+            if f.severity == "action"
+        ]
+        assert not findings, "\n".join(f"{f.kind}: {f.message}" for f in findings)
+
+    @requires_platform_docs
+    def test_platform_mdx_parser_extracts_the_surface(self):
+        """Assert positively before asserting absence.
+
+        `missing_in_docs` is only informational, so a parser that silently
+        extracted nothing would make a "no action findings" assertion pass while
+        being completely broken. Pin the volume and a known parameter set first.
+        """
+        docs = parse_docs(_PLATFORM_DOCS)
+        assert len(docs) > 90, f"MDX parser extracted only {len(docs)} endpoints"
+
+        create = next(
+            d for d in docs if d.method == "POST" and d.path.endswith("/workflow/")
+        )
+        names = {p.name for p in create.params}
+        assert {"workflow_name", "description", "deployment_type"} <= names
+
+        # responseBody fields must not be mistaken for request parameters.
+        assert not names & {"id", "created_at", "created_by_email", "status"}
+
+    @requires_platform_docs
+    def test_platform_has_no_drift(self):
+        findings = [
+            f
+            for f in diff(parse_docs(_PLATFORM_DOCS), endpoints_for("platform"))
             if f.severity == "action"
         ]
         assert not findings, "\n".join(f"{f.kind}: {f.message}" for f in findings)

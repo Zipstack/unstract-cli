@@ -418,7 +418,10 @@ _WORKFLOWS: tuple[Endpoint, ...] = (
                help="Required for NEXT, STOP and CONTINUE"),
          Param("log_guid", type=ParamType.UUID, location=ParamLocation.BODY,
                help="Correlates log entries"),
-         Param("file", type=ParamType.FILE, location=ParamLocation.FORM, multiple=True,
+         # The API field is `files`; the flag reads better singular since it is
+         # repeated once per file.
+         Param("files", type=ParamType.FILE, location=ParamLocation.FORM,
+               multiple=True, flag="--file",
                help="File to process, for API-mode workflows; repeatable")),
         subgroup="workflow", body=BodyKind.JSON, doc="v1-workflows.mdx",
         permission=Permission.READ_WRITE),

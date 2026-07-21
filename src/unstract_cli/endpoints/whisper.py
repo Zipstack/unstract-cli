@@ -36,6 +36,13 @@ _EXTRACT_PARAMS: tuple[Param, ...] = (
         client_side=True,
         help="Publicly accessible URL to fetch the document from; sets url_in_post",
     ),
+    # Set automatically when --url is used, but exposed so every documented
+    # parameter is reachable as a flag (SPEC.md §1.1.3).
+    Param(
+        "url_in_post",
+        type=ParamType.BOOL,
+        help="Send the source URL in the request body; implied by --url",
+    ),
     Param(
         "mode",
         default="form",

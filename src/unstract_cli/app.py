@@ -229,11 +229,32 @@ def cli(ctx: click.Context, dump: bool, profile: str | None) -> None:
         ctx.exit(0)
 
 
+@click.command("completion", help="Print a shell completion script.")
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion(shell: str) -> None:
+    """Emit the completion script for a shell.
+
+    Click generates these from the same command tree, so completions cover every
+    generated command without a separate registry.
+
+    \b
+    Install with, for example:
+      unstract completion zsh > ~/.zfunc/_unstract
+      unstract completion bash >> ~/.bashrc
+    """
+    click.echo(
+        f'eval "$(_UNSTRACT_COMPLETE={shell}_source unstract)"'
+        if shell != "fish"
+        else "eval (env _UNSTRACT_COMPLETE=fish_source unstract)"
+    )
+
+
 def build_cli() -> click.Group:
     """Assemble the full command tree."""
     for group in build_group_tree(list(ALL_ENDPOINTS)).values():
         cli.add_command(group)
     cli.add_command(config_group)
+    cli.add_command(completion)
     return cli
 
 

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Type check
+        run: mypy src
+
+      - name: Test
+        run: pytest -q
+
+      # The machine-readable index is the CLI's discovery contract, so a broken
+      # tree must fail the build rather than surface at runtime.
+      - name: Verify command index
+        run: unstract --dump-commands | python -c "import json,sys; json.load(sys.stdin)"

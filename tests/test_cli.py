@@ -224,6 +224,65 @@ class TestDiscover:
         result = runner.invoke(cli, ["--dump-commands"])
         assert result.exit_code != 0
 
+    def test_advertised_params_match_the_real_parser(self, cli):
+        """The index must describe what the parser actually accepts.
+
+        This is the guarantee `--discover` exists to provide. It once failed for
+        the hand-authored `config` group, which was described by a parallel data
+        structure rather than introspected: it advertised `--product/--key/--value`
+        for `config set`, whose parameters are positional. An agent following
+        that index would build a command line the parser rejects.
+        """
+        mismatches = []
+        for entry in discover(detail="full")["commands"]:
+            node = cli
+            for part in entry["path"]:
+                node = node.commands.get(part) if hasattr(node, "commands") else None
+                if node is None:
+                    break
+            assert node is not None, f"{entry['command']} is advertised but not registered"
+
+            real = {
+                p.to_info_dict()["name"]: (
+                    "argument"
+                    if p.to_info_dict()["param_type_name"] == "argument"
+                    else "option"
+                )
+                for p in node.params
+            }
+            for flag in entry["flags"]:
+                if real.get(flag["name"]) != flag["kind"]:
+                    mismatches.append(
+                        f"{entry['command']}: {flag['name']} advertised as "
+                        f"{flag['kind']}, parser says {real.get(flag['name'])}"
+                    )
+        assert not mismatches, "\n".join(mismatches)
+
+    def test_positional_args_are_not_advertised_as_flags(self):
+        """A positional must never carry a `--flag` spelling."""
+        entry = next(
+            c for c in discover(command="config set", detail="full")["commands"]
+        )
+        by_name = {f["name"]: f for f in entry["flags"]}
+        for name in ("product", "key", "value"):
+            assert by_name[name]["kind"] == "argument"
+            assert "flags" not in by_name[name], f"{name} is positional, not a flag"
+        assert entry["usage"] == "unstract config set PRODUCT KEY VALUE"
+
+    def test_usage_line_present_for_every_command(self):
+        """`usage` shows the invocation form, which flags alone cannot convey."""
+        for entry in discover(detail="full")["commands"]:
+            assert entry["usage"].startswith("unstract "), entry["command"]
+
+    def test_choices_reflect_the_real_enum(self):
+        """Advertised choices must come from the parser, not a copy of it."""
+        entry = next(
+            c for c in discover(command="config set", detail="full")["commands"]
+        )
+        product = next(f for f in entry["flags"] if f["name"] == "product")
+        assert "whisper" in product["choices"]
+        assert "llmwhisperer" in product["choices"]
+
     def test_summary_is_the_default(self):
         """Full detail for 143 commands is ~50k tokens -- too much to read
         speculatively, so the cheap index is what an unadorned call returns."""

@@ -367,37 +367,11 @@ def with_params(source: Endpoint, *extra: Param) -> Endpoint:
     return replace(source, params=(*source.params, *extra))
 
 
-@dataclass(frozen=True)
-class HandAuthoredCommand:
-    """A command with no API endpoint behind it (IMPLEMENTATION_PLAN.md §1).
-
-    The `config` and `completion` groups operate purely locally. They are recorded
-    so `--discover` can describe the whole surface while still letting an
-    agent tell local operations from remote calls.
-    """
-
-    name: str
-    group: str
-    summary: str
-    params: tuple[Param, ...] = ()
-    description: str = ""
-    examples: tuple[str, ...] = ()
-
-    @property
-    def command_path(self) -> tuple[str, ...]:
-        return (self.group, self.name)
-
-    @property
-    def dotted_name(self) -> str:
-        return ".".join(self.command_path)
-
-
 __all__ = [
     "AtLeastOneOf",
     "BodyKind",
     "Constraint",
     "Endpoint",
-    "HandAuthoredCommand",
     "MutuallyExclusive",
     "Param",
     "ParamLocation",

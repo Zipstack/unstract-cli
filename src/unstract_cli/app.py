@@ -22,7 +22,7 @@ from typing import Any
 
 import click
 
-from unstract_cli.commands.config_cmd import CONFIG_COMMANDS, config_group
+from unstract_cli.commands.config_cmd import config_group
 from unstract_cli.config.loader import set_config_path
 from unstract_cli.core.generate import build_group_tree
 from unstract_cli.core.model import Endpoint
@@ -41,28 +41,59 @@ _COMMON_FLAGS = frozenset(
 
 
 def _param_info(param: click.Parameter) -> dict[str, Any]:
-    """Describe one flag using Click's own introspection.
+    """Describe one parameter using Click's own introspection.
 
     Uses `to_info_dict()` rather than reading private attributes, so the shape is
     a supported contract; `tests/test_cli.py` asserts the keys we rely
     on still exist, so a Click upgrade fails loudly rather than silently.
+
+    Crucially this reports whether the parameter is an **option** (``--flag x``)
+    or a positional **argument** (``x``). Getting that wrong makes the index
+    actively misleading: an agent would construct a command line the parser
+    rejects.
     """
     info = param.to_info_dict()
     type_info = info.get("type", {})
+    kind = "argument" if info.get("param_type_name") == "argument" else "option"
     entry: dict[str, Any] = {
         "name": info.get("name"),
-        "flags": info.get("opts", []),
+        "kind": kind,
         "type": type_info.get("param_type", "String").lower(),
         "required": info.get("required", False),
         "multiple": info.get("multiple", False),
-        "is_flag": info.get("is_flag", False),
         "help": info.get("help") or "",
     }
+    if kind == "option":
+        entry["flags"] = info.get("opts", [])
+        entry["is_flag"] = info.get("is_flag", False)
+    else:
+        # Positional: how it is written on the command line, not a flag name.
+        entry["usage"] = str(info.get("name", "")).upper()
     if (default := info.get("default")) is not None:
         entry["default"] = default
     if choices := type_info.get("choices"):
         entry["choices"] = list(choices)
     return entry
+
+
+def _usage_line(path: tuple[str, ...], command: click.Command) -> str:
+    """Reconstruct the invocation form, so the index shows how to *call* it."""
+    parts = ["unstract", *path]
+    for param in command.params:
+        info = param.to_info_dict()
+        if info.get("param_type_name") != "argument":
+            continue
+        name = str(info.get("name", "")).upper()
+        if info.get("multiple") or info.get("nargs", 1) == -1:
+            name = f"{name}..."
+        parts.append(name if info.get("required") else f"[{name}]")
+    if any(
+        p.to_info_dict().get("param_type_name") != "argument"
+        and p.name not in _COMMON_FLAGS
+        for p in command.params
+    ):
+        parts.append("[OPTIONS]")
+    return " ".join(parts)
 
 
 def _endpoint_info(endpoint: Endpoint, command: click.Command) -> dict[str, Any]:
@@ -74,6 +105,7 @@ def _endpoint_info(endpoint: Endpoint, command: click.Command) -> dict[str, Any]
         "summary": endpoint.summary,
         "product": endpoint.product.value,
         "api": {"method": endpoint.method, "path": endpoint.path},
+        "usage": _usage_line(endpoint.command_path, command),
         "flags": [
             _param_info(p)
             for p in command.params
@@ -99,6 +131,10 @@ def _endpoint_info(endpoint: Endpoint, command: click.Command) -> dict[str, Any]
         entry["supports_save"] = True
     return entry
 
+
+#: Command groups written by hand rather than generated from `Endpoint` records.
+#: Introspected like any other command so the index describes what actually runs.
+_HAND_AUTHORED_GROUPS: dict[str, click.Group] = {"config": config_group}
 
 #: Fields kept at `--detail summary`. Enough to choose a command, not to call it.
 _SUMMARY_FIELDS = ("command", "kind", "summary")
@@ -147,25 +183,29 @@ def discover(
         if node is not None:
             commands.append(_endpoint_info(endpoint, node))
 
-    for hand in CONFIG_COMMANDS:
-        commands.append(
-            {
-                "command": "unstract " + " ".join(hand.command_path),
-                "path": list(hand.command_path),
-                # Flagged so an agent can distinguish local operations from API calls.
-                "kind": "local",
-                "summary": hand.summary,
-                "flags": [
-                    {
-                        "name": p.name,
-                        "flags": [p.cli_flag],
-                        "required": p.required,
-                        "help": p.help,
-                    }
-                    for p in hand.params
-                ],
-            }
-        )
+    # Hand-authored groups are introspected from the *actual* Click commands,
+    # never from a parallel description of them. A hand-maintained parameter list
+    # is exactly the drift the generated half exists to avoid -- it once
+    # advertised `--product/--key/--value` for `config set`, which really takes
+    # three positional arguments.
+    for group_name, click_group in _HAND_AUTHORED_GROUPS.items():
+        for name, node in sorted(click_group.commands.items()):
+            path = (group_name, name)
+            commands.append(
+                {
+                    "command": "unstract " + " ".join(path),
+                    "path": list(path),
+                    # Flagged so an agent can tell local operations from API calls.
+                    "kind": "local",
+                    "summary": (node.short_help or node.help or "").strip(),
+                    "usage": _usage_line(path, node),
+                    "flags": [
+                        _param_info(p)
+                        for p in node.params
+                        if p.name not in _COMMON_FLAGS
+                    ],
+                }
+            )
 
     commands = [c for c in commands if _matches(c, group, command)]
     if detail == "summary":

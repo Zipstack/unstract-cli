@@ -23,6 +23,7 @@ from typing import Any
 import click
 
 from unstract_cli.commands.config_cmd import CONFIG_COMMANDS, config_group
+from unstract_cli.config.loader import set_config_path
 from unstract_cli.core.generate import build_group_tree
 from unstract_cli.core.model import Endpoint
 from unstract_cli.endpoints import ALL_ENDPOINTS
@@ -296,6 +297,13 @@ class UnstractCLI(click.Group):
     help="How much per command: 'summary' is names and one-liners; 'full' adds flags and API paths.",
 )
 @click.option("--profile", "-p", default=None, help="Config profile to use.")
+@click.option(
+    "--config",
+    "config_file",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Config file to use, overriding $UNSTRACT_CONFIG and any .unstract.toml.",
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
@@ -304,6 +312,7 @@ def cli(
     command_filter: str | None,
     detail: str,
     profile: str | None,
+    config_file: str | None,
 ) -> None:
     """Unified, LLM-friendly CLI for the Unstract suite.
 
@@ -321,6 +330,10 @@ def cli(
     Output defaults to JSON whenever stdout is not a terminal, so piping the CLI
     needs no extra flags.
     """
+    # Applied before any subcommand runs, so every load_config() below -- in
+    # generated commands and in the `config` group alike -- sees the same file.
+    set_config_path(config_file)
+
     if discover_flag:
         payload = discover(
             group=group, command=command_filter, detail=detail

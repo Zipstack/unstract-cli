@@ -10,7 +10,7 @@ import httpx
 import pytest
 import respx
 
-from unstract_cli.app import dump_commands
+from unstract_cli.app import discover
 from unstract_cli.endpoints import ALL_ENDPOINTS
 
 from .conftest import FAKE_KEY, WHISPER_BASE
@@ -166,11 +166,11 @@ class TestNoSecretLeaks:
         assert FAKE_KEY not in result.stderr, "the key leaked through the API's own message"
 
 
-class TestDumpCommands:
+class TestDiscover:
     """SPEC §5.3 - the machine-readable index agents discover the CLI through."""
 
     def test_valid_json_covering_every_endpoint(self, runner, cli):
-        result = runner.invoke(cli, ["--dump-commands"])
+        result = runner.invoke(cli, ["--discover"])
         assert result.exit_code == 0
         data = json.loads(result.stdout)
         endpoints = [c for c in data["commands"] if c["kind"] == "endpoint"]
@@ -193,7 +193,7 @@ class TestDumpCommands:
 
     def test_flags_carry_full_metadata(self):
         extract = next(
-            c for c in dump_commands(detail="full")["commands"]
+            c for c in discover(detail="full")["commands"]
             if c["command"] == "unstract whisper extract"
         )
         mode = next(f for f in extract["flags"] if f["name"] == "mode")
@@ -204,82 +204,99 @@ class TestDumpCommands:
 
     def test_local_commands_flagged(self):
         """An agent must be able to tell local operations from API calls."""
-        data = dump_commands(detail="full")
+        data = discover(detail="full")
         local = [c for c in data["commands"] if c["kind"] == "local"]
         assert {c["command"] for c in local} >= {"unstract config init", "unstract config use"}
         assert all("api" not in c for c in local)
 
     def test_documents_exit_codes_and_conventions(self):
-        data = dump_commands()
+        data = discover()
         assert data["exit_codes"]["9"].startswith("result already consumed")
         assert "never_interactive" in data["conventions"]
+
+    def test_legacy_flag_still_works(self, runner, cli):
+        """`--dump-commands` was the original name and is documented elsewhere.
+
+        It keeps working, but warns on stderr so stdout stays parseable.
+        """
+        result = runner.invoke(cli, ["--dump-commands", "--group", "whisper"])
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["count"] == 11
+        assert "deprecated" in result.stderr.lower()
+        assert "--discover" in result.stderr
+
+    def test_legacy_flag_is_hidden_from_help(self, runner, cli):
+        """Deprecated spellings should not be advertised to new users."""
+        out = runner.invoke(cli, ["--help"]).stdout
+        assert "--discover" in out
+        assert "--dump-commands" not in out
 
     def test_summary_is_the_default(self):
         """Full detail for 143 commands is ~50k tokens -- too much to read
         speculatively, so the cheap index is what an unadorned call returns."""
-        data = dump_commands()
+        data = discover()
         assert data["detail"] == "summary"
         entry = data["commands"][0]
         assert set(entry) <= {"command", "kind", "summary"}
         assert "flags" not in entry
 
     def test_summary_explains_how_to_drill_down(self):
-        data = dump_commands()
+        data = discover()
         assert "--group" in data["drill_down"]["one_group"]
         assert set(data["groups"]) >= {"whisper", "platform", "config"}
 
     def test_filter_by_group(self):
-        data = dump_commands(group="whisper")
+        data = discover(group="whisper")
         assert data["count"] == 11
         assert all(c["command"].startswith("unstract whisper") for c in data["commands"])
 
     def test_filter_by_exact_command(self):
-        data = dump_commands(command="whisper extract", detail="full")
+        data = discover(command="whisper extract", detail="full")
         assert data["count"] == 1
         assert data["commands"][0]["api"] == {"method": "POST", "path": "/whisper"}
 
     def test_filter_by_command_prefix(self):
         """A prefix selects a subtree, so `whisper webhook` gets all four."""
-        assert dump_commands(command="whisper webhook")["count"] == 4
+        assert discover(command="whisper webhook")["count"] == 4
 
     def test_filter_tolerates_unstract_prefix(self):
         """`command` values are copied from output, which includes 'unstract '."""
-        assert dump_commands(command="unstract whisper extract")["count"] == 1
+        assert discover(command="unstract whisper extract")["count"] == 1
 
     def test_group_and_command_combine(self):
-        assert dump_commands(group="platform", command="platform adapter")["count"] == 13
-        assert dump_commands(group="whisper", command="platform adapter")["count"] == 0
+        assert discover(group="platform", command="platform adapter")["count"] == 13
+        assert discover(group="whisper", command="platform adapter")["count"] == 0
 
     def test_detail_is_independent_of_selection(self):
         """Both axes are orthogonal: any combination must work."""
         for group in (None, "whisper"):
             for detail in ("summary", "full"):
-                data = dump_commands(group=group, detail=detail)
+                data = discover(group=group, detail=detail)
                 assert data["count"] > 0
                 assert data["detail"] == detail
 
     def test_narrow_queries_omit_global_boilerplate(self):
         """On a filtered view the exit-code table would outweigh the answer."""
-        narrow = dump_commands(group="whisper")
+        narrow = discover(group="whisper")
         assert "exit_codes" not in narrow
-        assert "exit_codes" in dump_commands()
+        assert "exit_codes" in discover()
 
     def test_no_match_exits_2_with_clean_stdout(self, runner, cli):
-        result = runner.invoke(cli, ["--dump-commands", "--group", "nope"])
+        result = runner.invoke(cli, ["--discover", "--group", "nope"])
         assert result.exit_code == 2
         assert result.stdout.strip() == ""
         assert "hint" in json.loads(result.stderr)["error"]
 
     def test_compact_when_piped(self, runner, cli):
         """Pretty-printing costs ~36% more tokens for a consumer that parses it."""
-        out = runner.invoke(cli, ["--dump-commands", "--group", "whisper"]).stdout
+        out = runner.invoke(cli, ["--discover", "--group", "whisper"]).stdout
         assert json.loads(out)["count"] == 11
         assert "\n  " not in out, "output should be compact when stdout is not a TTY"
 
     def test_doc_conflict_recorded(self):
         """The whisper-detail divergence must be visible, so it is not 'fixed'."""
         detail = next(
-            c for c in dump_commands(detail="full")["commands"]
+            c for c in discover(detail="full")["commands"]
             if c["command"] == "unstract whisper detail"
         )
         assert "singular" in detail["doc_conflict"]
@@ -314,7 +331,7 @@ class TestFlagCoverage:
     """SPEC §1.1.3 - every documented parameter must be reachable as a flag."""
 
     def test_all_params_surface_as_flags(self, cli):
-        data = dump_commands(detail="full")
+        data = discover(detail="full")
         by_command = {c["command"]: c for c in data["commands"]}
         for endpoint in ALL_ENDPOINTS:
             entry = by_command["unstract " + " ".join(endpoint.command_path)]

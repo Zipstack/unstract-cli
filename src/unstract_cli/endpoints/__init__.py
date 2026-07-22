@@ -1,7 +1,7 @@
 """Endpoint registry — the single source of truth for the CLI surface.
 
 Every command in the tree originates here. The bundled Claude Skill edits these
-modules and nothing else: because commands, help text and `--dump-commands` are
+modules and nothing else: because commands, help text and `--discover` are
 all generated from these records, a change here propagates everywhere at once.
 """
 

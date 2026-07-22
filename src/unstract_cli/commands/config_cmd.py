@@ -2,7 +2,7 @@
 
 These commands map to no API endpoint: they operate purely on the local config
 layer. They are how a user or agent bootstraps every other command, so they are
-recorded in `--dump-commands` too, flagged as non-endpoint so an agent can tell
+recorded in `--discover` too, flagged as non-endpoint so an agent can tell
 local operations from remote calls.
 
 Per SPEC.md §5.2 nothing here prompts: `init` refuses to clobber an existing file
@@ -29,7 +29,7 @@ from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.model import HandAuthoredCommand, Param
 from unstract_cli.core.output import OutputFormat, default_format, emit
 
-#: Declared so `--dump-commands` can describe the whole surface, not just the
+#: Declared so `--discover` can describe the whole surface, not just the
 #: generated half.
 CONFIG_COMMANDS: tuple[HandAuthoredCommand, ...] = (
     HandAuthoredCommand("init", "config", "Create a starter config file.",

@@ -1,6 +1,6 @@
 """Declarative endpoint model — the single source of truth for the CLI.
 
-Every command, flag, help string, validation rule and `--dump-commands` entry is
+Every command, flag, help string, validation rule and `--discover` entry is
 derived from the `Endpoint` records in `unstract_cli.endpoints`. Nothing about a
 command is written twice, so help text cannot drift from behaviour, and the
 bundled Claude Skill has exactly one place to edit (SPEC.md D1, IMPLEMENTATION_PLAN.md §1).
@@ -109,7 +109,7 @@ class Constraint:
         raise NotImplementedError
 
     def describe(self) -> str:
-        """Human-readable rule, rendered into ``--help`` and ``--dump-commands``."""
+        """Human-readable rule, rendered into ``--help`` and ``--discover``."""
         raise NotImplementedError
 
 
@@ -372,7 +372,7 @@ class HandAuthoredCommand:
     """A command with no API endpoint behind it (IMPLEMENTATION_PLAN.md §1).
 
     The `config` and `completion` groups operate purely locally. They are recorded
-    so `--dump-commands` can describe the whole surface while still letting an
+    so `--discover` can describe the whole surface while still letting an
     agent tell local operations from remote calls.
     """
 

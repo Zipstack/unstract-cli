@@ -33,6 +33,6 @@ jobs:
       # detail level too: that is where flag introspection actually runs.
       - name: Verify command index
         run: |
-          unstract --dump-commands | python -c "import json,sys; json.load(sys.stdin)"
-          unstract --dump-commands --detail full | python -c "import json,sys; json.load(sys.stdin)"
-          unstract --dump-commands --group whisper --detail full | python -c "import json,sys; json.load(sys.stdin)"
+          unstract --discover | python -c "import json,sys; json.load(sys.stdin)"
+          unstract --discover --detail full | python -c "import json,sys; json.load(sys.stdin)"
+          unstract --discover --group whisper --detail full | python -c "import json,sys; json.load(sys.stdin)"

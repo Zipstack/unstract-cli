@@ -1,6 +1,6 @@
 """CLI entry point and the machine-readable command index.
 
-`--dump-commands` is the feature that makes this CLI usable by an agent without
+`--discover` is the feature that makes this CLI usable by an agent without
 external documentation (SPEC.md §5.3). It emits the full command tree as JSON,
 combining two sources:
 
@@ -25,12 +25,13 @@ import click
 from unstract_cli.commands.config_cmd import CONFIG_COMMANDS, config_group
 from unstract_cli.core.generate import build_group_tree
 from unstract_cli.core.model import Endpoint
+from unstract_cli.core.output import diagnostic
 from unstract_cli.endpoints import ALL_ENDPOINTS
 
 __version__ = "0.1.0"
 
 #: Flags added to every generated command; excluded from the per-command flag
-#: listing in `--dump-commands` so the endpoint's own parameters stand out.
+#: listing in `--discover` so the endpoint's own parameters stand out.
 _COMMON_FLAGS = frozenset(
     {
         "output", "profile", "base_url", "dry_run", "quiet", "verbose",
@@ -43,7 +44,7 @@ def _param_info(param: click.Parameter) -> dict[str, Any]:
     """Describe one flag using Click's own introspection.
 
     Uses `to_info_dict()` rather than reading private attributes, so the shape is
-    a supported contract; `tests/test_dump_commands.py` asserts the keys we rely
+    a supported contract; `tests/test_cli.py` asserts the keys we rely
     on still exist, so a Click upgrade fails loudly rather than silently.
     """
     info = param.to_info_dict()
@@ -123,7 +124,7 @@ def _matches(entry: dict[str, Any], group: str | None, command: str | None) -> b
     return True
 
 
-def dump_commands(
+def discover(
     *,
     group: str | None = None,
     command: str | None = None,
@@ -188,9 +189,9 @@ def dump_commands(
         # The whole point of the summary level is that an agent reads it first,
         # so it has to say how to get the rest.
         envelope["drill_down"] = {
-            "one_group": "unstract --dump-commands --group <group> --detail full",
-            "one_command": "unstract --dump-commands --command '<group> <cmd>' --detail full",
-            "everything": "unstract --dump-commands --detail full",
+            "one_group": "unstract --discover --group <group> --detail full",
+            "one_command": "unstract --discover --command '<group> <cmd>' --detail full",
+            "everything": "unstract --discover --detail full",
             "note": (
                 "Full detail for every command is large (~60k tokens). Prefer "
                 "filtering by group or command."
@@ -264,29 +265,37 @@ class UnstractCLI(click.Group):
 
 @click.group(
     cls=UnstractCLI,
-    # `--dump-commands` and a bare `unstract` must both work without a
+    # `--discover` and a bare `unstract` must both work without a
     # subcommand, so the group has to be invocable on its own.
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"], "max_content_width": 100},
 )
 @click.version_option(__version__, "-V", "--version", prog_name="unstract")
 @click.option(
-    "--dump-commands",
+    "--discover",
     "dump",
     is_flag=True,
     default=False,
     help="Emit the command tree as JSON, for programmatic discovery.",
 )
 @click.option(
+    "--dump-commands",
+    "dump_legacy",
+    is_flag=True,
+    default=False,
+    hidden=True,
+    help="Deprecated alias for --discover.",
+)
+@click.option(
     "--group",
     default=None,
-    help="Limit --dump-commands to one product group (whisper, platform, ...).",
+    help="Limit --discover to one product group (whisper, platform, ...).",
 )
 @click.option(
     "--command",
     "command_filter",
     default=None,
-    help="Limit --dump-commands to one command or command prefix, e.g. 'whisper extract'.",
+    help="Limit --discover to one command or command prefix, e.g. 'whisper extract'.",
 )
 @click.option(
     "--detail",
@@ -300,6 +309,7 @@ class UnstractCLI(click.Group):
 def cli(
     ctx: click.Context,
     dump: bool,
+    dump_legacy: bool,
     group: str | None,
     command_filter: str | None,
     detail: str,
@@ -313,16 +323,23 @@ def cli(
 
     \b
     Machine-readable discovery -- start cheap, then drill in:
-      unstract --dump-commands                         # all names + summaries
-      unstract --dump-commands --group whisper         # one product
-      unstract --dump-commands --command 'whisper extract' --detail full
-      unstract --dump-commands --detail full           # everything (large)
+      unstract --discover                              # all names + summaries
+      unstract --discover --group whisper              # one product
+      unstract --discover --command 'whisper extract' --detail full
+      unstract --discover --detail full                # everything (large)
 
     Output defaults to JSON whenever stdout is not a terminal, so piping the CLI
     needs no extra flags.
     """
+    if dump_legacy and not dump:
+        diagnostic(
+            "warning: --dump-commands is deprecated; use --discover instead.",
+            quiet=False,
+        )
+        dump = True
+
     if dump:
-        payload = dump_commands(
+        payload = discover(
             group=group, command=command_filter, detail=detail
         )
         if not payload["commands"]:
@@ -338,7 +355,7 @@ def cli(
                                 + "."
                             ),
                             "exit_code": 2,
-                            "hint": "Run `unstract --dump-commands` to list valid groups.",
+                            "hint": "Run `unstract --discover` to list valid groups.",
                         }
                     },
                     indent=2,
@@ -385,4 +402,4 @@ def build_cli() -> click.Group:
     return cli
 
 
-__all__ = ["__version__", "build_cli", "cli", "dump_commands"]
+__all__ = ["__version__", "build_cli", "cli", "discover"]

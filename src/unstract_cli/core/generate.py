@@ -1,7 +1,7 @@
 """Turn `Endpoint` records into Click commands (SPEC.md D1).
 
 This module is the load-bearing abstraction: the command tree, every flag, all
-help text, validation and `--dump-commands` derive from the same records. Adding
+help text, validation and `--discover` derive from the same records. Adding
 an endpoint means adding one record -- there is no second place to update, so
 help text cannot drift from behaviour.
 
@@ -88,7 +88,7 @@ def _click_option(param: Param) -> click.Option:
         "type": ptype,
     }
     # A default is applied server-side too; sending it explicitly is harmless and
-    # keeps `--dump-commands` honest about what the value will be.
+    # keeps `--discover` honest about what the value will be.
     if param.default is not None and not param.multiple:
         kwargs["default"] = param.default
         kwargs["show_default"] = True

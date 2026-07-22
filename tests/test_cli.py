@@ -263,11 +263,10 @@ class TestDiscover:
         entry = next(
             c for c in discover(command="config set", detail="full")["commands"]
         )
-        by_name = {f["name"]: f for f in entry["flags"]}
-        for name in ("product", "key", "value"):
-            assert by_name[name]["kind"] == "argument"
-            assert "flags" not in by_name[name], f"{name} is positional, not a flag"
-        assert entry["usage"] == "unstract config set PRODUCT KEY VALUE"
+        arg = next(f for f in entry["flags"] if f["kind"] == "argument")
+        assert "flags" not in arg, "a positional is not a flag"
+        # The metavar spells out the real shape; the bare name ("ARGS") would not.
+        assert entry["usage"] == "unstract config set TARGET... KEY VALUE"
 
     def test_usage_line_present_for_every_command(self):
         """`usage` shows the invocation form, which flags alone cannot convey."""
@@ -277,11 +276,10 @@ class TestDiscover:
     def test_choices_reflect_the_real_enum(self):
         """Advertised choices must come from the parser, not a copy of it."""
         entry = next(
-            c for c in discover(command="config set", detail="full")["commands"]
+            c for c in discover(command="whisper extract", detail="full")["commands"]
         )
-        product = next(f for f in entry["flags"] if f["name"] == "product")
-        assert "whisper" in product["choices"]
-        assert "llmwhisperer" in product["choices"]
+        mode = next(f for f in entry["flags"] if f["name"] == "mode")
+        assert "form" in mode["choices"] and "high_quality" in mode["choices"]
 
     def test_summary_is_the_default(self):
         """Full detail for 143 commands is ~50k tokens -- too much to read
@@ -438,6 +436,33 @@ class TestConfigCommands:
         assert payload["configured"] is True
         assert FAKE_KEY not in result.stdout
 
+    @pytest.mark.parametrize(
+        "target", [["docstudio.platform"], ["docstudio", "platform"]]
+    )
+    def test_both_separators_address_the_same_group(self, runner, cli, target):
+        """`docstudio platform` is what a shell user types; the dot is canonical."""
+        runner.invoke(cli, ["config", "init"])
+        assert runner.invoke(
+            cli, ["config", "set", *target, "org_id", "org_X"]
+        ).exit_code == 0
+        shown = json.loads(
+            runner.invoke(cli, ["config", "get", *target, "org_id"]).stdout
+        )
+        assert shown["value"] == "org_X"
+
+    @pytest.mark.parametrize("bare", ["platform", "deployment", "hitl", "whisper"])
+    def test_unqualified_target_is_rejected(self, runner, cli, bare):
+        """A group owned by a product must be named through it.
+
+        A bare `platform` hides which product the setting belongs to, so it is
+        an error rather than a silent guess.
+        """
+        runner.invoke(cli, ["config", "init"])
+        result = runner.invoke(cli, ["config", "set", bare, "org_id", "x"])
+        assert result.exit_code == 2
+        error = json.loads(result.stderr)["error"]
+        assert "docstudio.platform" in error["hint"], "the hint must list valid targets"
+
     def test_set_writes_where_get_reads(self, runner, cli, isolated_env):
         """A write must land in the block the reader consults.
 
@@ -446,10 +471,10 @@ class TestConfigCommands:
         """
         runner.invoke(cli, ["config", "init"])
         assert runner.invoke(
-            cli, ["config", "set", "platform", "org_id", "org_ROUNDTRIP"]
+            cli, ["config", "set", "docstudio.platform", "org_id", "org_ROUNDTRIP"]
         ).exit_code == 0
 
-        shown = json.loads(runner.invoke(cli, ["config", "get", "platform", "org_id"]).stdout)
+        shown = json.loads(runner.invoke(cli, ["config", "get", "docstudio.platform", "org_id"]).stdout)
         assert shown["value"] == "org_ROUNDTRIP"
 
         text = (isolated_env / "config.toml").read_text()

@@ -40,7 +40,16 @@ For repeated use, create profiles:
 unstract config init          # writes ~/.config/unstract/config.toml (mode 0600)
 unstract config use cloud-eu  # switch regions
 unstract config current       # show what is resolved right now
+
+# Read and write settings. The target names an API group through its product,
+# so a setting always says which product it configures. Either separator works.
+unstract config set docstudio.platform org_id org_ABC123
+unstract config set docstudio platform org_id org_ABC123
+unstract config get llmwhisperer base_url
 ```
+
+Valid targets: `docstudio.platform`, `docstudio.deployment`, `docstudio.hitl`,
+`llmwhisperer`, `apihub`.
 
 Settings resolve in one order, everywhere: **flag → environment variable →
 profile → built-in default**. Credentials in the config file use `env:VAR_NAME`
@@ -77,12 +86,12 @@ A project file is ordinary config, so it can hold several profiles too:
 ```toml
 default_profile = "dev"
 
-[profiles.dev.platform]
+[profiles.dev.docstudio.platform]
 base_url = "https://dev.internal/"
 org_id   = "org_dev"
 api_key  = "env:UNSTRACT_PLATFORM_KEY"
 
-[profiles.prod.platform]
+[profiles.prod.docstudio.platform]
 base_url = "https://us-central.unstract.com"
 org_id   = "org_prod"
 api_key  = "env:UNSTRACT_PROD_KEY"

@@ -68,7 +68,9 @@ def _param_info(param: click.Parameter) -> dict[str, Any]:
         entry["is_flag"] = info.get("is_flag", False)
     else:
         # Positional: how it is written on the command line, not a flag name.
-        entry["usage"] = str(info.get("name", "")).upper()
+        entry["usage"] = getattr(param, "metavar", None) or str(
+            info.get("name", "")
+        ).upper()
     if (default := info.get("default")) is not None:
         entry["default"] = default
     if choices := type_info.get("choices"):
@@ -83,8 +85,12 @@ def _usage_line(path: tuple[str, ...], command: click.Command) -> str:
         info = param.to_info_dict()
         if info.get("param_type_name") != "argument":
             continue
-        name = str(info.get("name", "")).upper()
-        if info.get("multiple") or info.get("nargs", 1) == -1:
+        # A variadic argument's own name says nothing useful ("ARGS..."), so
+        # prefer a declared metavar, which spells out the real shape. Click
+        # omits metavar from to_info_dict(), so read the attribute directly.
+        declared = getattr(param, "metavar", None)
+        name = declared or str(info.get("name", "")).upper()
+        if not declared and (info.get("multiple") or info.get("nargs", 1) == -1):
             name = f"{name}..."
         parts.append(name if info.get("required") else f"[{name}]")
     if any(

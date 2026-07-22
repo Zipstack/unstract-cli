@@ -463,6 +463,34 @@ class TestConfigCommands:
         error = json.loads(result.stderr)["error"]
         assert "docstudio.platform" in error["hint"], "the hint must list valid targets"
 
+    @pytest.mark.parametrize(
+        "block", ["[profiles.p.whisper]", "[profiles.p.platform]", "[profiles.p.hitl]"]
+    )
+    def test_non_canonical_blocks_are_ignored(self, runner, cli, isolated_env, block):
+        """There is exactly one accepted layout -- no aliases, no flat fallback.
+
+        A block written any other way must NOT be silently picked up: a config
+        that looks applied but is not surfaces later as a missing-credential
+        error with no obvious cause.
+        """
+        (isolated_env / "config.toml").write_text(
+            f'default_profile = "p"\n\n{block}\nbase_url = "https://wrong.example/"\n'
+        )
+        current = json.loads(runner.invoke(cli, ["config", "current"]).stdout)
+        for settings in current["settings"].values():
+            assert settings.get("base_url") != "https://wrong.example/"
+
+    def test_canonical_block_is_read(self, runner, cli, isolated_env):
+        (isolated_env / "config.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.docstudio.platform]\n"
+            'org_id = "org_CANON"\n'
+        )
+        shown = json.loads(
+            runner.invoke(cli, ["config", "get", "docstudio.platform", "org_id"]).stdout
+        )
+        assert shown["value"] == "org_CANON"
+
     def test_set_writes_where_get_reads(self, runner, cli, isolated_env):
         """A write must land in the block the reader consults.
 
@@ -520,7 +548,7 @@ class TestConfigCommands:
         (project / "deep" / "nested").mkdir(parents=True)
         (project / ".unstract.toml").write_text(
             'default_profile = "proj"\n\n'
-            '[profiles.proj.whisper]\n'
+            '[profiles.proj.llmwhisperer]\n'
             'base_url = "https://project.example/api/v2"\n'
         )
         monkeypatch.chdir(project / "deep" / "nested")

@@ -160,6 +160,8 @@ Named profiles; `--profile/-p` or `UNSTRACT_PROFILE` selects one.
 
 These compose with profiles rather than replacing them: a project file may itself define several profiles. A committed `.unstract.toml` is safe because credentials use `env:` indirection.
 
+**Block layout has exactly one accepted form**: the API group nested under its product, e.g. `[profiles.<name>.docstudio.platform]` or `[profiles.<name>.llmwhisperer]`. No aliases, no flat fallback. A block written any other way is ignored rather than silently half-applied — a config that looks applied but is not surfaces later as a missing-credential error with no obvious cause. `config get`/`config set` name the same targets: `docstudio.platform` (or `docstudio platform`), `docstudio.deployment`, `docstudio.hitl`, `llmwhisperer`, `apihub`.
+
 ```toml
 default_profile = "cloud-us"
 

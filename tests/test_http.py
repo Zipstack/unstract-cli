@@ -6,7 +6,12 @@ import httpx
 import pytest
 import respx
 
-from unstract_cli.config.loader import ConfigFile, ResolvedConfig
+from unstract_cli.config.loader import (
+    ConfigError,
+    ConfigFile,
+    ResolvedConfig,
+    load_config,
+)
 from unstract_cli.core.errors import (
     REDACTED,
     CLIError,
@@ -97,6 +102,37 @@ class TestAuth:
         )
         for header in GATEWAY_INJECTED_HEADERS:
             assert header not in {k.lower() for k in plan.headers}
+
+
+class TestEnumKeyedLookup:
+    """Callers pass `ApiGroup`; the resolver must accept it, not just strings.
+
+    When only `Product` was normalised, an `ApiGroup` key fell through
+    unconverted: profile values were silently missed and error messages read
+    "ApiGroup.LLMWHISPERER.api_key".
+    """
+
+    def test_enum_and_string_agree(self, tmp_path, monkeypatch):
+        config = tmp_path / "c.toml"
+        config.write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.llmwhisperer]\n"
+            'base_url = "https://from-file.example/api/v2"\n'
+        )
+        monkeypatch.setenv("UNSTRACT_CONFIG", str(config))
+        cfg = ResolvedConfig(file=load_config(config))
+
+        assert cfg.get(ApiGroup.LLMWHISPERER, "base_url") == cfg.get(
+            "llmwhisperer", "base_url"
+        ) == "https://from-file.example/api/v2"
+
+    def test_error_message_uses_the_plain_name(self, monkeypatch):
+        monkeypatch.delenv("LLMWHISPERER_API_KEY", raising=False)
+        cfg = ResolvedConfig(file=ConfigFile(exists=False))
+        with pytest.raises(ConfigError) as exc:
+            cfg.require(ApiGroup.LLMWHISPERER, "api_key")
+        assert "llmwhisperer.api_key" in str(exc.value)
+        assert "ApiGroup." not in str(exc.value)
 
 
 class TestRedaction:

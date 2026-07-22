@@ -51,6 +51,16 @@ unstract config get llmwhisperer base_url
 Valid targets: `docstudio.platform`, `docstudio.deployment`, `docstudio.hitl`,
 `llmwhisperer`, `apihub`.
 
+Config blocks have **exactly one accepted layout** — the API group nested under
+its product. There are no aliases and no flat fallback, so a block written any
+other way is ignored rather than half-applied:
+
+```toml
+[profiles.cloud-us.docstudio.platform]   # ✓ read
+[profiles.cloud-us.platform]             # ✗ ignored
+[profiles.cloud-us.whisper]              # ✗ ignored (use llmwhisperer)
+```
+
 Settings resolve in one order, everywhere: **flag → environment variable →
 profile → built-in default**. Credentials in the config file use `env:VAR_NAME`
 indirection, so the file records *where* secrets live rather than the secrets

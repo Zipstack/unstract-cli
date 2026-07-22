@@ -25,14 +25,6 @@ import tomli_w
 
 from unstract_cli.core.model import ApiGroup, Product
 
-#: Alternative block names accepted when *reading* a hand-written config file.
-#: `whisper` matches the command group users type; `llmwhisperer` is the API
-#: group name. Reading is lenient so an existing file is never silently ignored;
-#: writing always uses the canonical nested path.
-BLOCK_ALIASES: dict[str, tuple[str, ...]] = {
-    ApiGroup.LLMWHISPERER.value: ("whisper",),
-}
-
 #: Config blocks are nested by product, then by API group:
 #:
 #:     [profiles.cloud-us.docstudio.platform]
@@ -271,26 +263,24 @@ class ResolvedConfig:
                     f"Profile {name!r} not found in {self.file.path}. Known profiles: {known}"
                 )
             return {}
-        # Preferred shape nests the API group under its product, e.g.
-        # [profiles.X.docstudio.platform]. LLMWhisperer and API Hub own a single
-        # group each, so their block sits directly under the product name.
-        for candidate in (
-            GROUP_PATH.get(product, (product,)),
-            *((alias,) for alias in BLOCK_ALIASES.get(product, ())),
-            (product,),
-        ):
-            node: Any = profile
-            for segment in candidate:
-                node = node.get(segment) if isinstance(node, dict) else None
-                if node is None:
-                    break
-            if isinstance(node, dict):
-                return node
-        return {}
+        # Exactly one accepted shape: the API group nested under its product,
+        # e.g. [profiles.X.docstudio.platform]. LLMWhisperer and API Hub own a
+        # single group each, so their block sits directly under the product name.
+        #
+        # No aliases and no flat fallback. A block written any other way is not
+        # silently picked up -- a config that looks applied but is not is worse
+        # than one that plainly is not, because the failure surfaces later as a
+        # missing-credential error with no obvious cause.
+        node: Any = profile
+        for segment in GROUP_PATH.get(product, (product,)):
+            node = node.get(segment) if isinstance(node, dict) else None
+            if node is None:
+                return {}
+        return node if isinstance(node, dict) else {}
 
-    def get(self, product: str | Product, key: str, default: Any = None) -> Any:
+    def get(self, product: str | ApiGroup | Product, key: str, default: Any = None) -> Any:
         """Resolve one setting: **flag > env > profile > built-in default**."""
-        product = product.value if isinstance(product, Product) else product
+        product = product.value if isinstance(product, (ApiGroup, Product)) else product
 
         if (value := self.overrides.get(f"{product}.{key}")) is not None:
             return value
@@ -310,16 +300,16 @@ class ResolvedConfig:
             return DEFAULT_BASE_URLS.get(product)
         return None
 
-    def require(self, product: str | Product, key: str) -> Any:
+    def require(self, product: str | ApiGroup | Product, key: str) -> Any:
         """Resolve a setting, or raise a message naming exactly how to supply it."""
         if (value := self.get(product, key)) is not None:
             return value
 
-        product = product.value if isinstance(product, Product) else product
+        product = product.value if isinstance(product, (ApiGroup, Product)) else product
         hints: list[str] = []
         if env_vars := ENV_VARS.get((product, key)):
             hints.append(f"set ${env_vars[0]}")
-        block = BLOCK_ALIASES.get(product, (product,))[0]
+        block = ".".join(GROUP_PATH.get(product, (product,)))
         hints.append(f"or add `{key}` to the [profiles.<name>.{block}] block")
         # Only suggest a flag that actually exists. Credentials have no flag by
         # design -- a secret on the command line lands in shell history and

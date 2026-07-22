@@ -25,7 +25,6 @@ import click
 from unstract_cli.commands.config_cmd import CONFIG_COMMANDS, config_group
 from unstract_cli.core.generate import build_group_tree
 from unstract_cli.core.model import Endpoint
-from unstract_cli.core.output import diagnostic
 from unstract_cli.endpoints import ALL_ENDPOINTS
 
 __version__ = "0.1.0"
@@ -273,18 +272,10 @@ class UnstractCLI(click.Group):
 @click.version_option(__version__, "-V", "--version", prog_name="unstract")
 @click.option(
     "--discover",
-    "dump",
+    "discover_flag",
     is_flag=True,
     default=False,
     help="Emit the command tree as JSON, for programmatic discovery.",
-)
-@click.option(
-    "--dump-commands",
-    "dump_legacy",
-    is_flag=True,
-    default=False,
-    hidden=True,
-    help="Deprecated alias for --discover.",
 )
 @click.option(
     "--group",
@@ -308,8 +299,7 @@ class UnstractCLI(click.Group):
 @click.pass_context
 def cli(
     ctx: click.Context,
-    dump: bool,
-    dump_legacy: bool,
+    discover_flag: bool,
     group: str | None,
     command_filter: str | None,
     detail: str,
@@ -331,14 +321,7 @@ def cli(
     Output defaults to JSON whenever stdout is not a terminal, so piping the CLI
     needs no extra flags.
     """
-    if dump_legacy and not dump:
-        diagnostic(
-            "warning: --dump-commands is deprecated; use --discover instead.",
-            quiet=False,
-        )
-        dump = True
-
-    if dump:
+    if discover_flag:
         payload = discover(
             group=group, command=command_filter, detail=detail
         )

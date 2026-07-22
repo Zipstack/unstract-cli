@@ -130,7 +130,7 @@ class TestDeployment422Defect:
             monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
         )
         return wait_for_completion(
-            endpoint=get_endpoint("deployment.run"),
+            endpoint=get_endpoint("docstudio.deployment.run"),
             initial={"message": {"execution_id": "e-1", "execution_status": "PENDING"}},
             config=cfg,
             values={"api_name": "my-api"},
@@ -174,7 +174,7 @@ class TestDeployment422Defect:
         )
         with pytest.raises(CLIError) as exc:
             wait_for_completion(
-                endpoint=get_endpoint("deployment.run"),
+                endpoint=get_endpoint("docstudio.deployment.run"),
                 initial={"message": {"execution_id": "e-1"}},
                 config=cfg,
                 values={"api_name": "my-api"},
@@ -196,7 +196,7 @@ class TestDeployment422Defect:
         )
         with pytest.raises(CLIError) as exc:
             wait_for_completion(
-                endpoint=get_endpoint("deployment.run"),
+                endpoint=get_endpoint("docstudio.deployment.run"),
                 initial={"message": {"execution_id": "e-1"}},
                 config=cfg,
                 values={"api_name": "my-api"},

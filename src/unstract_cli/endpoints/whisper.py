@@ -8,6 +8,7 @@ region-specific (US / EU) and configurable for on-prem; auth is the
 from __future__ import annotations
 
 from unstract_cli.core.model import (
+    ApiGroup,
     BodyKind,
     Endpoint,
     MutuallyExclusive,
@@ -15,7 +16,6 @@ from unstract_cli.core.model import (
     ParamLocation,
     ParamType,
     PollSpec,
-    Product,
 )
 
 _DOCS = "llmwhisperer-docs/docs/llm_whisperer/apis"
@@ -101,7 +101,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="whisper",
         method="GET",
         path="/get-usage-info",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Show usage metrics for your LLMWhisperer account.",
         doc_source=f"{_DOCS}/usage_api.md",
         examples=("unstract whisper usage",),
@@ -111,7 +111,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="whisper",
         method="POST",
         path="/whisper",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Convert a document to LLM-ready text.",
         description=(
             "Accepts PDFs, scanned documents, images, Office documents and "
@@ -143,7 +143,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="whisper",
         method="GET",
         path="/whisper-status",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Check the status of a conversion.",
         description="Statuses: accepted, processing, processed, error, retrieved.",
         params=(
@@ -157,7 +157,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="whisper",
         method="GET",
         path="/whisper-retrieve",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Retrieve the extracted text of a completed conversion.",
         description=(
             "ONE-SHOT: text can be retrieved only once, for privacy reasons. A "
@@ -183,7 +183,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="whisper",
         method="GET",
         path="/whisper-detail",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Show processing details and metadata for a conversion.",
         params=(
             Param("whisper_hash", required=True, help="Hash returned by `whisper extract`"),
@@ -204,7 +204,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="whisper",
         method="GET",
         path="/highlights",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Retrieve line metadata (bounding boxes) for highlighting.",
         description="Requires the conversion to have been run with --add-line-nos.",
         params=(
@@ -219,7 +219,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="whisper",
         method="GET",
         path="/usage",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Show usage metrics filtered by audit tag.",
         description="Without dates, usage covers the last 30 days.",
         params=(
@@ -236,7 +236,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         subgroup="webhook",
         method="POST",
         path="/whisper-manage-callback",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Register a webhook to be called when a conversion completes.",
         description=(
             "The URL is verified at registration: LLMWhisperer posts a test payload "
@@ -262,7 +262,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         subgroup="webhook",
         method="GET",
         path="/whisper-manage-callback",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Show a registered webhook's configuration.",
         params=(Param("webhook_name", required=True, help="Name of the webhook"),),
         doc_source=f"{_DOCS}/webhook_manage.md",
@@ -274,7 +274,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         subgroup="webhook",
         method="PUT",
         path="/whisper-manage-callback",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Update a registered webhook.",
         params=(
             Param("webhook_name", required=True, location=ParamLocation.BODY,
@@ -295,7 +295,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         subgroup="webhook",
         method="DELETE",
         path="/whisper-manage-callback",
-        product=Product.LLMWHISPERER,
+        api=ApiGroup.LLMWHISPERER,
         summary="Delete a registered webhook.",
         params=(Param("webhook_name", required=True, help="Name of the webhook"),),
         doc_source=f"{_DOCS}/webhook_manage.md",

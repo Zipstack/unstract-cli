@@ -23,7 +23,7 @@ from unstract_cli.core.http import (
     execute,
     raise_for_status,
 )
-from unstract_cli.core.model import Product
+from unstract_cli.core.model import ApiGroup
 from unstract_cli.endpoints import get_endpoint
 
 from .conftest import FAKE_KEY, WHISPER_BASE
@@ -73,15 +73,15 @@ class TestAuth:
 
     def test_llmwhisperer_uses_unstract_key(self, monkeypatch):
         cfg = _config(monkeypatch, LLMWHISPERER_API_KEY=FAKE_KEY)
-        assert auth_headers(Product.LLMWHISPERER, cfg) == {"unstract-key": FAKE_KEY}
+        assert auth_headers(ApiGroup.LLMWHISPERER, cfg) == {"unstract-key": FAKE_KEY}
 
     def test_platform_uses_bearer(self, monkeypatch):
         cfg = _config(monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY)
-        assert auth_headers(Product.PLATFORM, cfg)["Authorization"] == f"Bearer {FAKE_KEY}"
+        assert auth_headers(ApiGroup.PLATFORM, cfg)["Authorization"] == f"Bearer {FAKE_KEY}"
 
     def test_apihub_uses_apikey(self, monkeypatch):
         cfg = _config(monkeypatch, UNSTRACT_APIHUB_KEY=FAKE_KEY)
-        assert auth_headers(Product.APIHUB, cfg)["apikey"] == FAKE_KEY
+        assert auth_headers(ApiGroup.APIHUB, cfg)["apikey"] == FAKE_KEY
 
     def test_apihub_never_sends_gateway_headers(self, monkeypatch):
         """Kong injects tenancy headers from its own Redis lookup.
@@ -136,7 +136,7 @@ class TestRequestBuilding:
             monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_abc"
         )
         plan = build_request(
-            get_endpoint("deployment.status"),
+            get_endpoint("docstudio.deployment.status"),
             cfg,
             {"api_name": "invoice-api", "execution_id": "e1"},
         )
@@ -145,7 +145,7 @@ class TestRequestBuilding:
     def test_missing_required_path_param_is_usage_error(self, monkeypatch):
         cfg = _config(monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o")
         with pytest.raises(CLIError) as exc:
-            build_request(get_endpoint("deployment.status"), cfg, {"execution_id": "e"})
+            build_request(get_endpoint("docstudio.deployment.status"), cfg, {"execution_id": "e"})
         assert exc.value.exit_code is ExitCode.USAGE
 
     def test_freeform_ext_param(self, monkeypatch):
@@ -184,7 +184,7 @@ class TestRequestBuilding:
         """P3 - the friendly name is not the URL segment."""
         cfg = _config(monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o")
         plan = build_request(
-            get_endpoint("platform.share"), cfg,
+            get_endpoint("docstudio.platform.share"), cfg,
             {"resource": "api-deployment", "id": "abc"},
         )
         assert "/api/deployment/abc/share/" in plan.url

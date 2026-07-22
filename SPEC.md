@@ -8,21 +8,23 @@
 
 ## 1. Purpose
 
-A single, LLM-friendly command-line interface over the entire Unstract product suite:
+**Unstract** is the company, and `unstract` is the name of this CLI. Unstract builds exactly **three products**, and this one tool covers all of them:
 
-| Product | Surface covered |
-| --- | --- |
-| **LLMWhisperer v2** | Text extraction, status/retrieve, detail, highlights, usage, webhook management |
-| **Unstract Platform — API Deployments** | Execute a deployed API, poll status, fetch highlight data |
-| **Unstract Platform — Management API (v1)** | Prompt Studio, Workflows, API Deployments, ETL/Task Pipelines, Adapters, Connectors, User Groups, Org Users |
-| **Unstract — Human Quality Review (HITL)** | Push to queue, retrieve approved results, bulk download |
-| **API Hub** (internal name: *Verticals*) | Vertical extraction (bank statement, table discovery/extraction), doc-splitter, status/retrieve |
+| Product | Group | API groups | Surface covered |
+| --- | --- | --- | --- |
+| **Document Studio** | `docstudio` | `platform`, `deployment`, `hitl` | Prompt Studio, Workflows, API Deployments, ETL/Task Pipelines, Adapters, Connectors, User Groups, Org Users; deployed-API execution; Human Quality Review |
+| **LLMWhisperer** | `whisper` | `llmwhisperer` | Text extraction, status/retrieve, detail, highlights, usage, webhook management |
+| **API Hub** (internal name: *Verticals*) | `apihub` | `apihub` | Vertical extraction (bank statement, table discovery/extraction), doc-splitter, status/retrieve |
+
+> **Document Studio was previously named Unstract**, which is why its APIs still use `platform`/`deployment` paths on the wire and `UNSTRACT_*` environment variables. The product name changed; the wire contract did not.
+
+Document Studio owns three API groups because each has its own base URL and credentials. They stay distinct for auth and config purposes while belonging to one product.
 
 The primary consumer is an **LLM agent operating in an autonomous workflow**. A human at a terminal is the secondary consumer. Every design decision below resolves in favour of machine legibility, deterministic behaviour, and self-description via `--help`.
 
 ### 1.1 Goals
 
-1. One binary, one auth/config model, one output contract across four products that today have three incompatible authentication schemes and four different base URLs.
+1. One binary, one auth/config model, one output contract across three products (five API groups) that today have three incompatible authentication schemes and four different base URLs.
 2. An agent can discover the full capability surface **without external documentation** — from `--help` output and a machine-readable command index alone.
 3. Every documented API parameter is reachable as a flag. No capability is CLI-only or API-only.
 4. The CLI's endpoint definitions are a **single declarative source of truth**, mechanically diffable against the public docs so the bundled Claude Skill can keep it current.
@@ -59,7 +61,7 @@ API Hub has **no public documentation site**. Its contract is derived from `Zips
 
 ## 3. Command tree
 
-Grouped by product, then resource, then action. Verb-last, consistent across groups.
+Grouped by product, then API group, then resource, then action. Verb-last, consistent across groups.
 
 ```
 unstract
@@ -73,12 +75,13 @@ unstract
 │   ├── usage-by-tag              # GET  /usage
 │   └── webhook {create,get,update,delete}    # /whisper-manage-callback
 │
-├── deployment                    # Unstract API Deployments (runtime)
+├── docstudio                     # Document Studio (formerly named Unstract)
+│   └── deployment                # Deployed API workflow execution
 │   ├── run                       # POST /deployment/api/{org}/{api_name}/
 │   ├── status                    # GET  /deployment/api/{org}/{api_name}/?execution_id=
 │   └── highlight                 # GET  /deployment/api/{org}/{api_name}/highlight/
 │
-├── platform                      # Unstract Platform Management API v1
+│   └── platform                  # Platform Management API v1
 │   ├── prompt-studio {list,get,create,update,patch,delete,
 │   │                  export-project,import-project,sync-prompts,
 │   │                  export-tool,export-info,
@@ -108,7 +111,7 @@ unstract
 │   ├── user list
 │   └── share                     # POST /{resource}/{id}/share/
 │
-├── hitl                          # Human Quality Review (Enterprise)
+│   └── hitl                      # Human Quality Review (Enterprise)
 │   ├── approved get              # GET /mr/api/{org}/approved/result/{class_id}/
 │   ├── bulk-download             # same endpoint, --download-files / --page / --email
 │   └── download-status           # GET /mr/api/{org}/approved/download-status/{job_id}/
@@ -130,7 +133,7 @@ Both LLMWhisperer and Unstract are execute → poll → retrieve. Raw sub-comman
 
 ```bash
 unstract whisper extract --file invoice.pdf --mode form --wait --output json
-unstract deployment run --api-name invoice-api --file invoice.pdf --wait
+unstract docstudio deployment run --api-name invoice-api --file invoice.pdf --wait
 unstract apihub extract --vertical table --sub-vertical bank_statement --file stmt.pdf --wait
 ```
 
@@ -271,7 +274,7 @@ Every failure emits a JSON object on **stderr** (even in `table` mode):
     "message": "Pipeline 'testetl' is inactive, please activate the pipeline",
     "details": [{"code": "error", "detail": "...", "attr": null}],
     "endpoint": "POST /deployment/api/{org_id}/{api_name}/",
-    "hint": "Activate the pipeline in the Unstract UI, or use `unstract platform pipeline patch --active true`.",
+    "hint": "Activate the pipeline in the Unstract UI, or use `unstract docstudio platform pipeline patch --active true`.",
     "retryable": false
   }
 }
@@ -344,7 +347,7 @@ Base: `{host}/api/v1/unstract/{org_id}` · Auth: `Authorization: Bearer <platfor
 Permissions: `read` → GET/HEAD/OPTIONS; `read_write` → all but DELETE; `full_access` → all.
 Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, max 1000).
 
-#### Prompt Studio — `unstract platform prompt-studio`
+#### Prompt Studio — `unstract docstudio platform prompt-studio`
 
 | Command | Endpoint | Method | Key parameters |
 | --- | --- | --- | --- |
@@ -377,7 +380,7 @@ Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, ma
 | `adapter-choices` | `/prompt-studio/adapter-choices/` | GET | — |
 | `retrieval-strategies` | `/prompt-studio/{tool_id}/get_retrieval_strategies/` | GET | `--tool-id`\* |
 
-#### Workflows — `unstract platform workflow`
+#### Workflows — `unstract docstudio platform workflow`
 
 | Command | Endpoint | Method | Key parameters |
 | --- | --- | --- | --- |
@@ -397,7 +400,7 @@ Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, ma
 | `file-history get/delete` | `/workflow/{workflow_id}/file-histories/{id}/` | GET/DELETE | `--workflow-id`\*, `--id`\* |
 | `file-history clear` | `/workflow/{workflow_id}/file-histories/clear/` | POST | `--workflow-id`\*, ≥1 of: `--ids` (≤100), `--status`, `--execution-count-min/max`, `--file-path` |
 
-#### API Deployments (management) — `unstract platform api-deployment`
+#### API Deployments (management) — `unstract docstudio platform api-deployment`
 
 | Command | Endpoint | Method | Key parameters |
 | --- | --- | --- | --- |
@@ -410,7 +413,7 @@ Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, ma
 | `key list` / `key create` | `/api/keys/api/{api_id}/` | GET / POST | `--api-id`\*; create: exactly one of `--api` / `--pipeline`, `--description` (≤255), `--is-active` |
 | `key get` / `key update` / `key delete` | `/api/keys/{id}/` | GET/PUT/DELETE | `--id`\*, `--is-active`, `--description` |
 
-#### ETL / Task Pipelines — `unstract platform pipeline`
+#### ETL / Task Pipelines — `unstract docstudio platform pipeline`
 
 | Command | Endpoint | Method | Key parameters |
 | --- | --- | --- | --- |
@@ -423,7 +426,7 @@ Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, ma
 | `postman-collection` | `/pipeline/api/postman_collection/{id}/` | GET | `--id`\*, `--save` (400 if no active key) |
 | `key list` / `key create` | `/api/keys/pipeline/{pipeline_id}/` | GET / POST | `--pipeline-id`\*; create: exactly one of `--pipeline` / `--api`, `--description`, `--is-active` |
 
-#### Adapters — `unstract platform adapter`
+#### Adapters — `unstract docstudio platform adapter`
 
 | Command | Endpoint | Method | Key parameters |
 | --- | --- | --- | --- |
@@ -439,7 +442,7 @@ Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, ma
 | `default-triad get` | `/adapter/default_triad/` | GET | — |
 | `default-triad set` | `/adapter/default_triad/` | POST | `--llm-default`, `--embedding-default`, `--vector-db-default`, `--x2text-default` (note: request keys differ from response keys) |
 
-#### Connectors — `unstract platform connector`
+#### Connectors — `unstract docstudio platform connector`
 
 | Command | Endpoint | Method | Key parameters |
 | --- | --- | --- | --- |
@@ -486,7 +489,7 @@ Base: `{host}/mr/api/{org_id}` · Auth: `Authorization: Bearer`
 | `hitl bulk-download` | `/approved/result/{class_id}/` | GET | `--class-id`\*, `--page` (default 1), `--page-size` (1–500, default 50), `--download-files` (bool), `--email` (async notification) |
 | `hitl download-status` | `/approved/download-status/{job_id}/` | GET | `--job-id`\* |
 
-Pushing to HITL is `unstract deployment run --hitl-queue-name <name>` (§6.2), which returns `QUEUED` + `execution_id`.
+Pushing to HITL is `unstract docstudio deployment run --hitl-queue-name <name>` (§6.2), which returns `QUEUED` + `execution_id`.
 
 ### 6.5 API Hub (Verticals)
 

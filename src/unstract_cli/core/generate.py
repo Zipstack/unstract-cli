@@ -311,7 +311,10 @@ def build_group_tree(endpoints: list[Endpoint]) -> dict[str, click.Group]:
             for part in endpoint.subgroup.split():
                 existing = parent.commands.get(part)
                 if not isinstance(existing, click.Group):
-                    existing = click.Group(name=part, help=f"{part} commands.")
+                    existing = click.Group(
+                        name=part,
+                        help=_SUBGROUP_HELP.get(part, f"{part} commands."),
+                    )
                     parent.add_command(existing)
                 parent = existing
 
@@ -320,12 +323,22 @@ def build_group_tree(endpoints: list[Endpoint]) -> dict[str, click.Group]:
     return groups
 
 
+#: Top-level group help. One group per product built by Unstract.
 _GROUP_HELP = {
-    "whisper": "LLMWhisperer v2 — convert documents to LLM-ready text.",
-    "deployment": "Run deployed Unstract API workflows and check their status.",
-    "platform": "Unstract Platform Management API (v1) — manage platform resources.",
-    "hitl": "Human Quality Review — retrieve approved results (Enterprise).",
+    "docstudio": (
+        "Document Studio — document extraction platform "
+        "(formerly named Unstract). Covers the Platform Management API, "
+        "deployed API workflows, and Human Quality Review."
+    ),
+    "whisper": "LLMWhisperer — convert documents to LLM-ready text.",
     "apihub": "API Hub — vertical extraction (tables, bank statements, doc splitting).",
+}
+
+#: Help for the API groups nested under a product.
+_SUBGROUP_HELP = {
+    "platform": "Platform Management API (v1) — manage Document Studio resources.",
+    "deployment": "Run deployed API workflows and check their status.",
+    "hitl": "Human Quality Review — retrieve approved results (Enterprise).",
 }
 
 

@@ -102,7 +102,7 @@ class TestZeroDriftRegression:
     def test_llmwhisperer_has_no_drift(self):
         findings = [
             f
-            for f in diff(parse_docs(_LLMW_DOCS), endpoints_for("whisper"))
+            for f in diff(parse_docs(_LLMW_DOCS), endpoints_for("llmwhisperer"))
             if f.severity == "action"
         ]
         assert not findings, "\n".join(f"{f.kind}: {f.message}" for f in findings)
@@ -157,7 +157,7 @@ class TestSyntheticDrift:
                     DocParam(name="include_progress", type="boolean")],
             source="whisper_status.md",
         )
-        findings = diff([doc], endpoints_for("whisper"))
+        findings = diff([doc], endpoints_for("llmwhisperer"))
         drift = [f for f in findings if f.kind == "param_drift"]
         assert len(drift) == 1
         assert "include_progress" in drift[0].message
@@ -166,7 +166,7 @@ class TestSyntheticDrift:
 
     def test_detects_new_endpoint(self):
         doc = DocEndpoint(method="POST", path="/whisper-cancel", source="new.md")
-        findings = diff([doc], endpoints_for("whisper"))
+        findings = diff([doc], endpoints_for("llmwhisperer"))
         assert any(f.kind == "missing_in_cli" for f in findings)
 
 
@@ -175,7 +175,7 @@ class TestSafetyRules:
 
     def test_missing_from_docs_is_informational_only(self):
         """Docs lag implementation; absence is never grounds for deletion."""
-        findings = diff([], endpoints_for("whisper"))
+        findings = diff([], endpoints_for("llmwhisperer"))
         removals = [f for f in findings if f.kind == "missing_in_docs"]
         assert removals, "expected the endpoints to be reported as undocumented"
         assert all(f.severity == "info" for f in removals)
@@ -189,7 +189,7 @@ class TestSafetyRules:
         """
         assert get_endpoint("whisper.detail").doc_conflict
         reported = {
-            f.command for f in diff([], endpoints_for("whisper")) if f.kind == "missing_in_docs"
+            f.command for f in diff([], endpoints_for("llmwhisperer")) if f.kind == "missing_in_docs"
         }
         assert "unstract whisper detail" not in reported
 
@@ -210,6 +210,6 @@ class TestReport:
         import json
 
         doc = DocEndpoint(method="POST", path="/whisper-cancel", source="new.md")
-        payload = json.loads(report(diff([doc], endpoints_for("whisper"))))
+        payload = json.loads(report(diff([doc], endpoints_for("llmwhisperer"))))
         assert payload["total"] >= 1
         assert "missing_in_cli" in payload["summary"]

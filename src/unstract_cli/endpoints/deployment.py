@@ -15,13 +15,13 @@ Two behaviours worth knowing before reading the records:
 from __future__ import annotations
 
 from unstract_cli.core.model import (
+    ApiGroup,
     BodyKind,
     Endpoint,
     Param,
     ParamLocation,
     ParamType,
     PollSpec,
-    Product,
 )
 
 _DOCS = "unstract-docs/docs/unstract_platform/api_deployment"
@@ -48,10 +48,11 @@ _EXECUTION_STATUSES = ("PENDING", "EXECUTING", "COMPLETED", "STOPPED", "ERROR")
 ENDPOINTS: tuple[Endpoint, ...] = (
     Endpoint(
         name="run",
-        group="deployment",
+        group="docstudio",
+        subgroup="deployment",
         method="POST",
         path="/deployment/api/{org_id}/{api_name}/",
-        product=Product.DEPLOYMENT,
+        api=ApiGroup.DEPLOYMENT,
         summary="Execute a deployed API workflow on one or more files.",
         description=(
             "Accepts up to 32 files per call, counting --file and --presigned-url "
@@ -84,7 +85,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         ),
         body=BodyKind.MULTIPART,
         poll=PollSpec(
-            status_endpoint="deployment.status",
+            status_endpoint="docstudio.deployment.status",
             status_field="execution_status",
             terminal_success=("COMPLETED",),
             terminal_failure=("ERROR", "STOPPED"),
@@ -101,10 +102,11 @@ ENDPOINTS: tuple[Endpoint, ...] = (
     ),
     Endpoint(
         name="status",
-        group="deployment",
+        group="docstudio",
+        subgroup="deployment",
         method="GET",
         path="/deployment/api/{org_id}/{api_name}/",
-        product=Product.DEPLOYMENT,
+        api=ApiGroup.DEPLOYMENT,
         summary="Check the status of an execution and retrieve its result.",
         description=(
             f"Execution statuses: {', '.join(_EXECUTION_STATUSES)}.\n\n"
@@ -131,10 +133,11 @@ ENDPOINTS: tuple[Endpoint, ...] = (
     ),
     Endpoint(
         name="highlight",
-        group="deployment",
+        group="docstudio",
+        subgroup="deployment",
         method="GET",
         path="/deployment/api/{org_id}/{api_name}/highlight/",
-        product=Product.DEPLOYMENT,
+        api=ApiGroup.DEPLOYMENT,
         summary="Fetch line coordinates for highlighting extracted values.",
         description=(
             "Requires 'Enable Highlight' on the exported tool. The whisper_hash "

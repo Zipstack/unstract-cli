@@ -39,13 +39,52 @@ from enum import Enum
 
 
 class Product(str, Enum):
-    """A product surface. Determines base URL and auth strategy (SPEC.md §4.4)."""
+    """One of the three products built by Unstract.
 
+    Unstract is the company, and the name of this CLI. It builds exactly three
+    products: **Document Studio**, **LLMWhisperer** and **API Hub**. Document
+    Studio was previously called Unstract itself, which is why its APIs still
+    use `platform`/`deployment` paths on the wire.
+    """
+
+    DOCUMENT_STUDIO = "docstudio"
     LLMWHISPERER = "llmwhisperer"
-    PLATFORM = "platform"
-    DEPLOYMENT = "deployment"
-    HITL = "hitl"
     APIHUB = "apihub"
+
+
+#: Document Studio exposes three distinct API groups, each with its own base
+#: path and credentials, so they stay separate for auth and config purposes even
+#: though they belong to one product (SPEC.md §4.4).
+class ApiGroup(str, Enum):
+    """An API surface within a product. Determines base URL and credentials."""
+
+    #: Document Studio -- Platform Management API v1.
+    PLATFORM = "platform"
+    #: Document Studio -- deployed API workflow execution.
+    DEPLOYMENT = "deployment"
+    #: Document Studio -- Human Quality Review (Enterprise).
+    HITL = "hitl"
+    #: LLMWhisperer -- text extraction.
+    LLMWHISPERER = "llmwhisperer"
+    #: API Hub -- vertical extraction.
+    APIHUB = "apihub"
+
+
+#: Which product each API group belongs to.
+GROUP_PRODUCT: dict[ApiGroup, Product] = {
+    ApiGroup.PLATFORM: Product.DOCUMENT_STUDIO,
+    ApiGroup.DEPLOYMENT: Product.DOCUMENT_STUDIO,
+    ApiGroup.HITL: Product.DOCUMENT_STUDIO,
+    ApiGroup.LLMWHISPERER: Product.LLMWHISPERER,
+    ApiGroup.APIHUB: Product.APIHUB,
+}
+
+#: Human-readable product names, for help text and `--discover`.
+PRODUCT_LABELS: dict[Product, str] = {
+    Product.DOCUMENT_STUDIO: "Document Studio",
+    Product.LLMWHISPERER: "LLMWhisperer",
+    Product.APIHUB: "API Hub",
+}
 
 
 class ParamLocation(str, Enum):
@@ -274,7 +313,9 @@ class Endpoint:
     group: str
     method: str
     path: str
-    product: Product
+    #: The API surface this endpoint belongs to, which fixes its base URL and
+    #: credentials. The owning product is derived from it, never stored twice.
+    api: ApiGroup
     summary: str
     params: tuple[Param, ...] = ()
     body: BodyKind = BodyKind.NONE
@@ -300,6 +341,16 @@ class Endpoint:
     table_columns: tuple[str, ...] = ()
     #: Response key holding the payload for ``--output raw``.
     raw_field: str | None = None
+
+    @property
+    def product(self) -> Product:
+        """The product this endpoint belongs to (derived, never stored)."""
+        return GROUP_PRODUCT[self.api]
+
+    @property
+    def product_label(self) -> str:
+        """Display name, e.g. ``"Document Studio"``."""
+        return PRODUCT_LABELS[self.product]
 
     @property
     def command_path(self) -> tuple[str, ...]:

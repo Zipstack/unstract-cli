@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from unstract_cli.core.model import (
+    ApiGroup,
     AtLeastOneOf,
     BodyKind,
     Endpoint,
@@ -18,7 +19,6 @@ from unstract_cli.core.model import (
     Param,
     ParamLocation,
     ParamType,
-    Product,
     derive_patch,
     with_params,
 )
@@ -56,7 +56,7 @@ class TestP2AtLeastOneOf:
 
     def test_file_history_clear_is_guarded(self):
         # Without a filter this endpoint would delete every file history.
-        endpoint = get_endpoint("platform.workflow.file-history.clear")
+        endpoint = get_endpoint("docstudio.platform.workflow.file-history.clear")
         assert any(isinstance(c, AtLeastOneOf) for c in endpoint.constraints)
         assert endpoint.validate({"workflow_id": "w"})
 
@@ -73,13 +73,13 @@ class TestP3ChoiceMapping:
         assert param.to_wire("form") == "form"
 
     def test_share_resource_mapping(self):
-        param = get_endpoint("platform.share").param("resource")
+        param = get_endpoint("docstudio.platform.share").param("resource")
         assert param.choice_map()["api-deployment"] == "api/deployment"
 
 
 class TestP4Repeatable:
     def test_multiple_flag(self):
-        assert get_endpoint("deployment.run").param("files").multiple
+        assert get_endpoint("docstudio.deployment.run").param("files").multiple
 
 
 class TestP5Freeform:
@@ -93,13 +93,13 @@ class TestP5Freeform:
 
 class TestP6PathParamDefaults:
     def test_org_id_defaults_from_profile(self):
-        param = get_endpoint("deployment.run").param("org_id")
+        param = get_endpoint("docstudio.deployment.run").param("org_id")
         assert param.location is ParamLocation.PATH
         assert param.default_from == "deployment.org_id"
 
     def test_api_name_has_no_default(self):
         # One profile serves many deployments, so this cannot be defaulted.
-        param = get_endpoint("deployment.run").param("api_name")
+        param = get_endpoint("docstudio.deployment.run").param("api_name")
         assert param.required and param.default_from is None
 
 
@@ -121,7 +121,7 @@ class TestP8DerivedPatch:
     def test_strips_required_but_keeps_path_params(self):
         put = Endpoint(
             name="update", group="g", method="PUT", path="/x/{id}/",
-            product=Product.PLATFORM, summary="s",
+            api=ApiGroup.PLATFORM, summary="s",
             params=(
                 Param("id", location=ParamLocation.PATH, required=True),
                 Param("name", location=ParamLocation.BODY, required=True),
@@ -133,7 +133,7 @@ class TestP8DerivedPatch:
         assert not patch.param("name").required, "body fields become optional"
 
     def test_shipped_patches_mirror_their_put(self):
-        for group in ("platform.prompt-studio", "platform.workflow"):
+        for group in ("docstudio.platform.prompt-studio", "docstudio.platform.workflow"):
             put = get_endpoint(f"{group}.update")
             patch = get_endpoint(f"{group}.patch")
             assert {p.name for p in patch.params} >= {p.name for p in put.params}, (
@@ -142,7 +142,7 @@ class TestP8DerivedPatch:
 
     def test_with_params_appends(self):
         base = Endpoint(name="a", group="g", method="PATCH", path="/x",
-                        product=Product.PLATFORM, summary="s")
+                        api=ApiGroup.PLATFORM, summary="s")
         extended = with_params(base, Param("active", type=ParamType.BOOL))
         assert extended.param("active") is not None
         assert base.param("active") is None, "the source record must be untouched"
@@ -159,8 +159,8 @@ class TestP9ConditionalApplicability:
 
 class TestP10IdentifierTypes:
     def test_group_ids_are_ints_not_uuids(self):
-        assert get_endpoint("platform.group.patch").param("id").type is ParamType.INT
-        assert get_endpoint("platform.workflow.get").param("id").type is ParamType.UUID
+        assert get_endpoint("docstudio.platform.group.patch").param("id").type is ParamType.INT
+        assert get_endpoint("docstudio.platform.workflow.get").param("id").type is ParamType.UUID
 
 
 class TestP11LiteralPaths:
@@ -169,15 +169,15 @@ class TestP11LiteralPaths:
     @pytest.mark.parametrize(
         "name,expected",
         [
-            ("platform.prompt-studio.profile.create",
+            ("docstudio.platform.prompt-studio.profile.create",
              "/api/v1/unstract/{org_id}/prompt-studio/profilemanager/{tool_id}"),
-            ("platform.prompt-studio.profile.get",
+            ("docstudio.platform.prompt-studio.profile.get",
              "/api/v1/unstract/{org_id}/prompt-studio/profile-manager/{profile_id}/"),
-            ("platform.group.member.remove",
+            ("docstudio.platform.group.member.remove",
              "/api/v1/unstract/{org_id}/groups/{id}/members/{user_id}"),
-            ("platform.pipeline.postman-collection",
+            ("docstudio.platform.pipeline.postman-collection",
              "/api/v1/unstract/{org_id}/pipeline/api/postman_collection/{id}/"),
-            ("platform.api-deployment.postman-collection",
+            ("docstudio.platform.api-deployment.postman-collection",
              "/api/v1/unstract/{org_id}/api/postman_collection/{id}/"),
         ],
     )
@@ -187,7 +187,7 @@ class TestP11LiteralPaths:
     def test_missing_trailing_slash_is_declared(self):
         """A path without a trailing slash must say so, so it reads as intent."""
         for endpoint in ALL_ENDPOINTS:
-            if endpoint.product is not Product.PLATFORM:
+            if endpoint.api is not ApiGroup.PLATFORM:
                 continue
             if "{" in endpoint.path.split("/")[-1] and not endpoint.path.endswith("/"):
                 assert endpoint.no_trailing_slash, (
@@ -198,7 +198,7 @@ class TestP11LiteralPaths:
 
 class TestP12ReplaceSemantics:
     def test_shared_users_marked_replace(self):
-        assert get_endpoint("platform.share").param("shared_users").replace_semantics
+        assert get_endpoint("docstudio.platform.share").param("shared_users").replace_semantics
 
 
 class TestRegistryIntegrity:

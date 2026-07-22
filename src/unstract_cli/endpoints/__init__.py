@@ -38,9 +38,13 @@ def get_endpoint(dotted_name: str) -> Endpoint:
         ) from None
 
 
-def endpoints_for(group: str) -> tuple[Endpoint, ...]:
-    """All endpoints in one product group."""
-    return tuple(e for e in ALL_ENDPOINTS if e.group == group)
+def endpoints_for(api: str) -> tuple[Endpoint, ...]:
+    """All endpoints on one API surface, e.g. ``"platform"`` or ``"llmwhisperer"``.
+
+    Filters by API group rather than command path, because that is the unit the
+    documentation is organised around -- one docs source per API.
+    """
+    return tuple(e for e in ALL_ENDPOINTS if e.api.value == api)
 
 
 __all__ = ["ALL_ENDPOINTS", "endpoints_for", "get_endpoint"]

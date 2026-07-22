@@ -25,7 +25,7 @@ from unstract_cli.core.errors import (
     redact_headers,
     redact_value,
 )
-from unstract_cli.core.model import BodyKind, Endpoint, ParamLocation, Product
+from unstract_cli.core.model import ApiGroup, BodyKind, Endpoint, ParamLocation
 
 #: Headers Kong injects downstream from the `apikey` lookup (SPEC.md §4.4).
 #: The CLI must never send these: they are gateway-supplied, and a client-set
@@ -82,17 +82,19 @@ class RequestPlan:
         }
 
 
-def auth_headers(product: Product, config: ResolvedConfig) -> dict[str, str]:
-    """Build product-specific auth headers (SPEC.md §4.4).
+def auth_headers(product: ApiGroup, config: ResolvedConfig) -> dict[str, str]:
+    """Build auth headers for one API group (SPEC.md §4.4).
 
     Three products, three schemes -- unifying them is the CLI's core promise.
+    Document Studio's three API groups share the Bearer scheme but each carries
+    its own key, so credentials are still resolved per group.
     """
     match product:
-        case Product.LLMWHISPERER:
+        case ApiGroup.LLMWHISPERER:
             return {"unstract-key": config.require(product, "api_key")}
-        case Product.PLATFORM | Product.DEPLOYMENT | Product.HITL:
+        case ApiGroup.PLATFORM | ApiGroup.DEPLOYMENT | ApiGroup.HITL:
             return {"Authorization": f"Bearer {config.require(product, 'api_key')}"}
-        case Product.APIHUB:
+        case ApiGroup.APIHUB:
             # `apikey` only. Kong resolves it to subscription/user identity.
             headers = {"apikey": config.require(product, "api_key")}
             if key := config.get(product, "llmwhisperer_key"):
@@ -100,13 +102,13 @@ def auth_headers(product: Product, config: ResolvedConfig) -> dict[str, str]:
             if key := config.get(product, "anthropic_key"):
                 headers["X-Anthropic-API-Key"] = key
             return headers
-    raise CLIError(f"Unknown product: {product}", ExitCode.GENERIC)  # pragma: no cover
+    raise CLIError(f"Unknown API group: {product}", ExitCode.GENERIC)  # pragma: no cover
 
 
 def collect_secrets(config: ResolvedConfig) -> list[str]:
     """Every credential in play, so output can be scrubbed of all of them."""
     secrets: list[str] = []
-    for product in Product:
+    for product in ApiGroup:
         for key in ("api_key", "llmwhisperer_key", "anthropic_key"):
             try:
                 if (value := config.get(product, key)) and isinstance(value, str):
@@ -123,10 +125,10 @@ def build_url(endpoint: Endpoint, config: ResolvedConfig, values: dict[str, Any]
     inconsistent about trailing slashes and about `profilemanager` vs
     `profile-manager`, and "tidying" a path yields a 404.
     """
-    base = config.get(endpoint.product, "base_url")
+    base = config.get(endpoint.api, "base_url")
     if not base:
         raise CLIError(
-            f"No base URL configured for {endpoint.product.value}.",
+            f"No base URL configured for {endpoint.api.value}.",
             ExitCode.USAGE,
             hint=(
                 "Set --base-url or the corresponding environment variable. "
@@ -177,7 +179,7 @@ def build_request(
             endpoint=f"{endpoint.method} {endpoint.path}",
         )
 
-    headers = {"User-Agent": USER_AGENT, **auth_headers(endpoint.product, config)}
+    headers = {"User-Agent": USER_AGENT, **auth_headers(endpoint.api, config)}
     params: dict[str, Any] = {}
     body: dict[str, Any] = {}
     form: dict[str, Any] = {}

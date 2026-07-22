@@ -23,6 +23,7 @@ PATCH records are *derived* from their PUT counterparts via `derive_patch`
 from __future__ import annotations
 
 from unstract_cli.core.model import (
+    ApiGroup,
     AtLeastOneOf,
     BodyKind,
     Endpoint,
@@ -31,7 +32,6 @@ from unstract_cli.core.model import (
     ParamLocation,
     ParamType,
     Permission,
-    Product,
     derive_patch,
     with_params,
 )
@@ -92,11 +92,12 @@ def _ep(
     """Construct a Platform endpoint, filling in the org-scoped base path."""
     return Endpoint(
         name=name,
-        group="platform",
-        subgroup=subgroup,
+        group="docstudio",
+        # Every Platform API command lives under `docstudio platform ...`.
+        subgroup=f"platform {subgroup}" if subgroup else "platform",
         method=method,
         path=f"{_BASE}{path}",
-        product=Product.PLATFORM,
+        api=ApiGroup.PLATFORM,
         summary=summary,
         params=(_ORG, *params),
         body=body,
@@ -859,11 +860,11 @@ _CONNECTORS: tuple[Endpoint, ...] = (
 #: Not org-scoped, unlike everything else in this module.
 _OAUTH_CACHE_KEY = Endpoint(
     name="oauth-cache-key",
-    group="platform",
-    subgroup="connector",
+    group="docstudio",
+    subgroup="platform connector",
     method="GET",
     path="/api/v1/oauth/cache-key/{backend}",
-    product=Product.PLATFORM,
+    api=ApiGroup.PLATFORM,
     summary="Generate a cache key to associate an OAuth flow with a connector.",
     params=(
         Param("backend", location=ParamLocation.PATH, required=True,
@@ -936,10 +937,11 @@ _GROUPS: tuple[Endpoint, ...] = (
         )),
     Endpoint(
         name="share",
-        group="platform",
+        group="docstudio",
+        subgroup="platform",
         method="POST",
         path=f"{_BASE}/{{resource}}/{{id}}/share/",
-        product=Product.PLATFORM,
+        api=ApiGroup.PLATFORM,
         summary="Share a resource with users, groups, or the whole organization.",
         description=(
             "Each axis REPLACES its existing list rather than appending. To add "

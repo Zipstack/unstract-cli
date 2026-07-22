@@ -23,44 +23,61 @@ from typing import Any
 
 import tomli_w
 
-from unstract_cli.core.model import Product
+from unstract_cli.core.model import ApiGroup, Product
 
-#: Products whose settings can appear in a profile block.
-PRODUCT_KEYS = tuple(p.value for p in Product)
+#: API groups whose settings can appear in a profile block. Each has its own
+#: base URL and credentials, so they stay separate even when one product owns
+#: several of them.
+PRODUCT_KEYS = tuple(g.value for g in ApiGroup)
 
-#: Alternative block names accepted in a profile, per product. `whisper` matches
-#: the command group users actually type.
+#: Alternative block names accepted in a profile. `whisper` matches the command
+#: group users actually type; `llmwhisperer` is the on-the-wire product name.
 BLOCK_ALIASES: dict[str, tuple[str, ...]] = {
-    Product.LLMWHISPERER.value: ("whisper",),
+    ApiGroup.LLMWHISPERER.value: ("whisper",),
+}
+
+#: Config blocks are nested by product, then by API group:
+#:
+#:     [profiles.cloud-us.docstudio.platform]
+#:     [profiles.cloud-us.llmwhisperer]
+#:
+#: Document Studio owns three API groups with distinct hosts and keys, so they
+#: keep separate sub-blocks rather than being flattened into one.
+GROUP_PATH: dict[str, tuple[str, ...]] = {
+    ApiGroup.PLATFORM.value: ("docstudio", "platform"),
+    ApiGroup.DEPLOYMENT.value: ("docstudio", "deployment"),
+    ApiGroup.HITL.value: ("docstudio", "hitl"),
+    ApiGroup.LLMWHISPERER.value: ("llmwhisperer",),
+    ApiGroup.APIHUB.value: ("apihub",),
 }
 
 #: Built-in defaults, lowest precedence. API Hub deliberately has **no** default
 #: base URL: its public hostname is unconfirmed (SPEC.md §11.1), and inventing
 #: one would send an agent's documents to a host we cannot vouch for.
 DEFAULT_BASE_URLS: dict[str, str] = {
-    Product.LLMWHISPERER.value: "https://llmwhisperer-api.us-central.unstract.com/api/v2",
-    Product.PLATFORM.value: "https://us-central.unstract.com",
-    Product.DEPLOYMENT.value: "https://us-central.unstract.com",
-    Product.HITL.value: "https://us-central.unstract.com",
+    ApiGroup.LLMWHISPERER.value: "https://llmwhisperer-api.us-central.unstract.com/api/v2",
+    ApiGroup.PLATFORM.value: "https://us-central.unstract.com",
+    ApiGroup.DEPLOYMENT.value: "https://us-central.unstract.com",
+    ApiGroup.HITL.value: "https://us-central.unstract.com",
 }
 
 #: Environment variables per (product, setting), checked before the config file.
 ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
-    (Product.LLMWHISPERER.value, "api_key"): ("LLMWHISPERER_API_KEY",),
-    (Product.LLMWHISPERER.value, "base_url"): ("LLMWHISPERER_BASE_URL",),
-    (Product.PLATFORM.value, "api_key"): ("UNSTRACT_PLATFORM_KEY",),
-    (Product.PLATFORM.value, "base_url"): ("UNSTRACT_BASE_URL",),
-    (Product.PLATFORM.value, "org_id"): ("UNSTRACT_ORG_ID",),
-    (Product.DEPLOYMENT.value, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY",),
-    (Product.DEPLOYMENT.value, "base_url"): ("UNSTRACT_BASE_URL",),
-    (Product.DEPLOYMENT.value, "org_id"): ("UNSTRACT_ORG_ID",),
-    (Product.HITL.value, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY", "UNSTRACT_PLATFORM_KEY"),
-    (Product.HITL.value, "base_url"): ("UNSTRACT_BASE_URL",),
-    (Product.HITL.value, "org_id"): ("UNSTRACT_ORG_ID",),
-    (Product.APIHUB.value, "api_key"): ("UNSTRACT_APIHUB_KEY",),
-    (Product.APIHUB.value, "base_url"): ("UNSTRACT_APIHUB_BASE_URL",),
-    (Product.APIHUB.value, "anthropic_key"): ("UNSTRACT_ANTHROPIC_API_KEY",),
-    (Product.APIHUB.value, "llmwhisperer_key"): ("LLMWHISPERER_API_KEY",),
+    (ApiGroup.LLMWHISPERER.value, "api_key"): ("LLMWHISPERER_API_KEY",),
+    (ApiGroup.LLMWHISPERER.value, "base_url"): ("LLMWHISPERER_BASE_URL",),
+    (ApiGroup.PLATFORM.value, "api_key"): ("UNSTRACT_PLATFORM_KEY",),
+    (ApiGroup.PLATFORM.value, "base_url"): ("UNSTRACT_BASE_URL",),
+    (ApiGroup.PLATFORM.value, "org_id"): ("UNSTRACT_ORG_ID",),
+    (ApiGroup.DEPLOYMENT.value, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY",),
+    (ApiGroup.DEPLOYMENT.value, "base_url"): ("UNSTRACT_BASE_URL",),
+    (ApiGroup.DEPLOYMENT.value, "org_id"): ("UNSTRACT_ORG_ID",),
+    (ApiGroup.HITL.value, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY", "UNSTRACT_PLATFORM_KEY"),
+    (ApiGroup.HITL.value, "base_url"): ("UNSTRACT_BASE_URL",),
+    (ApiGroup.HITL.value, "org_id"): ("UNSTRACT_ORG_ID",),
+    (ApiGroup.APIHUB.value, "api_key"): ("UNSTRACT_APIHUB_KEY",),
+    (ApiGroup.APIHUB.value, "base_url"): ("UNSTRACT_APIHUB_BASE_URL",),
+    (ApiGroup.APIHUB.value, "anthropic_key"): ("UNSTRACT_ANTHROPIC_API_KEY",),
+    (ApiGroup.APIHUB.value, "llmwhisperer_key"): ("LLMWHISPERER_API_KEY",),
 }
 
 
@@ -235,13 +252,21 @@ class ResolvedConfig:
                     f"Profile {name!r} not found in {self.file.path}. Known profiles: {known}"
                 )
             return {}
-        # The config file calls the LLMWhisperer block `whisper`, matching the
-        # command group users type, while the product enum is `llmwhisperer`.
-        # Accept both so a hand-written config is never silently ignored.
-        for key in (product, *BLOCK_ALIASES.get(product, ())):
-            block = profile.get(key)
-            if isinstance(block, dict):
-                return block
+        # Preferred shape nests the API group under its product, e.g.
+        # [profiles.X.docstudio.platform]. LLMWhisperer and API Hub own a single
+        # group each, so their block sits directly under the product name.
+        for candidate in (
+            GROUP_PATH.get(product, (product,)),
+            *((alias,) for alias in BLOCK_ALIASES.get(product, ())),
+            (product,),
+        ):
+            node: Any = profile
+            for segment in candidate:
+                node = node.get(segment) if isinstance(node, dict) else None
+                if node is None:
+                    break
+            if isinstance(node, dict):
+                return node
         return {}
 
     def get(self, product: str | Product, key: str, default: Any = None) -> Any:
@@ -295,24 +320,33 @@ def starter_profiles() -> dict[str, dict[str, dict[str, Any]]]:
     """
     return {
         "cloud-us": {
-            "whisper": {
-                "base_url": DEFAULT_BASE_URLS[Product.LLMWHISPERER.value],
+            # Document Studio -- one product, three API groups with distinct
+            # hosts and credentials.
+            "docstudio": {
+                "platform": {
+                    "base_url": DEFAULT_BASE_URLS[ApiGroup.PLATFORM.value],
+                    "org_id": "",
+                    "api_key": "env:UNSTRACT_PLATFORM_KEY",
+                },
+                "deployment": {
+                    "base_url": DEFAULT_BASE_URLS[ApiGroup.DEPLOYMENT.value],
+                    "org_id": "",
+                    "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
+                },
+                "hitl": {
+                    "base_url": DEFAULT_BASE_URLS[ApiGroup.HITL.value],
+                    "org_id": "",
+                    "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
+                },
+            },
+            "llmwhisperer": {
+                "base_url": DEFAULT_BASE_URLS[ApiGroup.LLMWHISPERER.value],
                 "api_key": "env:LLMWHISPERER_API_KEY",
-            },
-            "platform": {
-                "base_url": DEFAULT_BASE_URLS[Product.PLATFORM.value],
-                "org_id": "",
-                "api_key": "env:UNSTRACT_PLATFORM_KEY",
-            },
-            "deployment": {
-                "base_url": DEFAULT_BASE_URLS[Product.DEPLOYMENT.value],
-                "org_id": "",
-                "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
             "apihub": {"base_url": "", "api_key": "env:UNSTRACT_APIHUB_KEY"},
         },
         "cloud-eu": {
-            "whisper": {
+            "llmwhisperer": {
                 "base_url": "https://llmwhisperer-api.eu-west.unstract.com/api/v2",
                 "api_key": "env:LLMWHISPERER_API_KEY",
             },

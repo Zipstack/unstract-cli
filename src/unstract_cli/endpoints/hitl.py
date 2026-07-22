@@ -8,7 +8,7 @@ Pushing *into* HITL is not a separate command: it is
 
 from __future__ import annotations
 
-from unstract_cli.core.model import Endpoint, Param, ParamLocation, ParamType, Product
+from unstract_cli.core.model import ApiGroup, Endpoint, Param, ParamLocation, ParamType
 
 _DOCS = "unstract-docs/docs/unstract_platform/human_quality_review"
 
@@ -30,11 +30,11 @@ _CLASS_ID = Param(
 ENDPOINTS: tuple[Endpoint, ...] = (
     Endpoint(
         name="get",
-        group="hitl",
-        subgroup="approved",
+        group="docstudio",
+        subgroup="hitl approved",
         method="GET",
         path="/mr/api/{org_id}/approved/result/{class_id}/",
-        product=Product.HITL,
+        api=ApiGroup.HITL,
         summary="Dequeue one approved result from the review queue.",
         description=(
             "DEQUEUE, not a read: each call removes one item from the approved "
@@ -56,10 +56,11 @@ ENDPOINTS: tuple[Endpoint, ...] = (
     ),
     Endpoint(
         name="bulk-download",
-        group="hitl",
+        group="docstudio",
+        subgroup="hitl",
         method="GET",
         path="/mr/api/{org_id}/approved/result/{class_id}/",
-        product=Product.HITL,
+        api=ApiGroup.HITL,
         summary="Page through approved results, optionally including file content.",
         description=(
             "Unlike `hitl approved get`, this is a paginated read. With "
@@ -85,10 +86,11 @@ ENDPOINTS: tuple[Endpoint, ...] = (
     ),
     Endpoint(
         name="download-status",
-        group="hitl",
+        group="docstudio",
+        subgroup="hitl",
         method="GET",
         path="/mr/api/{org_id}/approved/download-status/{job_id}/",
-        product=Product.HITL,
+        api=ApiGroup.HITL,
         summary="Check the status of an asynchronous bulk download job.",
         params=(
             _ORG,

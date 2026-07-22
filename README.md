@@ -42,6 +42,49 @@ profile → built-in default**. Credentials in the config file use `env:VAR_NAME
 indirection, so the file records *where* secrets live rather than the secrets
 themselves.
 
+### Multiple configs
+
+Nothing is global-only. There are three independent ways to select a config, and
+they layer — different environments, tenants or projects can each have their own:
+
+| Mechanism | Scope | Use for |
+| --- | --- | --- |
+| **Profiles** in one file (`--profile`) | per invocation | regions and tenants that share a machine |
+| **`.unstract.toml`** in a project | per directory tree | settings a repo commits for everyone working in it |
+| **`--config PATH`** / `$UNSTRACT_CONFIG` | per invocation | throwaway or CI configs, or fully separate environments |
+
+Config *file* resolution, highest precedence first:
+
+1. `--config PATH`
+2. `$UNSTRACT_CONFIG`
+3. the nearest `.unstract.toml`, found by walking up from the working directory
+   (like `git` or `ruff`; the search stops at `$HOME`)
+4. `$XDG_CONFIG_HOME/unstract/config.toml`, else `~/.config/unstract/config.toml`
+
+```bash
+unstract --config ./staging.toml whisper usage    # a specific file
+unstract --profile cloud-eu whisper usage         # a profile within the active file
+cd my-project && unstract whisper usage           # picks up ./.unstract.toml
+```
+
+A project file is ordinary config, so it can hold several profiles too:
+
+```toml
+default_profile = "dev"
+
+[profiles.dev.platform]
+base_url = "https://dev.internal/"
+org_id   = "org_dev"
+api_key  = "env:UNSTRACT_PLATFORM_KEY"
+
+[profiles.prod.platform]
+base_url = "https://us-central.unstract.com"
+org_id   = "org_prod"
+api_key  = "env:UNSTRACT_PROD_KEY"
+```
+
+Because credentials use `env:` indirection, such a file is safe to commit.
+
 ## For agents
 
 Discover the entire surface without documentation. Start cheap, then drill in —

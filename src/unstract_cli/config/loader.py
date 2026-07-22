@@ -68,13 +68,60 @@ class ConfigError(Exception):
     """Configuration could not be loaded or resolved."""
 
 
+#: Set by the root `--config` flag. Highest precedence, matching the
+#: flag > env > file ordering used for every other setting (SPEC.md §4.1).
+_config_override: Path | None = None
+
+
+def set_config_path(path: str | Path | None) -> None:
+    """Point this process at a specific config file (the `--config` flag)."""
+    global _config_override
+    _config_override = Path(path).expanduser() if path else None
+
+
 def config_path() -> Path:
-    """Location of the config file, honouring ``UNSTRACT_CONFIG``."""
+    """Location of the config file.
+
+    Resolution: ``--config`` flag, then ``$UNSTRACT_CONFIG``, then
+    ``$XDG_CONFIG_HOME/unstract/config.toml``, then
+    ``~/.config/unstract/config.toml``.
+
+    Several config files are expected, not exceptional: a per-project file
+    checked into a repo, a throwaway one in CI, and a personal default can all
+    coexist, selected per invocation.
+    """
+    if _config_override is not None:
+        return _config_override
     if override := os.environ.get("UNSTRACT_CONFIG"):
         return Path(override).expanduser()
+    if local := find_project_config():
+        return local
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
     return base / "unstract" / "config.toml"
+
+
+#: Filename a project can commit to point the CLI at its own settings.
+PROJECT_CONFIG_NAME = ".unstract.toml"
+
+
+def find_project_config(start: Path | None = None) -> Path | None:
+    """Search upward from the working directory for ``.unstract.toml``.
+
+    Mirrors how git, ruff and similar tools resolve project settings: running the
+    CLI inside a project picks up that project's config without any flag. The
+    search stops at the filesystem root, and at ``$HOME`` so a stray file in a
+    parent directory cannot silently capture every invocation.
+    """
+    current = (start or Path.cwd()).resolve()
+    home = Path.home().resolve()
+    for directory in (current, *current.parents):
+        candidate = directory / PROJECT_CONFIG_NAME
+        if candidate.is_file():
+            return candidate
+        if directory == home:
+            break
+    return None
 
 
 def _deref(value: Any) -> Any:
@@ -277,6 +324,9 @@ __all__ = [
     "DEFAULT_BASE_URLS",
     "ENV_VARS",
     "PRODUCT_KEYS",
+    "PROJECT_CONFIG_NAME",
+    "find_project_config",
+    "set_config_path",
     "ConfigError",
     "ConfigFile",
     "ResolvedConfig",

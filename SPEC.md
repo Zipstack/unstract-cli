@@ -146,7 +146,16 @@ For every setting, strictly: **command-line flag → environment variable → pr
 
 ### 4.2 Config file
 
-`~/.config/unstract/config.toml` (override: `UNSTRACT_CONFIG`). Named profiles; `--profile/-p` or `UNSTRACT_PROFILE` selects one.
+Named profiles; `--profile/-p` or `UNSTRACT_PROFILE` selects one.
+
+**Multiple config files are supported**, since different work needs different settings. The file itself is resolved, highest precedence first:
+
+1. `--config PATH`
+2. `$UNSTRACT_CONFIG`
+3. the nearest `.unstract.toml`, found by walking up from the working directory (as `git` and `ruff` do; the search stops at `$HOME` so a stray file above it cannot capture every invocation)
+4. `$XDG_CONFIG_HOME/unstract/config.toml`, else `~/.config/unstract/config.toml`
+
+These compose with profiles rather than replacing them: a project file may itself define several profiles. A committed `.unstract.toml` is safe because credentials use `env:` indirection.
 
 ```toml
 default_profile = "cloud-us"

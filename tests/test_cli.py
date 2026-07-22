@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from pathlib import Path
 
 import httpx
 import pytest
@@ -377,6 +378,65 @@ class TestConfigCommands:
         payload = json.loads(result.stdout)
         assert payload["configured"] is True
         assert FAKE_KEY not in result.stdout
+
+    def test_config_flag_selects_a_file(self, runner, cli, tmp_path):
+        """Several config files can coexist; --config picks one per invocation."""
+        alt = tmp_path / "alt.toml"
+        assert runner.invoke(cli, ["--config", str(alt), "config", "init"]).exit_code == 0
+        assert alt.exists()
+
+        shown = json.loads(
+            runner.invoke(cli, ["--config", str(alt), "config", "path"]).stdout
+        )
+        assert shown["path"] == str(alt)
+
+    def test_config_flag_outranks_env(self, runner, cli, monkeypatch, tmp_path):
+        env_file, flag_file = tmp_path / "env.toml", tmp_path / "flag.toml"
+        runner.invoke(cli, ["--config", str(flag_file), "config", "init"])
+        monkeypatch.setenv("UNSTRACT_CONFIG", str(env_file))
+
+        shown = json.loads(
+            runner.invoke(cli, ["--config", str(flag_file), "config", "path"]).stdout
+        )
+        assert shown["path"] == str(flag_file), "flag must outrank $UNSTRACT_CONFIG"
+
+    def test_project_config_found_from_subdirectory(self, runner, cli, tmp_path, monkeypatch):
+        """A project's `.unstract.toml` applies to anyone working inside it.
+
+        Found by walking upward, the way git and ruff locate their settings, so a
+        repo can commit its own hosts and org without every caller passing flags.
+        """
+        monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
+        project = tmp_path / "proj"
+        (project / "deep" / "nested").mkdir(parents=True)
+        (project / ".unstract.toml").write_text(
+            'default_profile = "proj"\n\n'
+            '[profiles.proj.whisper]\n'
+            'base_url = "https://project.example/api/v2"\n'
+        )
+        monkeypatch.chdir(project / "deep" / "nested")
+
+        shown = json.loads(runner.invoke(cli, ["config", "path"]).stdout)
+        assert shown["path"] == str(project / ".unstract.toml")
+
+        current = json.loads(runner.invoke(cli, ["config", "current"]).stdout)
+        assert current["active_profile"] == "proj"
+        assert current["settings"]["llmwhisperer"]["base_url"].startswith(
+            "https://project.example"
+        )
+
+    def test_project_config_search_stops_at_home(self, monkeypatch, tmp_path):
+        """A stray file above $HOME must not capture every invocation."""
+        from unstract_cli.config.loader import find_project_config
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        (tmp_path.parent / ".unstract.toml").write_text("")
+        work = tmp_path / "work"
+        work.mkdir()
+        try:
+            assert find_project_config(work) is None
+        finally:
+            (tmp_path.parent / ".unstract.toml").unlink(missing_ok=True)
 
     def test_profile_selects_region(self, runner, cli, whisper_env):
         runner.invoke(cli, ["config", "init"])

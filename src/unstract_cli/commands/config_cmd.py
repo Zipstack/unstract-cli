@@ -1,9 +1,12 @@
 """The `config` command group -- hand-authored, not generated.
 
 These commands map to no API endpoint: they operate purely on the local config
-layer. They are how a user or agent bootstraps every other command, so they are
-recorded in `--discover` too, flagged as non-endpoint so an agent can tell
-local operations from remote calls.
+layer. They are how a user or agent bootstraps every other command.
+
+`--discover` describes them by introspecting these Click commands directly, so
+the index always matches the parser. An earlier parallel description of them
+drifted and advertised `--product/--key/--value` for `config set`, which really
+takes three positional arguments -- hence: no second description, ever.
 
 Per SPEC.md §5.2 nothing here prompts: `init` refuses to clobber an existing file
 unless `--force` is passed, rather than asking.
@@ -26,28 +29,7 @@ from unstract_cli.config.loader import (
     starter_profiles,
 )
 from unstract_cli.core.errors import CLIError, ExitCode
-from unstract_cli.core.model import HandAuthoredCommand, Param
 from unstract_cli.core.output import OutputFormat, default_format, emit
-
-#: Declared so `--discover` can describe the whole surface, not just the
-#: generated half.
-CONFIG_COMMANDS: tuple[HandAuthoredCommand, ...] = (
-    HandAuthoredCommand("init", "config", "Create a starter config file.",
-                        (Param("force", help="Overwrite an existing config file"),)),
-    HandAuthoredCommand("list", "config", "List profiles in the config file."),
-    HandAuthoredCommand("get", "config", "Show a resolved setting's value.",
-                        (Param("product", required=True, help="Product block"),
-                         Param("key", required=True, help="Setting name"))),
-    HandAuthoredCommand("set", "config", "Set a value in the config file.",
-                        (Param("product", required=True, help="Product block"),
-                         Param("key", required=True, help="Setting name"),
-                         Param("value", required=True, help="Value to store"))),
-    HandAuthoredCommand("use", "config", "Set the default profile.",
-                        (Param("name", required=True, help="Profile name"),)),
-    HandAuthoredCommand("current", "config", "Show the active profile and resolved settings."),
-    HandAuthoredCommand("path", "config", "Show the config file path."),
-)
-
 
 #: Product names accepted on the command line, including config-file aliases.
 _PRODUCT_CHOICES = sorted(
@@ -136,12 +118,22 @@ def config_list(output: str | None) -> None:
     )
 
 
-@config_group.command("get", help="Show a resolved setting, following flag > env > profile.")
+@config_group.command("get")
 @click.argument("product", type=click.Choice(_PRODUCT_CHOICES))
 @click.argument("key")
 @click.option("--profile", "-p", default=None, help="Profile to read from.")
 @_output_option
 def config_get(product: str, key: str, profile: str | None, output: str | None) -> None:
+    """Show a resolved setting, following flag > env > profile > default.
+
+    PRODUCT and KEY are positional -- not flags. Credentials are reported as
+    configured or not, never echoed.
+
+    \b
+    Examples:
+      unstract config get platform org_id
+      unstract config get --profile cloud-eu whisper base_url
+    """
     ctx = click.get_current_context()
     product = _CANONICAL.get(product, product)
     try:
@@ -166,13 +158,29 @@ def config_get(product: str, key: str, profile: str | None, output: str | None) 
     )
 
 
-@config_group.command("set", help="Set a value in the config file.")
+@config_group.command("set")
 @click.argument("product", type=click.Choice(_PRODUCT_CHOICES))
 @click.argument("key")
 @click.argument("value")
 @click.option("--profile", "-p", default=None, help="Profile to write to.")
 @_output_option
 def config_set(product: str, key: str, value: str, profile: str | None, output: str | None) -> None:
+    """Set a value in the config file.
+
+    PRODUCT, KEY and VALUE are positional -- not flags. Writes to the active
+    profile unless --profile names another.
+
+    \b
+    Examples:
+      unstract config set platform org_id org_ABC123
+      unstract config set whisper api_key 'env:LLMWHISPERER_API_KEY'
+      unstract config set --profile cloud-eu whisper base_url https://…/api/v2
+
+    \b
+    Prefer `env:VAR_NAME` for credentials: the file then records where the
+    secret lives rather than the secret itself, and a literal value also lands
+    in your shell history.
+    """
     ctx = click.get_current_context()
     cfg = load_config()
     name = profile or cfg.default_profile or "cloud-us"
@@ -257,4 +265,4 @@ def config_path_cmd(output: str | None) -> None:
     emit({"path": str(path), "exists": path.exists()}, _fmt(output))
 
 
-__all__ = ["CONFIG_COMMANDS", "config_group"]
+__all__ = ["config_group"]

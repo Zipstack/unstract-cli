@@ -103,7 +103,11 @@ def _endpoint_info(endpoint: Endpoint, command: click.Command) -> dict[str, Any]
         "path": list(endpoint.command_path),
         "kind": "endpoint",
         "summary": endpoint.summary,
+        # Which of Unstract's three products this belongs to, and which API
+        # surface within it. Document Studio owns three API groups.
         "product": endpoint.product.value,
+        "product_name": endpoint.product_label,
+        "api_group": endpoint.api.value,
         "api": {"method": endpoint.method, "path": endpoint.path},
         "usage": _usage_line(endpoint.command_path, command),
         "flags": [
@@ -216,7 +220,19 @@ def discover(
     envelope: dict[str, Any] = {
         "cli": "unstract",
         "version": __version__,
-        "description": "Unified CLI for the Unstract suite of products.",
+        "description": (
+            "Unstract CLI -- one interface to the three products built by "
+            "Unstract: Document Studio, LLMWhisperer and API Hub."
+        ),
+        "products": {
+            "docstudio": {
+                "name": "Document Studio",
+                "group": "docstudio",
+                "note": "Formerly named Unstract. Owns the platform, deployment and hitl API groups.",
+            },
+            "llmwhisperer": {"name": "LLMWhisperer", "group": "whisper"},
+            "apihub": {"name": "API Hub", "group": "apihub"},
+        },
         "detail": detail,
         "count": len(commands),
     }

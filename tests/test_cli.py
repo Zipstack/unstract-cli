@@ -295,7 +295,7 @@ class TestDiscover:
     def test_summary_explains_how_to_drill_down(self):
         data = discover()
         assert "--group" in data["drill_down"]["one_group"]
-        assert set(data["groups"]) >= {"whisper", "platform", "config"}
+        assert set(data["groups"]) >= {"whisper", "docstudio", "apihub", "config"}
 
     def test_filter_by_group(self):
         data = discover(group="whisper")
@@ -316,8 +316,8 @@ class TestDiscover:
         assert discover(command="unstract whisper extract")["count"] == 1
 
     def test_group_and_command_combine(self):
-        assert discover(group="platform", command="platform adapter")["count"] == 13
-        assert discover(group="whisper", command="platform adapter")["count"] == 0
+        assert discover(group="docstudio", command="docstudio platform adapter")["count"] == 13
+        assert discover(group="whisper", command="docstudio platform adapter")["count"] == 0
 
     def test_detail_is_independent_of_selection(self):
         """Both axes are orthogonal: any combination must work."""
@@ -356,7 +356,7 @@ class TestDiscover:
 
 class TestHelp:
     def test_every_group_renders_help(self, runner, cli):
-        for group in ("whisper", "deployment", "platform", "hitl", "apihub", "config"):
+        for group in ("whisper", "docstudio", "apihub", "config"):
             result = runner.invoke(cli, [group, "--help"])
             assert result.exit_code == 0, f"{group} --help failed"
 
@@ -366,7 +366,7 @@ class TestHelp:
         assert "Examples:" in result.stdout
 
     def test_destructive_command_states_permission(self, runner, cli):
-        result = runner.invoke(cli, ["platform", "workflow", "delete", "--help"])
+        result = runner.invoke(cli, ["docstudio", "platform", "workflow", "delete", "--help"])
         assert "full_access" in result.stdout
 
     def test_one_shot_help_warns(self, runner, cli):
@@ -437,6 +437,31 @@ class TestConfigCommands:
         payload = json.loads(result.stdout)
         assert payload["configured"] is True
         assert FAKE_KEY not in result.stdout
+
+    def test_set_writes_where_get_reads(self, runner, cli, isolated_env):
+        """A write must land in the block the reader consults.
+
+        Config blocks nest by product ([profiles.X.docstudio.platform]); writing
+        a flat block instead would be silently ignored on read.
+        """
+        runner.invoke(cli, ["config", "init"])
+        assert runner.invoke(
+            cli, ["config", "set", "platform", "org_id", "org_ROUNDTRIP"]
+        ).exit_code == 0
+
+        shown = json.loads(runner.invoke(cli, ["config", "get", "platform", "org_id"]).stdout)
+        assert shown["value"] == "org_ROUNDTRIP"
+
+        text = (isolated_env / "config.toml").read_text()
+        assert "[profiles.cloud-us.docstudio.platform]" in text
+        assert "[profiles.cloud-us.platform]" not in text, "stray flat block written"
+
+    def test_docstudio_owns_three_api_groups(self, runner, cli, isolated_env):
+        """Document Studio's groups keep separate credentials and hosts."""
+        runner.invoke(cli, ["config", "init"])
+        text = (isolated_env / "config.toml").read_text()
+        for api in ("platform", "deployment", "hitl"):
+            assert f"[profiles.cloud-us.docstudio.{api}]" in text
 
     def test_config_flag_selects_a_file(self, runner, cli, tmp_path):
         """Several config files can coexist; --config picks one per invocation."""

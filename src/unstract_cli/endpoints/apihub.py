@@ -19,6 +19,7 @@ track.
 from __future__ import annotations
 
 from unstract_cli.core.model import (
+    ApiGroup,
     BodyKind,
     Endpoint,
     MutuallyExclusive,
@@ -26,7 +27,6 @@ from unstract_cli.core.model import (
     ParamLocation,
     ParamType,
     PollSpec,
-    Product,
 )
 
 _SRC = "unstract-verticals/src/api_v1/api.py"
@@ -96,7 +96,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="apihub",
         method="POST",
         path="/api/v1/extract",
-        product=Product.APIHUB,
+        api=ApiGroup.APIHUB,
         summary="Submit a document for vertical extraction.",
         description=(
             "Processing runs in stages: QUEUED_FOR_WHISPER -> "
@@ -142,7 +142,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="apihub",
         method="GET",
         path="/api/v1/status",
-        product=Product.APIHUB,
+        api=ApiGroup.APIHUB,
         summary="Check the processing status of a submitted document.",
         description="Statuses: QUEUED_FOR_WHISPER, QUEUED_FOR_EXTRACTION, COMPLETED.",
         params=(
@@ -156,7 +156,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         group="apihub",
         method="GET",
         path="/api/v1/retrieve",
-        product=Product.APIHUB,
+        api=ApiGroup.APIHUB,
         summary="Retrieve extraction results for a processed document.",
         params=(
             Param("file_hash", required=True, help="Hash returned by `apihub extract`"),
@@ -174,7 +174,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         subgroup="doc-splitter",
         method="POST",
         path="/doc-splitter/documents/upload",
-        product=Product.APIHUB,
+        api=ApiGroup.APIHUB,
         summary="Upload a document for splitting.",
         params=(
             Param("file", type=ParamType.FILE, location=ParamLocation.FORM,
@@ -190,7 +190,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         subgroup="doc-splitter",
         method="GET",
         path="/doc-splitter/jobs/status",
-        product=Product.APIHUB,
+        api=ApiGroup.APIHUB,
         summary="Check the status of a document splitting job.",
         params=(Param("job_id", required=True, help="Job identifier from `upload`"),),
         doc_source=f"{_POSTMAN}/Verticals-DocSplitter.postman_collection.json",
@@ -202,7 +202,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         subgroup="doc-splitter",
         method="GET",
         path="/doc-splitter/jobs/download",
-        product=Product.APIHUB,
+        api=ApiGroup.APIHUB,
         summary="Download the output of a completed splitting job.",
         params=(
             Param("job_id", required=True, help="Job identifier from `upload`"),

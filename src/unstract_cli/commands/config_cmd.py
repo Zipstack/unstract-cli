@@ -20,6 +20,7 @@ import click
 
 from unstract_cli.config.loader import (
     BLOCK_ALIASES,
+    GROUP_PATH,
     PRODUCT_KEYS,
     ConfigError,
     ResolvedConfig,
@@ -185,7 +186,13 @@ def config_set(product: str, key: str, value: str, profile: str | None, output: 
     cfg = load_config()
     name = profile or cfg.default_profile or "cloud-us"
 
-    cfg.profiles.setdefault(name, {}).setdefault(product, {})[key] = value
+    # Write to the same nested location the reader looks in
+    # ([profiles.X.docstudio.platform]), or a flat block would be created that
+    # `config get` then silently ignores.
+    node: dict[str, Any] = cfg.profiles.setdefault(name, {})
+    for segment in GROUP_PATH.get(product, (product,)):
+        node = node.setdefault(segment, {})
+    node[key] = value
     if not cfg.default_profile:
         cfg.default_profile = name
     written = save_config(cfg)

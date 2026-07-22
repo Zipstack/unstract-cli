@@ -13,6 +13,22 @@ generated from a declarative `Endpoint` record.** The command tree, flags, help
 text, validation and `--discover` all derive from those records, so a
 correct edit to one record propagates everywhere. You never touch command wiring.
 
+## Products and API groups
+
+Unstract is the company and the CLI's name. It builds three products:
+
+| Product | CLI group | API groups it owns |
+| --- | --- | --- |
+| **Document Studio** (formerly named Unstract) | `docstudio` | `platform`, `deployment`, `hitl` |
+| **LLMWhisperer** | `whisper` | `llmwhisperer` |
+| **API Hub** | `apihub` | `apihub` |
+
+There are exactly three products -- never introduce a fourth. Document Studio's
+three API groups have distinct hosts and credentials, so records set
+`api=ApiGroup.PLATFORM` (etc.) and the product is derived from that, never
+stored twice. Wire paths still say `platform`/`deployment` because the product
+was renamed, not the API.
+
 ## Sources of truth
 
 | Product | Documentation source | CLI file |

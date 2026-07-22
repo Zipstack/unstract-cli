@@ -1,8 +1,13 @@
 # Unstract CLI
 
-A single, LLM-friendly command-line interface across the Unstract product suite:
-LLMWhisperer text extraction, deployed API workflows, the Platform Management
-API, Human Quality Review, and API Hub.
+**Unstract** is the company, and `unstract` is the name of this CLI. It builds
+three products, and this one tool covers all of them:
+
+| Product | Group | Covers |
+| --- | --- | --- |
+| **Document Studio** | `docstudio` | Document extraction platform — Platform Management API, deployed API workflows, Human Quality Review. *Formerly named Unstract.* |
+| **LLMWhisperer** | `whisper` | Convert documents to LLM-ready text |
+| **API Hub** | `apihub` | Vertical extraction — bank statements, tables, document splitting |
 
 Built for **LLM agents first**: machine-readable discovery, stable exit codes,
 structured errors, and no interactive prompts anywhere.
@@ -93,7 +98,7 @@ so any combination works:
 
 ```bash
 unstract --discover                                  # all 143, names + summaries
-unstract --discover --group whisper                  # one product
+unstract --discover --group docstudio                # one product
 unstract --discover --command 'whisper webhook'      # one subtree
 unstract --discover --command 'whisper extract' --detail full
 unstract --discover --detail full                    # everything
@@ -149,7 +154,7 @@ Execute → poll → retrieve flows accept `--wait` so an agent needn't script t
 loop:
 
 ```bash
-unstract deployment run --api-name invoice-api --file invoice.pdf --wait
+unstract docstudio deployment run --api-name invoice-api --file invoice.pdf --wait
 ```
 
 On timeout the CLI exits `7` and prints the job handle, so work can resume
@@ -157,14 +162,17 @@ without reprocessing the document.
 
 ## Command groups
 
-| Group | Covers |
-| --- | --- |
-| `whisper` | LLMWhisperer v2: extraction, status, retrieve, highlights, usage, webhooks |
-| `deployment` | Run deployed API workflows; status; highlight data |
-| `platform` | Prompt Studio, workflows, deployments, pipelines, adapters, connectors, groups, sharing |
-| `hitl` | Human Quality Review: approved results, bulk download |
-| `apihub` | Vertical extraction: bank statements, tables, document splitting |
-| `config` | Local profile management (no network calls) |
+| Command | Product | Covers |
+| --- | --- | --- |
+| `docstudio platform` | Document Studio | Prompt Studio, workflows, deployments, pipelines, adapters, connectors, groups, sharing |
+| `docstudio deployment` | Document Studio | Run deployed API workflows; status; highlight data |
+| `docstudio hitl` | Document Studio | Human Quality Review: approved results, bulk download |
+| `whisper` | LLMWhisperer | Extraction, status, retrieve, highlights, usage, webhooks |
+| `apihub` | API Hub | Bank statements, tables, document splitting |
+| `config` | *local only* | Profile management (no network calls) |
+
+Document Studio exposes three API groups, each with its own host and
+credentials, so they remain separate under one product.
 
 Every group and command has full `--help` with worked examples.
 

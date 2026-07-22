@@ -19,26 +19,43 @@ from typing import Any
 import click
 
 from unstract_cli.config.loader import (
-    BLOCK_ALIASES,
     GROUP_PATH,
-    PRODUCT_KEYS,
+    TARGET_NAMES,
     ConfigError,
     ResolvedConfig,
     config_path,
     load_config,
+    resolve_target,
     save_config,
     starter_profiles,
 )
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import OutputFormat, default_format, emit
 
-#: Product names accepted on the command line, including config-file aliases.
-_PRODUCT_CHOICES = sorted(
-    {*PRODUCT_KEYS, *(a for aliases in BLOCK_ALIASES.values() for a in aliases)}
-)
 
-#: Alias -> canonical product, so `config get whisper api_key` resolves.
-_CANONICAL = {a: p for p, aliases in BLOCK_ALIASES.items() for a in aliases}
+def _resolve_or_fail(target: str) -> str:
+    """Turn a `TARGET` argument into an API group, or exit 2 with the valid set.
+
+    A group owned by a product must be named through it (`docstudio.platform`),
+    so a setting always says which product it configures. Both separators work,
+    because `docstudio platform` is the natural thing to type after
+    `unstract docstudio platform ...`.
+    """
+    if (group := resolve_target(target)) is not None:
+        return group
+
+    ctx = click.get_current_context()
+    CLIError(
+        f"Unknown config target {target!r}.",
+        ExitCode.USAGE,
+        hint=(
+            "Valid targets: " + ", ".join(TARGET_NAMES) + ". "
+            "Groups owned by a product are addressed through it, e.g. "
+            "`docstudio.platform` (or `docstudio platform`)."
+        ),
+    ).emit()
+    ctx.exit(int(ExitCode.USAGE))
+    raise AssertionError  # pragma: no cover - ctx.exit raises
 
 
 def _fmt(output: str | None) -> OutputFormat:
@@ -120,23 +137,31 @@ def config_list(output: str | None) -> None:
 
 
 @config_group.command("get")
-@click.argument("product", type=click.Choice(_PRODUCT_CHOICES))
-@click.argument("key")
+@click.argument("target", nargs=-1, required=True, metavar="TARGET... KEY")
 @click.option("--profile", "-p", default=None, help="Profile to read from.")
 @_output_option
-def config_get(product: str, key: str, profile: str | None, output: str | None) -> None:
+def config_get(target: tuple[str, ...], profile: str | None, output: str | None) -> None:
     """Show a resolved setting, following flag > env > profile > default.
 
-    PRODUCT and KEY are positional -- not flags. Credentials are reported as
+    TARGET and KEY are positional -- not flags. Credentials are reported as
     configured or not, never echoed.
 
     \b
     Examples:
-      unstract config get platform org_id
-      unstract config get --profile cloud-eu whisper base_url
+      unstract config get docstudio.platform org_id
+      unstract config get docstudio platform org_id
+      unstract config get --profile cloud-eu llmwhisperer base_url
     """
     ctx = click.get_current_context()
-    product = _CANONICAL.get(product, product)
+    *target_parts, key = target
+    if not target_parts:
+        CLIError(
+            "Expected a target and a key, e.g. `config get docstudio.platform org_id`.",
+            ExitCode.USAGE,
+            hint="Valid targets: " + ", ".join(TARGET_NAMES) + ".",
+        ).emit()
+        ctx.exit(int(ExitCode.USAGE))
+    product = _resolve_or_fail(" ".join(target_parts))
     try:
         resolved = ResolvedConfig(file=load_config(), profile_name=profile)
         value = resolved.get(product, key)
@@ -160,22 +185,21 @@ def config_get(product: str, key: str, profile: str | None, output: str | None) 
 
 
 @config_group.command("set")
-@click.argument("product", type=click.Choice(_PRODUCT_CHOICES))
-@click.argument("key")
-@click.argument("value")
+@click.argument("args", nargs=-1, required=True, metavar="TARGET... KEY VALUE")
 @click.option("--profile", "-p", default=None, help="Profile to write to.")
 @_output_option
-def config_set(product: str, key: str, value: str, profile: str | None, output: str | None) -> None:
+def config_set(args: tuple[str, ...], profile: str | None, output: str | None) -> None:
     """Set a value in the config file.
 
-    PRODUCT, KEY and VALUE are positional -- not flags. Writes to the active
+    TARGET, KEY and VALUE are positional -- not flags. Writes to the active
     profile unless --profile names another.
 
     \b
     Examples:
-      unstract config set platform org_id org_ABC123
-      unstract config set whisper api_key 'env:LLMWHISPERER_API_KEY'
-      unstract config set --profile cloud-eu whisper base_url https://…/api/v2
+      unstract config set docstudio.platform org_id org_ABC123
+      unstract config set docstudio platform org_id org_ABC123
+      unstract config set llmwhisperer api_key 'env:LLMWHISPERER_API_KEY'
+      unstract config set --profile cloud-eu llmwhisperer base_url https://…/api/v2
 
     \b
     Prefer `env:VAR_NAME` for credentials: the file then records where the
@@ -183,6 +207,17 @@ def config_set(product: str, key: str, value: str, profile: str | None, output: 
     in your shell history.
     """
     ctx = click.get_current_context()
+    if len(args) < 3:
+        CLIError(
+            "Expected a target, a key and a value, e.g. "
+            "`config set docstudio.platform org_id org_ABC123`.",
+            ExitCode.USAGE,
+            hint="Valid targets: " + ", ".join(TARGET_NAMES) + ".",
+        ).emit()
+        ctx.exit(int(ExitCode.USAGE))
+
+    *target_parts, key, value = args
+    product = _resolve_or_fail(" ".join(target_parts))
     cfg = load_config()
     name = profile or cfg.default_profile or "cloud-us"
 
@@ -240,19 +275,21 @@ def config_current(profile: str | None, output: str | None) -> None:
     resolved = ResolvedConfig(file=load_config(), profile_name=profile)
     settings: dict[str, Any] = {}
 
-    for product in PRODUCT_KEYS:
+    # Keyed by the same target names `config get`/`set` accept, so what is
+    # reported here can be copied straight into a command.
+    for target, group in ((".".join(p), g) for g, p in GROUP_PATH.items()):
         block: dict[str, Any] = {}
         for key in ("base_url", "org_id"):
             try:
-                if (value := resolved.get(product, key)) is not None:
+                if (value := resolved.get(group, key)) is not None:
                     block[key] = value
             except ConfigError:
                 continue
         try:
-            block["api_key_configured"] = bool(resolved.get(product, "api_key"))
+            block["api_key_configured"] = bool(resolved.get(group, "api_key"))
         except ConfigError:
             block["api_key_configured"] = False
-        settings[product] = block
+        settings[target] = block
 
     emit(
         {

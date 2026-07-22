@@ -25,13 +25,10 @@ import tomli_w
 
 from unstract_cli.core.model import ApiGroup, Product
 
-#: API groups whose settings can appear in a profile block. Each has its own
-#: base URL and credentials, so they stay separate even when one product owns
-#: several of them.
-PRODUCT_KEYS = tuple(g.value for g in ApiGroup)
-
-#: Alternative block names accepted in a profile. `whisper` matches the command
-#: group users actually type; `llmwhisperer` is the on-the-wire product name.
+#: Alternative block names accepted when *reading* a hand-written config file.
+#: `whisper` matches the command group users type; `llmwhisperer` is the API
+#: group name. Reading is lenient so an existing file is never silently ignored;
+#: writing always uses the canonical nested path.
 BLOCK_ALIASES: dict[str, tuple[str, ...]] = {
     ApiGroup.LLMWHISPERER.value: ("whisper",),
 }
@@ -50,6 +47,28 @@ GROUP_PATH: dict[str, tuple[str, ...]] = {
     ApiGroup.LLMWHISPERER.value: ("llmwhisperer",),
     ApiGroup.APIHUB.value: ("apihub",),
 }
+
+#: The names `config get`/`config set` accept, derived from GROUP_PATH so the
+#: command line and the file layout can never disagree. A group owned by a
+#: product must be addressed through it -- `docstudio.platform`, never a bare
+#: `platform` -- because the bare form hides which product a setting belongs to.
+TARGET_NAMES: tuple[str, ...] = tuple(
+    ".".join(path) for path in GROUP_PATH.values()
+)
+
+
+def resolve_target(name: str) -> str | None:
+    """Map a user-supplied target onto its API group.
+
+    Accepts either separator, so `docstudio.platform` and `docstudio platform`
+    are the same thing -- the latter is what a shell user reaches for after
+    typing `unstract docstudio platform ...`.
+    """
+    wanted = tuple(name.replace(".", " ").split())
+    for group, path in GROUP_PATH.items():
+        if wanted == path:
+            return group
+    return None
 
 #: Built-in defaults, lowest precedence. API Hub deliberately has **no** default
 #: base URL: its public hostname is unconfirmed (SPEC.md §11.1), and inventing
@@ -357,8 +376,9 @@ def starter_profiles() -> dict[str, dict[str, dict[str, Any]]]:
 __all__ = [
     "DEFAULT_BASE_URLS",
     "ENV_VARS",
-    "PRODUCT_KEYS",
     "PROJECT_CONFIG_NAME",
+    "TARGET_NAMES",
+    "resolve_target",
     "find_project_config",
     "set_config_path",
     "ConfigError",

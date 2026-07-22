@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import textwrap
 from enum import Enum
 from typing import Any, TextIO
 
@@ -98,33 +100,71 @@ def _rows_and_columns(
     return ["value"], [[_flatten(data)]]
 
 
-def render_table(data: Any, columns: tuple[str, ...] = ()) -> str:
+def _terminal_width(default: int = 100) -> int:
+    """Usable width for table output."""
+    try:
+        return max(shutil.get_terminal_size((default, 24)).columns, 40)
+    except Exception:  # pragma: no cover - detached terminal
+        return default
+
+
+def render_table(
+    data: Any, columns: tuple[str, ...] = (), *, max_width: int | None = None
+) -> str:
     """Render as an aligned plain-text table.
 
     Deliberately plain text rather than Rich box-drawing: tables are the
     human-facing format, but they still end up in logs and terminals of varying
     width, and ASCII survives both.
+
+    Long cells are **wrapped, never truncated**: a table is a view of the data,
+    not a lossy summary, and silently dropping the tail of a value is the kind of
+    thing you only notice after acting on it. Wrapped continuation lines are
+    indented under their column so the table still reads as a grid.
     """
     headers, rows = _rows_and_columns(data, columns)
     if not headers:
         return "(no results)"
 
-    widths = [len(h) for h in headers]
+    gutter = 2
+    total_width = max_width or _terminal_width()
+
+    natural = [len(h) for h in headers]
     for row in rows:
         for i, cell in enumerate(row):
-            if i < len(widths):
-                widths[i] = max(widths[i], len(cell))
-    widths = [min(w, 60) for w in widths]
+            if i < len(natural):
+                natural[i] = max(natural[i], max((len(p) for p in cell.split("\n")), default=0))
 
-    def fmt(cells: list[str]) -> str:
-        return "  ".join(
-            (c[:57] + "..." if len(c) > w else c).ljust(w)
-            for c, w in zip(cells, widths, strict=False)
-        ).rstrip()
+    # Shrink only the widest columns, and only as far as the terminal requires,
+    # so a narrow column is never squeezed on behalf of a wide neighbour.
+    widths = list(natural)
+    budget = total_width - gutter * (len(headers) - 1)
+    while sum(widths) > budget and max(widths) > 8:
+        widest = widths.index(max(widths))
+        widths[widest] -= 1
 
-    lines = [fmt(headers), fmt(["-" * w for w in widths])]
-    lines.extend(fmt(row) for row in rows)
-    return "\n".join(lines)
+    def fmt(cells: list[str]) -> list[str]:
+        """Lay one logical row out over as many physical lines as it needs."""
+        wrapped = [
+            textwrap.wrap(cell, width=w, break_long_words=True, break_on_hyphens=False)
+            or [""]
+            for cell, w in zip(cells, widths, strict=False)
+        ]
+        height = max(len(parts) for parts in wrapped)
+        lines = []
+        for line_no in range(height):
+            pieces = [
+                (parts[line_no] if line_no < len(parts) else "").ljust(w)
+                for parts, w in zip(wrapped, widths, strict=False)
+            ]
+            lines.append((" " * gutter).join(pieces).rstrip())
+        return lines
+
+    out = fmt(headers)
+    out.append((" " * gutter).join("-" * w for w in widths).rstrip())
+    for row in rows:
+        out.extend(fmt(row))
+    return "\n".join(out)
 
 
 def render(

@@ -49,7 +49,7 @@ Three incompatible auth schemes, plus region-specific and on-prem hosts, plus `o
 
 ### D3 — Python + Typer
 
-Type-hint-driven help generation, an introspectable command tree (required for `--dump-commands`, §5.3), and alignment with the all-Python ecosystem of the surrounding repos.
+Type-hint-driven help generation, an introspectable command tree (required for `--discover`, §5.3), and alignment with the all-Python ecosystem of the surrounding repos.
 
 ### D4 — API Hub is code-derived, and this is a documented gap
 
@@ -121,7 +121,7 @@ unstract
 │
 ├── config {init,list,get,set,use,current,path}
 ├── completion {bash,zsh,fish}
-└── --dump-commands / --version / --help
+└── --discover / --version / --help
 ```
 
 ### 3.1 Convenience composition
@@ -230,7 +230,7 @@ No command prompts for input under any circumstance. Missing required input is a
 
 - Complete `--help` at **every** level, with a one-line description, full flag list with types/defaults/enums, and at least one worked example per leaf command.
 - Enumerated values are listed in help text verbatim (e.g. `--mode {native_text,low_cost,high_quality,form,table}`).
-- `unstract --dump-commands` emits the **entire command tree as JSON** — every command, flag, type, default, enum, required-ness, and the underlying endpoint. This is the machine-readable index that makes "auto-discover from help text" operational, and it is generated from the same endpoint definitions that drive execution, so it cannot drift.
+- `unstract --discover` emits the **entire command tree as JSON** — every command, flag, type, default, enum, required-ness, and the underlying endpoint. This is the machine-readable index that makes "auto-discover from help text" operational, and it is generated from the same endpoint definitions that drive execution, so it cannot drift.
 - `unstract <group> --help` lists sub-commands with descriptions; unknown commands produce a "did you mean" suggestion on stderr.
 
 ### 5.4 Exit codes
@@ -454,7 +454,7 @@ Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, ma
 | `user list` | `/users/` | GET | — (`id` returned as **string**; cast to int for `shared_users`) |
 | `share` | `/{resource}/{id}/share/` | POST | `--resource`\* (**enum**, see below), `--id`\*, `--shared-users`, `--shared-groups`, `--shared-to-org` (each axis is **replace**, not append) |
 
-> **`--resource` is an enum, never free text.** The URL path segment is not guessable from the friendly resource name, so an agent passing `api-deployment` would get a 404. The flag accepts friendly names and maps them to exact path segments, with the mapping enumerated in `--help` and `--dump-commands`:
+> **`--resource` is an enum, never free text.** The URL path segment is not guessable from the friendly resource name, so an agent passing `api-deployment` would get a 404. The flag accepts friendly names and maps them to exact path segments, with the mapping enumerated in `--help` and `--discover`:
 >
 > | `--resource` value | Path segment |
 > | --- | --- |
@@ -553,7 +553,7 @@ Endpoint(
 )
 ```
 
-The command tree, `--help`, validation, `--dump-commands`, and the docs-diff in §8 all derive from these records. Adding an endpoint means adding one record — no separate command wiring, so help text cannot drift from behaviour.
+The command tree, `--help`, validation, `--discover`, and the docs-diff in §8 all derive from these records. Adding an endpoint means adding one record — no separate command wiring, so help text cannot drift from behaviour.
 
 ---
 
@@ -586,8 +586,8 @@ Repo paths are configurable; the Skill falls back to the GitHub API when a repo 
    - endpoints in the CLI but absent from docs (**possible removal or deprecation** — report, never auto-delete);
    - per-parameter drift: added, removed, renamed, or changed type / default / enum / required-ness.
 4. **Report** as a structured table before editing: each difference with its doc citation (file + heading) and the proposed CLI change.
-5. **Apply** by editing `endpoints/*.py` only. Because commands are generated (§7.1), no command-wiring, help-text, or `--dump-commands` changes are needed — this is why the diff can be applied mechanically.
-6. **Verify:** run `unstract --dump-commands` and confirm it parses and includes the new surface; run the test suite; run `ruff`/`mypy`.
+5. **Apply** by editing `endpoints/*.py` only. Because commands are generated (§7.1), no command-wiring, help-text, or `--discover` changes are needed — this is why the diff can be applied mechanically.
+6. **Verify:** run `unstract --discover` and confirm it parses and includes the new surface; run the test suite; run `ruff`/`mypy`.
 7. **Summarize:** what changed, what needs human judgement (renames, breaking changes), and what was intentionally skipped.
 
 ### 8.4 Known limitation — API Hub
@@ -609,7 +609,7 @@ API Hub has **no public documentation site**. The Skill cannot cross-reference i
 | Layer | Approach |
 | --- | --- |
 | Definition integrity | Every `Endpoint` has a unique `(group, name)`, valid `doc_source`, and complete param metadata |
-| Command generation | Tree builds; `--help` renders at every level; `--dump-commands` is valid JSON and covers every endpoint |
+| Command generation | Tree builds; `--help` renders at every level; `--discover` is valid JSON and covers every endpoint |
 | HTTP | `respx`/`responses` fixtures per endpoint using the documented sample payloads |
 | Exit codes | Table-driven: each HTTP status maps to the §5.4 code |
 | Polling | `--wait` reaches terminal state; branches on **body status**, not HTTP code (asserted explicitly against the 422 defect) |
@@ -623,7 +623,7 @@ API Hub has **no public documentation site**. The Skill cannot cross-reference i
 
 | Phase | Scope |
 | --- | --- |
-| **1** | Core: config/profiles, HTTP layer, output/errors/exit codes, definition→command generation, `--dump-commands` |
+| **1** | Core: config/profiles, HTTP layer, output/errors/exit codes, definition→command generation, `--discover` |
 | **2** | LLMWhisperer (§6.1) + `--wait` + one-shot handling — smallest complete product surface |
 | **3** | API Deployments runtime (§6.2) + HITL (§6.4) |
 | **4** | Platform Management v1 (§6.3) — largest surface |

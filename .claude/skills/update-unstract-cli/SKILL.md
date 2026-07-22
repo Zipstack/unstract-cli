@@ -10,7 +10,7 @@ documentation: detect drift, report it with citations, then apply it.
 
 This is tractable only because of one architectural property: **every command is
 generated from a declarative `Endpoint` record.** The command tree, flags, help
-text, validation and `--dump-commands` all derive from those records, so a
+text, validation and `--discover` all derive from those records, so a
 correct edit to one record propagates everywhere. You never touch command wiring.
 
 ## Sources of truth
@@ -51,7 +51,7 @@ Extract `(method, path, params[])` from each source. Two formats:
 
 ### 3. Parse the current records
 
-Read the relevant `endpoints/*.py`. `unstract --dump-commands` gives the same
+Read the relevant `endpoints/*.py`. `unstract --discover` gives the same
 information as JSON and is often easier to diff against — but remember it reflects
 the *installed* package, so re-install after editing if you use it.
 
@@ -59,8 +59,8 @@ Filter it rather than reading the whole thing: unfiltered `--detail full` is
 ~50k tokens.
 
 ```bash
-unstract --dump-commands --group whisper --detail full
-unstract --dump-commands --command 'whisper extract' --detail full
+unstract --discover --group whisper --detail full
+unstract --discover --command 'whisper extract' --detail full
 ```
 
 ### 4. Diff on three axes
@@ -105,7 +105,7 @@ Edit `endpoints/*.py` only. Follow the conventions already in those files:
 uv run pytest          # includes definition-integrity and flag-coverage tests
 uv run ruff check .
 uv run mypy src
-unstract --dump-commands | python -c "import json,sys; json.load(sys.stdin)"
+unstract --discover | python -c "import json,sys; json.load(sys.stdin)"
 ```
 
 Add a respx test for any new endpoint, using the sample payload from the docs.
@@ -160,6 +160,6 @@ These exist because each one has a specific failure mode behind it.
    optional); `whisper extract` lacks it. Proposed: add to `_EXTRACT_PARAMS`."
 4. Apply — one `Param` in `_EXTRACT_PARAMS`, with `help` from the description and
    `choices` if the docs enumerate values.
-5. Verify: `--dump-commands` now lists `--ocr-engine` with its default. Tests and
+5. Verify: `--discover` now lists `--ocr-engine` with its default. Tests and
    type checks pass. No other file changed — the flag, help text and index all
    came from that single record.

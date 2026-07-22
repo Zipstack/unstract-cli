@@ -49,11 +49,11 @@ selection (`--group` / `--command`) and verbosity (`--detail`) are independent,
 so any combination works:
 
 ```bash
-unstract --dump-commands                                  # all 143, names + summaries
-unstract --dump-commands --group whisper                  # one product
-unstract --dump-commands --command 'whisper webhook'      # one subtree
-unstract --dump-commands --command 'whisper extract' --detail full
-unstract --dump-commands --detail full                    # everything
+unstract --discover                                  # all 143, names + summaries
+unstract --discover --group whisper                  # one product
+unstract --discover --command 'whisper webhook'      # one subtree
+unstract --discover --command 'whisper extract' --detail full
+unstract --discover --detail full                    # everything
 ```
 
 At `--detail full` each entry carries the underlying HTTP method and path, every
@@ -65,7 +65,7 @@ the cheap index:
 
 | Invocation | Tokens |
 | --- | --- |
-| `--dump-commands` (default) | ~4,500 |
+| `--discover` (default) | ~4,500 |
 | `--group whisper` | ~470 |
 | `--command 'whisper extract' --detail full` | ~1,900 |
 | `--group whisper --detail full` | ~4,200 |
@@ -96,7 +96,7 @@ Failures also emit a JSON object on stderr with `code`, `message`, `hint` and
 
 Some results can be retrieved **exactly once** — LLMWhisperer retrieval, the
 deployment status API, and HITL dequeues. A second read cannot recover them.
-Those commands are marked `one_shot` in `--dump-commands`, and all accept
+Those commands are marked `one_shot` in `--discover`, and all accept
 `--save PATH`, which writes the payload to disk atomically before exiting. A
 consumed result exits `9`.
 
@@ -137,7 +137,7 @@ uv run mypy src        # types
 
 Commands are **generated from declarative `Endpoint` records** in
 `src/unstract_cli/endpoints/`. The command tree, flags, help text, validation and
-`--dump-commands` all derive from those records, so adding an endpoint means
+`--discover` all derive from those records, so adding an endpoint means
 adding one record and help text cannot drift from behaviour.
 
 That single source of truth is also what makes the bundled Claude Skill

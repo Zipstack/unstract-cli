@@ -12,7 +12,7 @@
 
 Everything in the spec rests on one architectural bet:
 
-> The command tree, `--help`, validation, `--dump-commands`, and the Skill's docs-diff are all **generated** from declarative `Endpoint` records (§7.1).
+> The command tree, `--help`, validation, `--discover`, and the Skill's docs-diff are all **generated** from declarative `Endpoint` records (§7.1).
 
 If that abstraction does not hold, the design collapses into per-command special-casing — which would also destroy the Skill's diffability (§8.5), because the definitions would no longer be a faithful description of behaviour. Every sequencing decision below follows from protecting that bet.
 
@@ -23,7 +23,7 @@ If that abstraction does not hold, the design collapses into per-command special
 | **Generated** | `whisper`, `deployment`, `platform`, `hitl`, `apihub` | `Endpoint` records → `generate.py` | Phases 2–5 |
 | **Hand-authored** | `config {init,list,get,set,use,current,path}`, `completion {bash,zsh,fish}` | Plain Typer commands; map to no API endpoint | Phase 1 (M1.5), Phase 6 |
 
-Both appear in `--dump-commands`; hand-authored ones are flagged as non-endpoint so an agent can tell local operations from remote calls.
+Both appear in `--discover`; hand-authored ones are flagged as non-endpoint so an agent can tell local operations from remote calls.
 
 Two consequences drive the plan's shape:
 
@@ -36,7 +36,7 @@ Two consequences drive the plan's shape:
 | --- | --- | --- | --- | --- |
 | R1 | `Param` schema cannot express §6's special cases | Generation degrades into per-command hacks; Skill diff breaks | Pattern enumeration is the *first* task; schema must encode all of §2 | Phase 1 exit |
 | R2 | `--output table` has no universal shape for nested JSON | Either ugly output or per-command rendering code | Decide the strategy in Phase 1 — it may add a field to the data model | Phase 1 exit |
-| R3 | `--dump-commands` can't recover full flag metadata | The core LLM-discoverability promise (§5.3) fails | **Retired** — verified, see §1.2 | ✅ |
+| R3 | `--discover` can't recover full flag metadata | The core LLM-discoverability promise (§5.3) fails | **Retired** — verified, see §1.2 | ✅ |
 | R4 | Deployment 422 defect (§6.2) misread as failure | `--wait` breaks now, or breaks later when the defect is fixed | Poll on **body `status`**, never HTTP code; assert both in tests | Phase 3 |
 | R5 | One-shot retrieval consumed by a retry (§5.6) | Silent, unrecoverable data loss for an agent | Retries never replay a consumed read; `--save` writes before exit | Phase 2 |
 | R6 | API Hub public base URL unknown (§11.1) | `apihub` group unusable out of the box | `--base-url` / env required; no baked default | Phase 5 entry |
@@ -53,9 +53,9 @@ Two consequences drive the plan's shape:
  'help': 'Processing mode.', 'is_flag': False, ...}
 ```
 
-Type, choices, default, required-ness, repeatability, and help text all round-trip. `--dump-commands` can therefore be built by walking the generated Click tree.
+Type, choices, default, required-ness, repeatability, and help text all round-trip. `--discover` can therefore be built by walking the generated Click tree.
 
-**Design note.** Even so, `--dump-commands` emits from the **`Endpoint` records plus** the introspected tree, because the records carry what Click cannot know: the underlying HTTP method/path, `doc_source`, permission level, and one-shot semantics. Introspection alone would produce a CLI description; the records make it an *API* description, which is what an agent needs.
+**Design note.** Even so, `--discover` emits from the **`Endpoint` records plus** the introspected tree, because the records carry what Click cannot know: the underlying HTTP method/path, `doc_source`, permission level, and one-shot semantics. Introspection alone would produce a CLI description; the records make it an *API* description, which is what an agent needs.
 
 ---
 
@@ -91,7 +91,7 @@ Phases match SPEC §10. Each has entry conditions, work items, and a **testable*
 Repo skeleton per §7, matching sibling-repo conventions (verified: `unstract` and `unstract-verticals` both use Python 3.12, ruff `line-length = 90`, mypy).
 
 - `pyproject.toml`: `requires-python = ">=3.12"`, deps `typer`, `httpx`, `pyyaml`, `rich`; dev deps `pytest`, `respx`, `ruff`, `mypy`. Stdlib `tomllib` for reading, `tomli-w` for writing config.
-- **Pin `click` and `typer` to compatible major versions.** R3's retirement rests specifically on Click's `Parameter.to_info_dict()` shape (§1.2); a future Click major that reshapes that dict would silently degrade `--dump-commands`. Treat `to_info_dict()` as a tested contract surface — a Phase 1 test asserts the keys we depend on still exist, so a dependency bump fails loudly rather than quietly.
+- **Pin `click` and `typer` to compatible major versions.** R3's retirement rests specifically on Click's `Parameter.to_info_dict()` shape (§1.2); a future Click major that reshapes that dict would silently degrade `--discover`. Treat `to_info_dict()` as a tested contract surface — a Phase 1 test asserts the keys we depend on still exist, so a dependency bump fails loudly rather than quietly.
 - Console entry point `unstract = unstract_cli.__main__:main`.
 - Package skeleton per §7 (empty modules), `.claude/skills/` placeholder, pre-commit with ruff + mypy.
 - CI: lint, type-check, test on 3.12.
@@ -148,17 +148,17 @@ Built once, against the skeleton, because these touch every command:
 #### M1.6 — R2 spike: `--output table`
 Decide and implement the strategy for heterogeneous nested JSON. Recommended: generic rule (list-of-objects → columns from shared keys; single object → key/value pairs; nested → JSON-encoded cell), with an optional `Endpoint.table_columns` hint for responses where the generic rule reads poorly. **If a hint field is needed, it must be added to the model now**, not retrofitted.
 
-#### M1.7 — `--dump-commands`
+#### M1.7 — `--discover`
 Emit records + introspected tree (per §1.2). Include: command path, summary, HTTP method + path, every flag with type/default/enum/required/repeatable, `doc_source`, permission level, one-shot flag.
 
 **Exit criteria (all testable):**
 1. `unstract whisper usage` succeeds end-to-end against a respx fixture.
-2. `unstract --dump-commands` emits valid JSON containing that command with complete flag metadata.
+2. `unstract --discover` emits valid JSON containing that command with complete flag metadata.
 3. Exit-code table (§5.4) asserted table-driven: each HTTP status → correct code.
 4. Zero-config operation works with env vars only.
 5. No secret appears in `--dry-run`, `-vv`, or error output.
 6. Schema expresses P1–P12 (one representative record each, unit-tested).
-7. `config init` writes a `0600` file; `config use` switches the default profile; `config current` reflects the change. Both categories appear in `--dump-commands`, with hand-authored commands flagged as non-endpoint.
+7. `config init` writes a `0600` file; `config use` switches the default profile; `config current` reflects the change. Both categories appear in `--discover`, with hand-authored commands flagged as non-endpoint.
 
 ---
 
@@ -176,7 +176,7 @@ Smallest *complete* product surface — 11 commands — and the first real test 
 - Pin `/whisper-detail` singular, carrying a `doc_conflict` note (§11 resolved) so the Skill won't "correct" it back.
 
 **Exit:**
-1. All 11 commands appear in `--dump-commands` with full metadata.
+1. All 11 commands appear in `--discover` with full metadata.
 2. `--wait` reaches a terminal state against respx fixtures.
 3. Second `retrieve` of the same hash → exit 9; `--save` file exists and is complete.
 4. Every §6.1 parameter is reachable as a flag (asserted by diffing flags against the record set).
@@ -215,7 +215,7 @@ Largest surface (~80 endpoints) but the *least* new machinery — if Phase 1 was
 - Permission levels surfaced in help for destructive commands (§4.4).
 
 **Exit:**
-1. Every §6.3 endpoint present in `--dump-commands`.
+1. Every §6.3 endpoint present in `--discover`.
 2. Literal-path test passes (no normalization; slash inconsistencies preserved).
 3. PATCH records are derived, not duplicated (asserted structurally).
 4. `share` rejects an unmapped `--resource` with exit 2, not a 404.
@@ -256,7 +256,7 @@ The Skill (§8) is built **last on purpose**: it operates on `endpoints/*.py`, s
 1. **Regression harness:** run the Skill against the *current* docs → it must report **zero drift**. This is the strongest possible correctness signal, because the records were authored from exactly these docs.
 2. Synthetic drift test: add a parameter to a fixture doc → the Skill detects it, cites the file, and proposes the correct record edit.
 3. A `doc_conflict`-marked definition (`/whisper-detail`) is **not** reverted when the Skill sees the conflicting index page.
-4. After a Skill-applied edit, `--dump-commands` still parses and the suite passes.
+4. After a Skill-applied edit, `--discover` still parses and the suite passes.
 
 ---
 
@@ -267,7 +267,7 @@ Per SPEC §9, with the sequencing that matters:
 | Layer | When | Notes |
 | --- | --- | --- |
 | Definition integrity | Phase 1, grows each phase | Unique `(group,name)`; valid `doc_source`; complete param metadata |
-| Command generation | Phase 1 | Tree builds; `--help` renders at every level; `--dump-commands` valid JSON |
+| Command generation | Phase 1 | Tree builds; `--help` renders at every level; `--discover` valid JSON |
 | HTTP per endpoint | Each phase | `respx` fixtures built from the **documented sample payloads** in the docs repos |
 | Exit codes | Phase 1 | Table-driven across §5.4 |
 | Polling | Phases 2, 3, 5 | Body-status not HTTP code; 422 defect asserted explicitly |

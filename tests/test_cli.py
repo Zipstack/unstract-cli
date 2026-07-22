@@ -214,22 +214,14 @@ class TestDiscover:
         assert data["exit_codes"]["9"].startswith("result already consumed")
         assert "never_interactive" in data["conventions"]
 
-    def test_legacy_flag_still_works(self, runner, cli):
-        """`--dump-commands` was the original name and is documented elsewhere.
+    def test_flag_is_discover_only(self, runner, cli):
+        """`--dump-commands` was the original name and is fully removed.
 
-        It keeps working, but warns on stderr so stdout stays parseable.
+        Pinned by a test so it cannot creep back in via a copied example.
         """
-        result = runner.invoke(cli, ["--dump-commands", "--group", "whisper"])
-        assert result.exit_code == 0
-        assert json.loads(result.stdout)["count"] == 11
-        assert "deprecated" in result.stderr.lower()
-        assert "--discover" in result.stderr
-
-    def test_legacy_flag_is_hidden_from_help(self, runner, cli):
-        """Deprecated spellings should not be advertised to new users."""
-        out = runner.invoke(cli, ["--help"]).stdout
-        assert "--discover" in out
-        assert "--dump-commands" not in out
+        assert "--discover" in runner.invoke(cli, ["--help"]).stdout
+        result = runner.invoke(cli, ["--dump-commands"])
+        assert result.exit_code != 0
 
     def test_summary_is_the_default(self):
         """Full detail for 143 commands is ~50k tokens -- too much to read

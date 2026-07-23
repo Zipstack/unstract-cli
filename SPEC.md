@@ -16,7 +16,7 @@
 | **LLMWhisperer** | `whisper` | `llmwhisperer` | Text extraction, status/retrieve, detail, highlights, usage, webhook management |
 | **API Hub** (internal name: *Verticals*) | `apihub` | `apihub` | Vertical extraction (bank statement, table discovery/extraction), doc-splitter, status/retrieve |
 
-> **Document Studio was previously named Unstract**, which is why its APIs still use `platform`/`deployment` paths on the wire and `UNSTRACT_*` environment variables. The product name changed; the wire contract did not.
+> **Document Studio's APIs use `platform`/`deployment` paths on the wire and `UNSTRACT_*` environment variables.** The CLI surfaces them under the `docstudio` group but preserves those wire paths and variable names verbatim.
 
 Document Studio owns three API groups because each has its own base URL and credentials. They stay distinct for auth and config purposes while belonging to one product.
 
@@ -49,9 +49,11 @@ The CLI implements HTTP directly against documented endpoints. Each endpoint is 
 
 Three incompatible auth schemes, plus region-specific and on-prem hosts, plus `org_id` as a **URL path segment** rather than a flag. Configuration uses named profiles (kubectl/aws style) holding per-product host, key, and org. See §4.
 
-### D3 — Python + Typer
+### D3 — Python + Click (a deliberately minimal dependency set)
 
-Type-hint-driven help generation, an introspectable command tree (required for `--discover`, §5.3), and alignment with the all-Python ecosystem of the surrounding repos.
+Click gives an introspectable command tree, which `--discover` (§5.3) reads directly, and its command objects are built at runtime from the declarative `Endpoint` records rather than from static function signatures. Click is used **directly**, not through Typer: Typer's decorator API assumes statically-declared signatures, whereas the parameters here are known only at runtime from data, so Typer added a dependency without being used and was removed.
+
+The runtime dependency set is kept as small as the feature set allows, to limit supply-chain exposure: `click` (dynamic command tree), `httpx` (TLS, redirects, connection reuse, and multipart/form-data encoding — the one piece with no stdlib equivalent), `pyyaml` (`--output yaml`) and `tomli-w` (config writer; reading uses the stdlib `tomllib`). "Absolute zero" is not a goal: the remaining packages are widely-deployed and audited, and replacing them (a hand-rolled multipart encoder, a hand-rolled TOML writer) would substitute bespoke, unaudited code for that — a worse trade for a security-motivated posture. Reproducible, hash-pinned installs (a lockfile with hashes) address the "compromised release on PyPI" threat more directly than shaving audited packages from the set.
 
 ### D4 — API Hub is code-derived, and this is a documented gap
 
@@ -75,7 +77,7 @@ unstract
 │   ├── usage-by-tag              # GET  /usage
 │   └── webhook {create,get,update,delete}    # /whisper-manage-callback
 │
-├── docstudio                     # Document Studio (formerly named Unstract)
+├── docstudio                     # Document Studio
 │   └── deployment                # Deployed API workflow execution
 │   ├── run                       # POST /deployment/api/{org}/{api_name}/
 │   ├── status                    # GET  /deployment/api/{org}/{api_name}/?execution_id=
@@ -88,13 +90,17 @@ unstract
 │   │                  file {upload,get,delete},
 │   │                  prompt {create,get,update,patch,delete,reorder},
 │   │                  profile {list,set-default,create,get,update,patch,delete},
-│   │                  index-document,fetch-response,single-pass,
+│   │                  index-document,fetch-response,single-pass,task-status,
+│   │                  output {list,latest},
 │   │                  users,check-deployment-usage,
 │   │                  select-choices,adapter-choices,retrieval-strategies}
 │   ├── workflow {list,get,create,update,patch,delete,execute,toggle-active,
 │   │             can-update,clear-file-marker,schema,users,
+│   │             tool {list,get,add,set-metadata,remove},   # attach a registry tool
+│   │             endpoint {list,set},                       # set SOURCE/DEST to API
 │   │             execution {list,get,logs},
 │   │             file-history {list,get,delete,clear}}
+│   ├── tool registry {list,settings-schema}   # find a tool's function_name
 │   ├── api-deployment {list,get,create,update,patch,delete,users,
 │   │                   by-prompt-studio-tool,postman-collection,
 │   │                   key {list,create,get,update,delete}}
@@ -122,7 +128,7 @@ unstract
 │   ├── retrieve                  # GET  /api/v1/retrieve?file_hash=
 │   └── doc-splitter {upload,status,download}
 │
-├── config {init,list,get,set,use,current,path}
+├── config {init,list,get,set,use,current,path,doctor}
 ├── completion {bash,zsh,fish}
 └── --discover / --version / --help
 ```
@@ -133,11 +139,16 @@ Both LLMWhisperer and Unstract are execute → poll → retrieve. Raw sub-comman
 
 ```bash
 unstract whisper extract --file invoice.pdf --mode form --wait --output json
-unstract docstudio deployment run --api-name invoice-api --file invoice.pdf --wait
+unstract docstudio deployment run --api-name invoice-api --file invoice.pdf --wait --save out.json
 unstract apihub extract --vertical table --sub-vertical bank_statement --file stmt.pdf --wait
+unstract docstudio platform prompt-studio fetch-response --tool-id <t> --document-id <d> --id <p> --wait
 ```
 
-`--wait` accepts `--poll-interval` (default 3s) and `--timeout` (default 300s). On timeout the process exits `7` (§5.4) with the handle (`whisper_hash` / `execution_id` / `file_hash`) on stdout so the agent can resume.
+`--wait` accepts `--poll-interval` (default 3s) and `--timeout` (default 300s). On timeout the process exits `7` (§5.4) with the handle (`whisper_hash` / `execution_id` / `file_hash` / `task_id`) on stdout so the agent can resume.
+
+**One-shot polling (deployment run).** For `deployment run --wait`, the status endpoint *is* the one-shot result store: the poll that first observes `COMPLETED` also consumes and acknowledges the result. So `--wait` returns *that terminal poll's body* as the result and issues no second read — a re-read would return HTTP 406. This is the one execute→poll→retrieve variant where the poll *is* the retrieve; it defines no separate `retrieve_endpoint`. Because the read is destructive and unrepeatable, `deployment run` takes `--save`, which persists the result on that single read. Reading the terminal state correctly is load-bearing: the status GET returns a top-level `status` field (its `message` holds the result), while the run POST nests `execution_status` under `message`; the poll must match the status endpoint's shape or it fails to recognise `COMPLETED`, consumes the result on that read, and 406s on the next poll.
+
+Prompt Studio's `fetch-response` and `single-pass` are execute → poll → retrieve too, but the pieces live in different places: the async call returns a `task_id`, `task-status` reports completion (not the value), and the extracted value lands in the Output Manager. `--wait` composes all three — poll `task-status` to `completed`, then read the result from `prompt-studio output list`, keyed by the original request's `tool_id`. `fetch-response --wait` narrows to the exact prompt + document it ran; `single-pass --wait` returns the tool-wide single-pass rows. Without `--wait`, retrieve the result yourself with `prompt-studio output list --tool-id <t>` (see §6.3).
 
 ---
 
@@ -191,6 +202,8 @@ default_profile = "cloud-us"
 
 Values may use `env:VAR_NAME` indirection so the file itself holds no secrets. Config files with secrets inline are created `0600`; the CLI warns if permissions are broader.
 
+An `env:` ref resolves from the CLI **process's** environment only. A variable `export`ed in a login shell that the CLI did not inherit resolves to nothing, and auth then fails with a "missing credential" error while a literal value in the file would have worked — a costly, invisible trap. `config doctor` exists to make this visible: it reports, per API group, exactly where each credential resolves from (override / named env var / profile literal / profile `env:` ref) and, for an `env:` ref, whether the variable is present in *this* process. With `--check` (on by default) it makes one authenticated call per configured group and reports whether the resolved credential actually works — never echoing the secret or the payload.
+
 ### 4.3 Environment variables
 
 | Variable | Purpose |
@@ -232,7 +245,8 @@ These are testable requirements, not aspirations.
 ### 5.1 Output contract
 
 - `--output {json,yaml,table,raw}`; **`json` is the default when stdout is not a TTY**, `table` when it is. `UNSTRACT_OUTPUT` overrides.
-- JSON goes to **stdout and nothing else** — no banners, spinners, or progress on stdout. Diagnostics go to stderr.
+- On **success**, only the result goes to stdout — no banners, spinners, or progress. Diagnostics go to stderr.
+- On **failure**, stdout carries nothing but the structured error envelope, and only when stdout is not a TTY (see §5.5). A result and an error never share an invocation's stdout: the command either emits a result and exits `0`, or emits an error and exits non-zero — never both. So a consumer that pipes stdout to a JSON parser always sees exactly one valid object, on either path.
 - `raw` emits only the payload (extracted text, file bytes) for piping.
 - `--quiet` suppresses stderr diagnostics; `-v/-vv` increases them.
 
@@ -244,7 +258,11 @@ No command prompts for input under any circumstance. Missing required input is a
 
 - Complete `--help` at **every** level, with a one-line description, full flag list with types/defaults/enums, and at least one worked example per leaf command.
 - Enumerated values are listed in help text verbatim (e.g. `--mode {native_text,low_cost,high_quality,form,table}`).
-- `unstract --discover` emits the **entire command tree as JSON** — every command, flag, type, default, enum, required-ness, and the underlying endpoint. This is the machine-readable index that makes "auto-discover from help text" operational, and it is generated from the same endpoint definitions that drive execution, so it cannot drift.
+- `unstract --discover` emits a machine-readable JSON index, generated from the same endpoint definitions that drive execution so it cannot drift. It has three verbosity tiers, cheapest first, selected by `--detail`:
+  - **`groups`** (default, ~1k tokens): a map of the ~15 navigable command groups, each with a one-line summary, its command count, and the exact `drill` command that lists it. This is the entry point — an agent reads it, then follows one `drill` into the subtree it needs instead of pulling every command into context. Each `drill` is the exact `--discover --command '<path>'` prefix and is **verified by test to return the count it advertises** (discovery must never advertise a path the parser won't honour).
+  - **`summary`** (~5.8k tokens): every command with its name and one-line summary.
+  - **`full`** (~50k tokens): adds each command's flags (type, default, enum, required-ness), HTTP method and path, `--wait`/one-shot semantics, and permissions.
+  - Selection (`--group`, `--command` prefix) and verbosity (`--detail`) are independent; a filtered query degrades `groups` to `summary` since the filter already narrows to a subtree. The `groups` overview and the unfiltered `full`/`summary` views carry the global boilerplate (exit-code table, output/error conventions); narrow queries omit it, where it would outweigh the answer.
 - `unstract <group> --help` lists sub-commands with descriptions; unknown commands produce a "did you mean" suggestion on stderr.
 
 ### 5.4 Exit codes
@@ -261,12 +279,16 @@ Stable and documented, so an agent can branch without parsing prose:
 | `5` | Validation error rejected by the API (400 / 422) |
 | `6` | Rate limited / quota exceeded (429) |
 | `7` | Timed out waiting for a terminal state (`--wait`) |
-| `8` | Remote server error (5xx) |
+| `8` | Remote server error (5xx), or a 2xx the server returned in a broken state — e.g. a create that accepts the request but leaves a linking field null (§6.3, `prompt create`) |
 | `9` | Result already consumed (see §5.6) |
 
 ### 5.5 Structured errors
 
-Every failure emits a JSON object on **stderr** (even in `table` mode):
+Every failure emits a JSON object on **stderr** (even in `table` mode). When stdout is **not a TTY** — the agent / wrapper case — the same envelope is **also written to stdout**, so a pipeline feeding stdout to a JSON parser sees a valid object rather than an empty stream (a `JSONDecodeError` otherwise). On a TTY, stdout stays clean and the error appears on stderr only.
+
+This mirroring covers **every** error path, not merely usage/validation errors: our own structured errors, Click's own parse errors (`No such option`, missing argument — rendered through the same envelope at the console entry point), and the `--discover` no-match case. It is safe because success and failure never share stdout (§5.1).
+
+Example envelope:
 
 ```json
 {
@@ -307,6 +329,8 @@ Mitigations, all mandatory:
 
 The tables below are the contract the Skill (§8) maintains. `Params → flags` uses kebab-case flag names derived from API parameter names (`page_seperator` → `--page-separator`, with the API's spelling preserved on the wire).
 
+**JSON-valued flags** (`--data`, `--custom-data`, `--adapter-metadata`, `--connector-metadata`, `--source-settings`, `--destination-settings`, …) accept either inline JSON or an `@path/to/file.json` reference — large payloads such as an exported prompts file are painful to pass inline and hit shell argument limits. The value is parsed to a real object before it is sent, so a JSON body reaches the API as a nested object, not a quoted string. Invalid JSON fails locally with exit `2`.
+
 ### 6.1 LLMWhisperer v2
 
 Base: `https://llmwhisperer-api.{us-central,eu-west}.unstract.com/api/v2` · Auth: `unstract-key`
@@ -333,7 +357,7 @@ Base: `https://us-central.unstract.com` · Auth: `Authorization: Bearer` · Path
 
 | Command | Endpoint | Method | Parameters |
 | --- | --- | --- | --- |
-| `deployment run` | `/deployment/api/{org_id}/{api_name}/` | POST | `--api-name`\* (path); `--org-id` (path, defaults from profile); `--file` (repeatable, ≤32 combined); `--presigned-url` (repeatable, AWS S3 HTTPS only); `--timeout` (0–300, default 0 = async); `--include-metadata` (bool); `--tags` (currently 1 tag; must start with a letter); `--llm-profile-id` (UUID); `--custom-data` (JSON object, addressable as `{{custom_data.key}}`); `--hitl-queue-name` |
+| `deployment run` | `/deployment/api/{org_id}/{api_name}/` | POST | `--api-name`\* (path); `--org-id` (path, defaults from profile); `--file` (repeatable, ≤32 combined); `--presigned-url` (repeatable, AWS S3 HTTPS only); `--timeout` (0–300, default 0 = async); `--include-metadata` (bool); `--tags` (currently 1 tag; must start with a letter); `--llm-profile-id` (UUID); `--custom-data` (JSON object, addressable as `{{custom_data.key}}`); `--hitl-queue-name`; `--save` (with `--wait`, persists the one-shot result on its single read) |
 | `deployment status` | `/deployment/api/{org_id}/{api_name}/` | GET | `--api-name`\* (path); `--org-id` (path, defaults from profile); `--execution-id`\*; `--include-metadata` (bool); `--save` |
 | `deployment highlight` | `/deployment/api/{org_id}/{api_name}/highlight/` | GET | `--api-name`\* (path); `--org-id` (path, defaults from profile); `--whisper-hash`\*; `--line-numbers`\* (comma-separated); `--text-extractor-name`\* (e.g. `llm-whisperer-v2`) |
 
@@ -342,6 +366,8 @@ Base: `https://us-central.unstract.com` · Auth: `Authorization: Bearer` · Path
 Execution statuses: `PENDING`, `EXECUTING`, `COMPLETED`, `STOPPED`, `ERROR`.
 
 > **Implementation note.** `EXECUTING` and `PENDING` currently return **HTTP 422**, not 200 — a documented server-side defect scheduled for correction. The CLI **must branch on the response-body `status` field, never on the HTTP status code**, so behaviour is unchanged when the fix ships. Synchronous mode (`timeout > 0`) is deprecated upstream; `--wait` uses `timeout=0` + polling.
+>
+> **Status-field shape (load-bearing).** The status GET returns a **top-level `status`** field (`{status, message}`, where `message` carries the result), whereas the run POST nests `execution_status` under `message`. The poll reads the status endpoint, so it matches `status` first. A field mismatch here means the terminal state is not recognised, the one-shot result is consumed unread, and the next poll returns HTTP 406 — this is exactly how `deployment run --wait` once lost results (§3.1 one-shot polling). `run --wait` returns the terminal poll's body and takes `--save` to persist it.
 
 ### 6.3 Unstract Platform Management API v1
 
@@ -366,21 +392,34 @@ Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, ma
 | `file upload` | `/prompt-studio/file/{tool_id}` | POST | `--tool-id`\*, `--file`\* (repeatable) |
 | `file get` | `/prompt-studio/file/{tool_id}` | GET | `--tool-id`\*, `--document-id`\*, `--view-type {ORIGINAL,EXTRACT,SUMMARIZE}` |
 | `file delete` | `/prompt-studio/file/{tool_id}` | DELETE | `--tool-id`\*, `--document-id`\* |
-| `prompt create` | `/prompt-studio/prompt-studio-prompt/{tool_id}/` | POST | `--tool-id`\*, `--prompt-key`\*, `--enforce-type {text,number,email,date,boolean,json,line-item,table}`, `--prompt`, `--sequence-number`, `--prompt-type {PROMPT,NOTES}`, `--active` |
+| `prompt create` | `/prompt-studio/prompt-studio-prompt/{tool_id}/` | POST | `--tool-id`\* (**also sent in the body**, see note), `--prompt-key`\*, `--enforce-type {text,number,email,date,boolean,json,line-item,table}` (`date` is locale-ambiguous — see note), `--prompt`, `--sequence-number`, `--prompt-type {PROMPT,NOTES}`, `--active` |
 | `prompt get/update/patch/delete` | `/prompt-studio/prompt/{prompt_id}/` | GET/PUT/PATCH/DELETE | `--prompt-id`\* + fields above |
 | `prompt reorder` | `/prompt-studio/prompt/reorder/` | POST | `--start-sequence-number`\*, `--end-sequence-number`\*, `--prompt-id`\* |
 | `profile list` | `/prompt-studio/prompt-studio-profile/{tool_id}/` | GET | `--tool-id`\* |
 | `profile set-default` | `/prompt-studio/prompt-studio-profile/{tool_id}/` | PATCH | `--tool-id`\*, `--default-profile`\* |
-| `profile create` | `/prompt-studio/profilemanager/{tool_id}` | POST | `--tool-id`\*, `--profile-name`\*, `--vector-store`\*, `--embedding-model`\*, `--llm`\*, `--x2text`\*, `--chunk-size`, `--chunk-overlap`, `--retrieval-strategy {simple,subquestion,fusion,recursive,router,keyword_table,automerging}`, `--similarity-top-k` (max 4 profiles/project) |
+| `profile create` | `/prompt-studio/profilemanager/{tool_id}` | POST | `--tool-id`\*, `--profile-name`\*, `--vector-store`\*, `--embedding-model`\*, `--llm`\*, `--x2text`\*, `--chunk-size` (**`0` = whole-document / no-RAG**; see note), `--chunk-overlap`, `--retrieval-strategy {simple,subquestion,fusion,recursive,router,keyword_table,automerging}`, `--similarity-top-k` (max 4 profiles/project) |
 | `profile get/update/patch/delete` | `/prompt-studio/profile-manager/{profile_id}/` | GET/PUT/PATCH/DELETE | `--profile-id`\* + fields above |
 | `index-document` | `/prompt-studio/index-document/{tool_id}` | POST | `--tool-id`\*, `--document-id`\* |
-| `fetch-response` | `/prompt-studio/fetch_response/{tool_id}` | POST | `--tool-id`\*, `--document-id`\*, `--id`\* (prompt), `--run-id`, `--profile-manager` |
-| `single-pass` | `/prompt-studio/single-pass-extraction/{tool_id}` | POST | `--tool-id`\*, `--document-id`\*, `--run-id` |
+| `fetch-response` | `/prompt-studio/fetch_response/{tool_id}` | POST | `--tool-id`\*, `--document-id`\*, `--id`\* (prompt), `--run-id`, `--profile-manager` (may be needed even when a default appears set), `--wait` |
+| `single-pass` | `/prompt-studio/single-pass-extraction/{tool_id}` | POST | `--tool-id`\*, `--document-id`\*, `--run-id`, `--wait` |
+| `task-status` | `/prompt-studio/{tool_id}/task-status/{task_id}` | GET | `--tool-id`\*, `--task-id`\* — status only (`processing`/`completed`/`failed`); the value lands in the Output Manager |
+| `output list` | `/prompt-studio/prompt-output/` | GET | `--tool-id`\*, `--prompt-id`, `--document-id`, `--profile-id`, `--is-single-pass-extract` — reads extraction results (backend-sourced, no `.mdx`) |
+| `output latest` | `/prompt-studio/prompt-output/latest-by-keys/` | GET | `--tool-id`\* — latest output per prompt key (may return `{}`; prefer `output list`) |
 | `users` | `/prompt-studio/users/{tool_id}` | GET | `--tool-id`\* |
 | `check-deployment-usage` | `/prompt-studio/{tool_id}/check_deployment_usage/` | GET | `--tool-id`\* |
 | `select-choices` | `/prompt-studio/select_choices/` | GET | — |
 | `adapter-choices` | `/prompt-studio/adapter-choices/` | GET | — |
 | `retrieval-strategies` | `/prompt-studio/{tool_id}/get_retrieval_strategies/` | GET | `--tool-id`\* |
+
+> **`prompt create` sends `tool_id` in the body as well as the path.** The backend's `create_prompt` persists the request body verbatim and ignores the URL `pk`, so a `tool_id` absent from the body is saved as `NULL` — the prompt exists but links to no project and is unreachable (returns 201 with `tool_id: null`, then a 404 on read). The CLI mirrors the path value into the body to link it correctly, and treats a 201 whose response `tool_id` is null as a failure (exit `8`, §5.4) rather than reporting success. The real fix is a backend change.
+>
+> **`prompt create` also takes `--profile-manager`.** `fetch_response` resolves a prompt's LLM profile from the prompt's own `profile_manager` field and does **not** fall back to the project's default profile, unlike `index-document` and `single-pass`, which both do. A prompt created without one is therefore unrunnable, and fails with a message naming the *project* default — which is genuinely set, making the error actively misleading. Setting it at creation avoids the trap. The backend fix is to fall back to `ProfileManager.get_default_llm_profile(tool)` when the prompt's field is null, matching the two sibling paths; the flag then becomes convenience rather than a requirement.
+>
+> **`--chunk-size 0` means whole-document / no-RAG.** It skips embedding and the vector DB entirely — the correct mode for short documents, and the escape hatch when the vector DB is unreachable (indexing otherwise 500s on a dead vector DB even for a one-page file). Set `--chunk-overlap 0` alongside it. `--vector-store` and `--embedding-model` stay **required** even so: both columns are `NOT NULL` server-side, so the values are stored but never queried. Pass any valid adapter id. Making them genuinely optional requires a backend change (nullable columns).
+>
+> **`--enforce-type date` is locale-ambiguous.** Date normalization reads `DD/MM/YYYY` as `MM/DD/YYYY` (`01/08/2025` → `2025-01-08`). For non-US date sources prefer `--enforce-type text`.
+>
+> **Retrieving results.** `fetch-response` / `single-pass` return `202 {task_id, run_id, status:accepted}` and never return the value directly — it lands in the Output Manager. Read it with `output list` (or `output latest`), or use `--wait` (§3.1) to poll and return it in one call.
 
 #### Workflows — `unstract docstudio platform workflow`
 
@@ -401,6 +440,30 @@ Pagination (list endpoints): `--page` (default 1), `--page-size` (default 50, ma
 | `file-history list` | `/workflow/{workflow_id}/file-histories/` | GET | `--workflow-id`\*, `--status` (CSV), `--execution-count-min/max`, `--file-path` (prefix), `--page`, `--page-size` |
 | `file-history get/delete` | `/workflow/{workflow_id}/file-histories/{id}/` | GET/DELETE | `--workflow-id`\*, `--id`\* |
 | `file-history clear` | `/workflow/{workflow_id}/file-histories/clear/` | POST | `--workflow-id`\*, ≥1 of: `--ids` (≤100), `--status`, `--execution-count-min/max`, `--file-path` |
+
+#### Workflow assembly — attach a tool and configure endpoints (deployment prerequisites)
+
+A workflow is only deployable once a tool is attached and both of its endpoints are set to `API`. These commands expose that assembly, which previously required direct API calls. **These endpoints have no public v1 docs page**; their `doc_source` cites the backend routes (like API Hub, §8.4).
+
+| Command | Endpoint | Method | Key parameters |
+| --- | --- | --- | --- |
+| `tool registry list` | `/tool/` | GET | — (each tool's `function_name` is the registry id used below; **not** the Prompt Studio `tool_id`) |
+| `tool registry settings-schema` | `/tool_settings_schema/` | GET | `--function-name`\* (reveals required adapter settings, e.g. `challenge_llm`) |
+| `workflow tool list` | `/tool_instance/` | GET | `--workflow` (filter) |
+| `workflow tool get` | `/tool_instance/{id}/` | GET | `--id`\* (read `metadata` before patching it) |
+| `workflow tool add` | `/tool_instance/` | POST | `--workflow`\*, `--tool`\* (registry id) — a workflow holds ≤1 tool; **set the default triad first** (below); attaching activates the workflow |
+| `workflow tool set-metadata` | `/tool_instance/{id}/` | PATCH | `--id`\*, `--metadata`\* (JSON; **REPLACES** wholesale — send the complete object, accepts `@file.json`) |
+| `workflow tool remove` | `/tool_instance/{id}/` | DELETE | `--id`\* (needs `full_access` — `read_write` cannot delete a tool instance even though it can create one) |
+| `workflow endpoint list` | `/workflow/endpoint/` | GET | `--workflow`, `--endpoint-type {SOURCE,DESTINATION}`, `--connection-type` |
+| `workflow endpoint set` | `/workflow/endpoint/{id}/` | PATCH | `--id`\*, `--connection-type {API,FILESYSTEM,DATABASE,MANUALREVIEW}`\* |
+
+> **The deploy-a-tool sequence.** `export-tool` (§Prompt Studio) publishes the project to the registry → `tool registry list` gives its `function_name` → `workflow create` (auto-creates both endpoints, `connection_type` null) → `adapter default-triad set` (**must precede** `tool add`, see below) → `workflow tool add` → `workflow endpoint set` both SOURCE and DESTINATION to `API` → `api-deployment create` → `api-deployment key create` → `deployment run`. For an API deployment, endpoints set to `API` (or `MANUALREVIEW`) need no connector/credentials.
+>
+> **Ordering trap — set the default triad first (CAPTURE2 GAP 3).** `workflow tool add` seeds the tool instance's adapter settings from the org **default triad**. With no triad set, creation returns HTTP 500 *but still persists a half-configured row*; a retry then 400s with "can't have more than one tool." Run `adapter default-triad set` before `workflow tool add`.
+>
+> **`challenge_llm` trap (CAPTURE2 BUG 4).** An exported tool's settings schema may list `challenge_llm` as required even when the project has `enable_challenge=false`. A tool instance whose `metadata.challenge_llm` is empty then fails deploy-time validation with an opaque enum error (visible only in `workflow execution logs`). Fix it with a read-modify-write: `workflow tool get` → add a valid LLM adapter id (from `settings-schema`'s enum) to the **existing** `metadata` object → `workflow tool set-metadata --metadata @edited.json`. `set-metadata` **replaces** metadata wholesale (the backend does not merge), so sending only the one key would wipe `prompt_registry_id` and orphan the tool — always send the complete object.
+>
+> **Not shipped: a one-shot `deploy-api` convenience.** CAPTURE2 floated a single command that runs the whole sequence. Deliberately deferred: the individual commands above make the flow CLI-only, and a mega-command would bury the ordering/preflight decisions (triad, endpoint config) that the user needs to see. Revisit if the assembly proves rote in practice.
 
 #### API Deployments (management) — `unstract docstudio platform api-deployment`
 
@@ -516,7 +579,7 @@ Statuses: `QUEUED_FOR_WHISPER` → `QUEUED_FOR_EXTRACTION` → `COMPLETED`. The 
 ```
 unstract_cli/
 ├── __main__.py             # entry point
-├── app.py                  # Typer root; command tree built from definitions
+├── app.py                  # Click root group; command tree built from definitions
 ├── config/
 │   ├── profile.py          # profile model, resolution order (flag > env > file > default)
 │   └── loader.py           # TOML load/save, env: indirection, permission checks
@@ -525,7 +588,7 @@ unstract_cli/
 │   ├── errors.py           # HTTP status → exit code + structured error mapping
 │   ├── output.py           # json/yaml/table/raw renderers, TTY detection
 │   ├── poll.py             # --wait state machines (body-status based, never HTTP code)
-│   └── generate.py         # endpoint definition → Typer command
+│   └── generate.py         # endpoint definition → Click command
 ├── endpoints/              # ← SINGLE SOURCE OF TRUTH (the Skill's edit target)
 │   ├── whisper.py
 │   ├── deployment.py
@@ -562,12 +625,22 @@ Endpoint(
     ],
     body="binary_file",
     returns="whisper_hash",
-    poll=PollSpec(status_cmd="whisper status", terminal=["processed", "error"],
-                  retrieve_cmd="whisper retrieve", one_shot=True),
+    poll=PollSpec(status_endpoint="whisper.status",
+                  terminal_success=("processed",), terminal_failure=("error",),
+                  handle_field="whisper_hash", handle_param="whisper_hash",
+                  retrieve_endpoint="whisper.retrieve", one_shot=True),
 )
 ```
 
+`PollSpec.status_field` may be a single field name **or a tuple of candidates tried in order**, because the run POST and the status GET can spell the same state differently — the deployment poll uses `("status", "execution_status")` so the status GET's top-level `status` wins while the run POST's nested `execution_status` still resolves (§6.2). A mismatch here silently consumes a one-shot result; the tuple is what prevents it.
+
+`PollSpec` also carries the fields that make a two-step retrieve work when the result store is not keyed by the poll handle: `retrieve_carry` forwards identifiers from the *original* request into the retrieve call (each entry a py_name, or a `(source, dest)` pair that renames it), `retrieve_extra` injects a constant flag the original request did not carry, and `retrieve_omits_handle` drops the handle from a retrieve endpoint that has no such parameter. Prompt Studio's `--wait` uses all three: it reads the Output Manager by the original `tool_id`, renames `id → prompt_id`, and omits the `task_id` handle (§3.1, §6.3). When `one_shot=True` and no `retrieve_endpoint` is set, the poll that first reaches a terminal state *is* the retrieve: its body is returned as the result and no second read is issued (deployment run, §6.2).
+
+Records may also mirror a PATH identifier into the body — `Param.mirror_to_body` under the same name, or `Param.mirror_as="<body_name>"` where the body spells the identifier differently — and assert non-null response fields on success (`Endpoint.require_response_fields`). `prompt create` uses the first pair to defeat the tool-linking defect (§6.3); `api-deployment key create` uses the rename, sending its `api_id` path value as the body's `api` so the caller supplies one identifier rather than the same value twice. `Param.default_from` accepts a whitespace-separated **fallback chain** resolved left to right (`"deployment.org_id platform.org_id"`), for settings that legitimately live in two blocks where one is typically empty; credentials deliberately do not chain, since borrowing a key across API groups would be credential confusion. `Constraint` also covers conditional requirement (`RequiredUnless`) alongside `MutuallyExclusive` / `AtLeastOneOf`. `ParamType.JSON` values are parsed automatically (inline or `@file.json`, §6).
+
 The command tree, `--help`, validation, `--discover`, and the docs-diff in §8 all derive from these records. Adding an endpoint means adding one record — no separate command wiring, so help text cannot drift from behaviour.
+
+> **Note (doc drift, pre-existing):** the file tree above lists per-resource modules (`platform_prompt_studio.py`, `platform_workflow.py`, …); the implementation consolidated the Platform surface into a single `endpoints/platform.py`. This predates the changes described here and is left as-is pending a broader §7 refresh.
 
 ---
 
@@ -598,7 +671,7 @@ Repo paths are configurable; the Skill falls back to the GitHub API when a repo 
 3. **Diff** on three axes:
    - endpoints present in docs but missing from the CLI (**new capability**);
    - endpoints in the CLI but absent from docs (**possible removal or deprecation** — report, never auto-delete);
-   - per-parameter drift: added, removed, renamed, or changed type / default / enum / required-ness.
+   - per-parameter drift: added, removed, renamed, or changed type / default / enum / required-ness. A documented parameter supplied by mirroring (`Param.mirror_as`, §7.1) is **not** drift — it reaches the wire under its documented name without a flag of its own. A record carrying `doc_conflict` is exempt from this axis as well as the previous one, so a deliberately dropped parameter is not re-reported every run.
 4. **Report** as a structured table before editing: each difference with its doc citation (file + heading) and the proposed CLI change.
 5. **Apply** by editing `endpoints/*.py` only. Because commands are generated (§7.1), no command-wiring, help-text, or `--discover` changes are needed — this is why the diff can be applied mechanically.
 6. **Verify:** run `unstract --discover` and confirm it parses and includes the new surface; run the test suite; run `ruff`/`mypy`.
@@ -614,7 +687,7 @@ API Hub has **no public documentation site**. The Skill cannot cross-reference i
 - Never invent parameters not present in a source; every change cites a specific file and heading.
 - Treat renames as breaking: propose an alias with a deprecation note rather than a silent rename.
 - Preserve hand-written `help` text where it is richer than the docs; add rather than overwrite.
-- **Docs are not infallible.** Where an endpoint index and its detail page disagree, prefer the detail page and the official client libraries, and check §11 "Resolved during drafting" for known documentation defects before proposing a change. A definition may carry a `doc_conflict` note recording a deliberate divergence; the Skill must not revert one without explicit human confirmation.
+- **Docs are not infallible.** Where an endpoint index and its detail page disagree, prefer the detail page and the official client libraries, and check §11 "Resolved during drafting" for known documentation defects before proposing a change. A definition may carry a `doc_conflict` note recording a deliberate divergence; the Skill must not revert one without explicit human confirmation. Such a note covers a dropped parameter as well as a divergent path — `api-deployment key create` omits the documented `api`/`pipeline` body flags because the route already fixes the resource and the value is mirrored from the path (§7.1).
 
 ---
 
@@ -626,9 +699,13 @@ API Hub has **no public documentation site**. The Skill cannot cross-reference i
 | Command generation | Tree builds; `--help` renders at every level; `--discover` is valid JSON and covers every endpoint |
 | HTTP | `respx`/`responses` fixtures per endpoint using the documented sample payloads |
 | Exit codes | Table-driven: each HTTP status maps to the §5.4 code |
-| Polling | `--wait` reaches terminal state; branches on **body status**, not HTTP code (asserted explicitly against the 422 defect) |
+| Polling | `--wait` reaches terminal state; branches on **body status**, not HTTP code (asserted explicitly against the 422 defect). Prompt Studio `--wait` polls `task-status` then retrieves from the Output Manager keyed on the original `tool_id`, narrowed to the run's prompt + document. Deployment `--wait` recognises the status GET's top-level `status`, returns the terminal poll's body on the *first* terminal poll (asserted `call_count == 1` — no double-consume), and `run --wait --save` persists it |
+| One-JSON-document output | A response body of several concatenated JSON objects is recovered into a single array, so `\| json` never breaks; a genuinely malformed body falls back to raw text |
+| JSON parameters | A `ParamType.JSON` flag resolves to a nested object in the body (not a quoted string); accepts inline JSON and `@file.json`; invalid JSON exits `2`; a FORM-located JSON field is re-serialized to a string so multipart encoding still works |
 | One-shot semantics | Second retrieve yields exit `9`; `--save` persists before exit |
-| Redaction | No secret appears in any output stream, including `--dry-run` and `-vv` |
+| Error stream | On failure with stdout not a TTY, the structured envelope appears on **both** stdout and stderr; on a TTY, stderr only. Covers our errors, Click's own parse errors (subprocess-tested at the real entry point), and `--discover` no-match |
+| Response guards | A 2xx that leaves a `require_response_fields` field null (e.g. `prompt create` → `tool_id`) is treated as a failure (exit `8`), not success |
+| Redaction | No secret appears in any output stream, including `--dry-run`, `-vv`, and `config doctor` |
 | Non-interactivity | No command reads stdin unless explicitly asked (`--file -`); no TTY prompts |
 
 ---

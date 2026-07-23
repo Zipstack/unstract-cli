@@ -95,7 +95,16 @@ class TestP6PathParamDefaults:
     def test_org_id_defaults_from_profile(self):
         param = get_endpoint("docstudio.deployment.run").param("org_id")
         assert param.location is ParamLocation.PATH
-        assert param.default_from == "deployment.org_id"
+        assert param.default_sources[0] == "deployment.org_id"
+
+    def test_org_id_falls_back_to_the_platform_block(self):
+        # The deployment/hitl config blocks start empty, but the organization is
+        # the same one the platform block already names (GOTCHAS #7). The block's
+        # own value must still win, so the fallback comes second.
+        for name in ("docstudio.deployment.run", "docstudio.hitl.approved.get"):
+            sources = get_endpoint(name).param("org_id").default_sources
+            assert sources[-1] == "platform.org_id"
+            assert len(sources) == 2
 
     def test_api_name_has_no_default(self):
         # One profile serves many deployments, so this cannot be defaulted.

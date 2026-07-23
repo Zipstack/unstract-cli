@@ -43,8 +43,8 @@ class Product(str, Enum):
 
     Unstract is the company, and the name of this CLI. It builds exactly three
     products: **Document Studio**, **LLMWhisperer** and **API Hub**. Document
-    Studio was previously called Unstract itself, which is why its APIs still
-    use `platform`/`deployment` paths on the wire.
+    Studio's API groups use `platform`/`deployment` paths on the wire and
+    `UNSTRACT_*` environment variables.
     """
 
     DOCUMENT_STUDIO = "docstudio"
@@ -177,6 +177,47 @@ class MutuallyExclusive(Constraint):
 
 
 @dataclass(frozen=True)
+class RequiredUnless(Constraint):
+    """``params`` are required *unless* another flag holds a sentinel value.
+
+    Encodes a rule the plain required/optional split cannot: a field that is
+    mandatory in general but genuinely unused in one configuration. The live case
+    is ``profile create --chunk-size 0``, which means "no RAG" -- the vector store
+    and embedding model are then never consulted, so demanding them makes the
+    caller invent a value for something that will not be read (GOTCHAS #3).
+
+    Marking such a field ``required=False`` alone would lose the check in the
+    common case; this keeps it, conditioned on the flag that actually decides.
+    """
+
+    #: The flag whose value relaxes the requirement, e.g. ``"chunk_size"``.
+    unless: str = ""
+    #: Values of :attr:`unless` that switch the requirement off.
+    unless_values: tuple[object, ...] = ()
+
+    def _relaxed(self, supplied: Mapping[str, object]) -> bool:
+        value = supplied.get(self.unless)
+        # Compare as strings so 0 and "0" behave identically: Click hands the
+        # value through typed, while a test or a config default may not.
+        return any(str(value) == str(v) for v in self.unless_values)
+
+    def check(self, supplied: Mapping[str, object]) -> str | None:
+        if self._relaxed(supplied):
+            return None
+        missing = [p for p in self.params if supplied.get(p) in (None, (), [])]
+        if not missing:
+            return None
+        flags = ", ".join(f"--{p.replace('_', '-')}" for p in missing)
+        relaxers = " or ".join(f"--{self.unless.replace('_', '-')} {v}" for v in self.unless_values)
+        return f"{flags} is required unless {relaxers} is set"
+
+    def describe(self) -> str:
+        flags = ", ".join(f"--{p.replace('_', '-')}" for p in self.params)
+        relaxers = " or ".join(f"--{self.unless.replace('_', '-')} {v}" for v in self.unless_values)
+        return f"{flags} required unless {relaxers}"
+
+
+@dataclass(frozen=True)
 class AtLeastOneOf(Constraint):
     """At least one of ``params`` must be supplied (P2).
 
@@ -219,8 +260,17 @@ class Param:
     choices: Mapping[str, str] | Sequence[str] | None = None
     #: P4 - repeatable flag, collected into a list.
     multiple: bool = False
-    #: P6 - dotted path into resolved config, e.g. ``"platform.org_id"``.
+    #: P6 - dotted path into resolved config, e.g. ``"platform.org_id"``. A
+    #: whitespace-separated list is tried in order, first resolved value winning.
+    #: `deployment run` uses this to fall back to the platform block's org_id: the
+    #: deployment block is a separate, initially-empty config section, and an
+    #: org_id already set for the platform API is the same organization (GOTCHAS #7).
     default_from: str | None = None
+
+    @property
+    def default_sources(self) -> tuple[str, ...]:
+        """The config paths tried, in order, for this parameter's default."""
+        return tuple(self.default_from.split()) if self.default_from else ()
     #: P5 - collect arbitrary ``--flag KEY=VALUE`` pairs under this prefix.
     freeform_prefix: str | None = None
     #: P9 - documented applicability. Rendered in help; never enforced locally,
@@ -232,6 +282,26 @@ class Param:
     flag: str | None = None
     #: Exclude from the request payload (client-side only, e.g. ``--save``).
     client_side: bool = False
+    #: Copy this PATH param into the JSON body as well. A defence against a server
+    #: that reads an identifier only from the body and orphans the record when it
+    #: is absent (BUG 2: `prompt create` persists ``tool_id: null`). The URL still
+    #: carries the value; this just also sends it in the body under :attr:`name`.
+    mirror_to_body: bool = False
+    #: Body field name for the mirrored value, when the body spells the identifier
+    #: differently from the path. `api-deployment key create` is the live case: the
+    #: URL takes ``api_id`` while the body wants that same value as ``api``, so both
+    #: had to be passed by hand (GOTCHAS #6). Implies :attr:`mirror_to_body`.
+    mirror_as: str | None = None
+
+    @property
+    def mirrors(self) -> bool:
+        """Whether this PATH param is also copied into the JSON body."""
+        return self.mirror_to_body or self.mirror_as is not None
+
+    @property
+    def body_name(self) -> str:
+        """The name this parameter takes in the body when mirrored."""
+        return self.mirror_as or self.name
 
     @property
     def cli_flag(self) -> str:
@@ -290,12 +360,38 @@ class PollSpec:
     """
 
     status_endpoint: str
-    status_field: str = "status"
+    #: Field name(s) holding the terminal state in the *status endpoint's* body.
+    #: A tuple is tried in order, because the run POST and the status GET can spell
+    #: the same state differently: the deployment run response nests
+    #: ``execution_status`` under ``message``, while the status GET returns a
+    #: top-level ``status`` (and its ``message`` is the *result*, not a nested
+    #: object). The poll reads the status endpoint, so ``status`` must win there --
+    #: a mismatch means the terminal state goes unrecognised, the one-shot result
+    #: is consumed on that read, and the next poll returns HTTP 406 (CAPTURE2 BUG 2).
+    status_field: str | tuple[str, ...] = "status"
     terminal_success: tuple[str, ...] = ()
     terminal_failure: tuple[str, ...] = ()
     handle_field: str = ""
     handle_param: str = ""
     retrieve_endpoint: str | None = None
+    #: Values to forward from the *original* request into the retrieve call. Each
+    #: entry is either a py_name carried as-is, or a ``(source, dest)`` pair that
+    #: renames it -- the retrieve endpoint often spells the same identifier
+    #: differently (fetch-response's ``id``/``document_id`` are the Output
+    #: Manager's ``prompt_id``/``document_manager``). Without the rename the
+    #: retrieve would return every row for the tool, not the one prompt+document
+    #: the caller ran. The retrieve is otherwise keyed by the poll handle, but some
+    #: result stores are keyed by an original-request identifier instead
+    #: (prompt-studio reads its Output Manager by ``tool_id``, not by ``task_id``).
+    retrieve_carry: tuple[str | tuple[str, str], ...] = ()
+    #: Suppress passing the poll handle into the retrieve call. Set when the
+    #: retrieve endpoint is keyed only by :attr:`retrieve_carry` values and would
+    #: reject an unexpected handle parameter.
+    retrieve_omits_handle: bool = False
+    #: Constant param values injected into the retrieve call, keyed by py_name.
+    #: Used where the retrieve endpoint needs a fixed flag the original request did
+    #: not carry (single-pass results are read with ``is_single_pass_extract=true``).
+    retrieve_extra: tuple[tuple[str, object], ...] = ()
     #: Results can be read exactly once; a second read loses data (SPEC.md §5.6).
     one_shot: bool = False
 
@@ -341,6 +437,10 @@ class Endpoint:
     table_columns: tuple[str, ...] = ()
     #: Response key holding the payload for ``--output raw``.
     raw_field: str | None = None
+    #: Response fields that must be non-null on success, else the call is treated
+    #: as a failure despite a 2xx status. Guards silent-orphan defects where the
+    #: server returns 201 but leaves a linking field NULL (BUG 2: `prompt create`).
+    require_response_fields: tuple[str, ...] = ()
 
     @property
     def product(self) -> Product:
@@ -430,6 +530,7 @@ __all__ = [
     "Permission",
     "PollSpec",
     "Product",
+    "RequiredUnless",
     "derive_patch",
     "field",
     "with_params",

@@ -329,9 +329,22 @@ def diff(
             )
             continue
 
+        # A record carrying `doc_conflict` has already been reconciled against the
+        # docs by hand, and the divergence is the point -- `api-deployment key
+        # create` deliberately drops the documented `pipeline` body param because
+        # the path fixes the resource. Reporting it would invite the Skill to
+        # "restore" the very thing that was removed, so the exemption covers
+        # parameters as well as the endpoint's existence.
+        if cli.doc_conflict:
+            continue
+
         cli_names = {p.name for p in cli.params}
         for param in doc.params:
             if param.name in cli_names:
+                continue
+            # A parameter mirrored into the body from a path param is present on
+            # the wire under its documented name, just not as a separate flag.
+            if any(p.mirrors and p.body_name == param.name for p in cli.params):
                 continue
             # Path parameters often appear under different placeholder names.
             if any(param.name in cli.path for _ in (0,)):

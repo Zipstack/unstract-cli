@@ -31,8 +31,12 @@ _PATH_PARAMS: tuple[Param, ...] = (
     Param(
         "org_id",
         location=ParamLocation.PATH,
-        default_from="deployment.org_id",
-        help="Organization identifier",
+        # Falls back to the platform block: `docstudio.deployment` is a separate,
+        # initially-empty config section, so a user who has configured the
+        # Platform API still hit "missing org_id" here even though it is the same
+        # organization. The deployment block still wins when set (GOTCHAS #7).
+        default_from="deployment.org_id platform.org_id",
+        help="Organization identifier. Falls back to the platform block's org_id",
     ),
     Param(
         "api_name",
@@ -58,8 +62,18 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             "Accepts up to 32 files per call, counting --file and --presigned-url "
             "together. Results are keyed by file name, so names must be unique "
             "within a call. Use --wait to poll to completion.\n\n"
+            "ONE-SHOT with --wait: the result store is read exactly once. --wait "
+            "returns the result from the poll that first observes COMPLETED and "
+            "does not re-read it. Pass --save to persist it on that single read; "
+            "without --save the result is only printed and cannot be re-fetched.\n\n"
             "Synchronous mode (--timeout > 0) is deprecated upstream; --wait uses "
-            "asynchronous execution plus polling, which is the supported path."
+            "asynchronous execution plus polling, which is the supported path.\n\n"
+            "Auth comes from the `docstudio.deployment` config block, which is "
+            "separate from the platform block and starts empty. After creating a "
+            "deployment and a key, wire the key in with:\n"
+            "  unstract config set docstudio.deployment api_key env:UNSTRACT_DEPLOYMENT_KEY\n"
+            "--org-id now falls back to the platform block's org_id, so that one "
+            "usually needs no second entry (GOTCHAS #7)."
         ),
         params=(
             *_PATH_PARAMS,
@@ -82,11 +96,21 @@ ENDPOINTS: tuple[Endpoint, ...] = (
                   help="JSON object addressable in prompts as {{custom_data.key}}"),
             Param("hitl_queue_name", location=ParamLocation.FORM,
                   help="Route results to this Human Quality Review queue instead of returning them"),
+            Param("save", client_side=True,
+                  help="With --wait, write the one-shot result to this path before "
+                       "exiting (strongly recommended: the result can be read only once)"),
         ),
         body=BodyKind.MULTIPART,
+        # ONE-SHOT poll: the status endpoint *is* the result store. The poll that
+        # first observes COMPLETED consumes the result, so that terminal poll's
+        # body is returned as the result and no second read is issued (a second
+        # read would 406). `status_field` lists `status` first because the status
+        # GET returns a top-level `status` (its `message` holds the result); the
+        # nested `execution_status` is the run POST's shape. Reading the wrong one
+        # made the terminal state go unrecognised (CAPTURE2 BUG 2).
         poll=PollSpec(
             status_endpoint="docstudio.deployment.status",
-            status_field="execution_status",
+            status_field=("status", "execution_status"),
             terminal_success=("COMPLETED",),
             terminal_failure=("ERROR", "STOPPED"),
             handle_field="execution_id",
@@ -95,7 +119,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         ),
         doc_source=f"{_DOCS}/api_execution.md",
         examples=(
-            "unstract deployment run --api-name invoice-api --file invoice.pdf --wait",
+            "unstract deployment run --api-name invoice-api --file invoice.pdf --wait --save out.json",
             "unstract deployment run --api-name invoice-api --file a.pdf --file b.pdf",
             "unstract deployment run --api-name invoice-api --file x.pdf --hitl-queue-name review",
         ),

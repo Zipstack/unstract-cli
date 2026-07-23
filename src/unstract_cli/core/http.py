@@ -25,7 +25,14 @@ from unstract_cli.core.errors import (
     redact_headers,
     redact_value,
 )
-from unstract_cli.core.model import ApiGroup, BodyKind, Endpoint, ParamLocation
+from unstract_cli.core.model import (
+    ApiGroup,
+    BodyKind,
+    Endpoint,
+    Param,
+    ParamLocation,
+    ParamType,
+)
 
 #: Headers Kong injects downstream from the `apikey` lookup (SPEC.md §4.4).
 #: The CLI must never send these: they are gateway-supplied, and a client-set
@@ -139,9 +146,8 @@ def build_url(endpoint: Endpoint, config: ResolvedConfig, values: dict[str, Any]
     path = endpoint.path
     for param in endpoint.path_params():
         value = values.get(param.py_name)
-        if value is None and param.default_from:
-            product, _, key = param.default_from.partition(".")
-            value = config.get(product, key)
+        if value is None:
+            value = _config_default(param, config)
         if value is None:
             raise CLIError(
                 f"Missing required path parameter {param.cli_flag}.",
@@ -154,10 +160,58 @@ def build_url(endpoint: Endpoint, config: ResolvedConfig, values: dict[str, Any]
     return f"{str(base).rstrip('/')}/{path.lstrip('/')}"
 
 
+def _config_default(param: Param, config: ResolvedConfig) -> Any:
+    """Resolve a parameter's profile default, trying each source in order.
+
+    ``default_from`` may name several config paths; the first that resolves wins.
+    That lets one setting stand in for another where they are genuinely the same
+    value held in two blocks -- `deployment run`'s org_id falls back to the
+    platform block, which is the same organization and is usually already set
+    (GOTCHAS #7). An empty string counts as unset, since that is what a
+    half-filled `config init` stub leaves behind.
+    """
+    for source in param.default_sources:
+        product, _, key = source.partition(".")
+        if (value := config.get(product, key)) not in (None, ""):
+            return value
+    return None
+
+
 def _guess_content_type(path: Path) -> str:
     import mimetypes
 
     return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def _parse_json_param(param: Param, value: object) -> object:
+    """Parse a ``ParamType.JSON`` value from a string into a real object (BUG 1).
+
+    Click hands JSON params through as plain strings, so without this the body
+    field would hold a quoted string (``"data": "{...}"``) and the server would
+    reject it as ``Expected a dictionary of items but got type "str"``. Accepts
+    either inline JSON or an ``@path/to/file.json`` reference -- large payloads
+    such as an exported prompts file are painful to pass inline and hit shell
+    argument limits. A value that is already parsed (a dict/list, e.g. a test
+    passing a native object) is returned unchanged.
+    """
+    if param.type is not ParamType.JSON or not isinstance(value, str):
+        return value
+    text = value
+    if text.startswith("@"):
+        ref = Path(text[1:]).expanduser()
+        try:
+            text = ref.read_text()
+        except OSError as exc:
+            raise CLIError(
+                f"{param.cli_flag} could not read {ref}: {exc}", ExitCode.USAGE
+            ) from exc
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CLIError(
+            f"{param.cli_flag} expects valid JSON (or @file.json): {exc}",
+            ExitCode.USAGE,
+        ) from exc
 
 
 def build_request(
@@ -187,7 +241,17 @@ def build_request(
     content: bytes | None = None
 
     for param in endpoint.params:
-        if param.client_side or param.location is ParamLocation.PATH:
+        if param.client_side:
+            continue
+        if param.location is ParamLocation.PATH:
+            # A PATH param normally travels only in the URL. Mirroring
+            # additionally copies it into the JSON body, defending against a
+            # server that links a record by a body field and orphans it when the
+            # field is absent (BUG 2), or that simply wants the same identifier
+            # twice under two names (`api_id` in the URL, `api` in the body --
+            # GOTCHAS #6). `body_name` is the path name unless `mirror_as` renames it.
+            if param.mirrors and (raw := values.get(param.py_name)) is not None:
+                body[param.body_name] = param.to_wire(raw)
             continue
 
         raw = values.get(param.py_name)
@@ -205,9 +269,8 @@ def build_request(
                 params[f"{param.freeform_prefix}{key.strip()}"] = val.strip()
             continue
 
-        if raw is None and param.default_from:
-            product, _, key = param.default_from.partition(".")
-            raw = config.get(product, key)
+        if raw is None:
+            raw = _config_default(param, config)
         if raw is None:
             raw = param.default
         if raw is None or (isinstance(raw, (list, tuple)) and not raw):
@@ -217,7 +280,7 @@ def build_request(
                 )
             continue
 
-        value = param.to_wire(raw)
+        value = _parse_json_param(param, param.to_wire(raw))
 
         match param.location.value:
             case "query":
@@ -235,6 +298,13 @@ def build_request(
                         files.append(
                             (param.name, (p.name, p.read_bytes(), _guess_content_type(p)))
                         )
+                elif param.type is ParamType.JSON and isinstance(value, (dict, list)):
+                    # A multipart form field carries a JSON object as a *string*;
+                    # the server (a DRF form field) `json.loads` it. Left as a
+                    # dict, httpx cannot form-encode it. Re-serialize here so BODY
+                    # gets an object and FORM gets the string it expects -- the
+                    # double-encode guard the JSON parse would otherwise trip.
+                    form[param.name] = json.dumps(value)
                 else:
                     form[param.name] = value
 
@@ -303,10 +373,40 @@ def _parse(response: httpx.Response) -> Any:
         try:
             return response.json()
         except ValueError:
+            # Some endpoints emit several JSON objects concatenated (a streamed
+            # NDJSON-ish body), which a single parse rejects with "Extra data" and
+            # which breaks any `| json` consumer (CAPTURE2 DOC 6). Recover them into
+            # one array so the CLI still emits exactly one valid JSON document; fall
+            # back to raw text only if they are not clean concatenated JSON.
+            if (parts := _split_concatenated_json(response.text)) is not None:
+                return parts
             return response.text
     if ctype.startswith("text/") or not ctype:
         return response.text
     return response.content
+
+
+def _split_concatenated_json(text: str) -> list[Any] | None:
+    """Parse a run of back-to-back JSON values into a list, or None if it isn't one.
+
+    Returns None unless there are at least two values (a single value would have
+    parsed already), so a genuinely malformed body still falls through to raw text.
+    """
+    decoder = json.JSONDecoder()
+    items: list[Any] = []
+    idx, length = 0, len(text)
+    while idx < length:
+        while idx < length and text[idx].isspace():
+            idx += 1
+        if idx >= length:
+            break
+        try:
+            value, end = decoder.raw_decode(text, idx)
+        except ValueError:
+            return None
+        items.append(value)
+        idx = end
+    return items if len(items) > 1 else None
 
 
 def execute(
@@ -431,7 +531,7 @@ def raise_for_status(response: Response, endpoint: Endpoint | None = None) -> No
         http_status=response.status,
         details=response.payload if isinstance(response.payload, (dict, list)) else None,
         endpoint=f"{endpoint.method} {endpoint.path}" if endpoint else None,
-        hint=hint_for(response.status, endpoint.path if endpoint else None),
+        hint=hint_for(response.status, endpoint.path if endpoint else None, message),
         retryable=is_retryable(response.status),
     )
 

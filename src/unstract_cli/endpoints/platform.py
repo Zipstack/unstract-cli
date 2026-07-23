@@ -22,16 +22,18 @@ PATCH records are *derived* from their PUT counterparts via `derive_patch`
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from unstract_cli.core.model import (
     ApiGroup,
     AtLeastOneOf,
     BodyKind,
     Endpoint,
-    MutuallyExclusive,
     Param,
     ParamLocation,
     ParamType,
     Permission,
+    PollSpec,
     derive_patch,
     with_params,
 )
@@ -88,8 +90,20 @@ def _ep(
     constraints: tuple = (),
     no_trailing_slash: bool = False,
     table_columns: tuple[str, ...] = (),
+    require_response_fields: tuple[str, ...] = (),
+    poll: PollSpec | None = None,
+    doc_source: str | None = None,
+    doc_conflict: str | None = None,
 ) -> Endpoint:
-    """Construct a Platform endpoint, filling in the org-scoped base path."""
+    """Construct a Platform endpoint, filling in the org-scoped base path.
+
+    ``doc_source`` overrides the default ``{_DOCS}/{doc}`` provenance for the few
+    endpoints authored from the backend source rather than the public v1 docs
+    (the Output Manager and task-status routes have no ``.mdx`` page). Citing
+    their real source is honest -- exactly how API Hub records cite code -- and
+    lets the Skill's drift check report them as undocumented (info-only) with a
+    citation that points where they actually came from.
+    """
     return Endpoint(
         name=name,
         group="docstudio",
@@ -101,13 +115,16 @@ def _ep(
         summary=summary,
         params=(_ORG, *params),
         body=body,
-        doc_source=f"{_DOCS}/{doc}",
+        doc_source=doc_source or f"{_DOCS}/{doc}",
         permission=permission,
         description=description,
         examples=examples,
         constraints=constraints,
         no_trailing_slash=no_trailing_slash,
         table_columns=table_columns,
+        require_response_fields=require_response_fields,
+        poll=poll,
+        doc_conflict=doc_conflict,
     )
 
 
@@ -118,6 +135,58 @@ def _ep(
 _PS = "prompt-studio"
 _TOOL_ID = Param("tool_id", type=ParamType.UUID, location=ParamLocation.PATH,
                  required=True, help="Prompt Studio project (tool) identifier")
+
+#: `prompt create` only: the backend's `create_prompt` persists the request body
+#: verbatim and ignores the URL `pk`, so a `tool_id` absent from the body is saved
+#: as NULL -- the prompt exists but links to no project and is unreachable (BUG 2).
+#: Mirroring the path value into the body links it correctly. Verified this session.
+_TOOL_ID_MIRRORED = replace(_TOOL_ID, mirror_to_body=True)
+
+#: `--wait` for fetch-response / single-pass. These return HTTP 202 with a
+#: `task_id`; task-status reports completion (it does NOT return the value), and
+#: the extracted output lands in the Output Manager, read by `output list` keyed
+#: on the original request's `tool_id` -- not on the poll handle. `retrieve_carry`
+#: forwards that tool_id, and `retrieve_omits_handle` keeps the task_id out of the
+#: output-list call, which has no such parameter (IMPROVEMENT 3).
+_PS_POLL = PollSpec(
+    status_endpoint="docstudio.platform.prompt-studio.task-status",
+    status_field="status",
+    terminal_success=("completed",),
+    terminal_failure=("failed",),
+    handle_field="task_id",
+    handle_param="task_id",
+    retrieve_endpoint="docstudio.platform.prompt-studio.output.list",
+    # Narrow the result to the exact prompt + document this call ran, rather than
+    # returning every row for the tool. fetch-response's `id` is the Output
+    # Manager's `prompt_id`; both endpoints already share the py_name `document_id`
+    # (output list exposes `document_manager` under the flag --document-id), so it
+    # carries across unchanged.
+    retrieve_carry=(
+        "tool_id",
+        ("id", "prompt_id"),
+        "document_id",
+    ),
+    retrieve_omits_handle=True,
+)
+
+#: `--wait` for index-document. Same 202 {task_id, status} shape and the same
+#: task-status route as fetch-response, but indexing produces no Output Manager
+#: row -- there is nothing to retrieve, so the terminal status IS the result.
+#: Without this, index-document was the one async command that forced a manual
+#: poll loop while its siblings all had --wait (GOTCHAS #8).
+_PS_INDEX_POLL = replace(
+    _PS_POLL,
+    retrieve_endpoint=None,
+    retrieve_carry=(),
+)
+
+#: Single-pass runs all prompts, so its retrieve is intentionally tool-wide; it
+#: only needs to ask for the single-pass rows (and the document it ran against).
+_PS_SINGLE_PASS_POLL = replace(
+    _PS_POLL,
+    retrieve_carry=("tool_id", "document_id"),
+    retrieve_extra=(("is_single_pass_extract", True),),
+)
 
 _PS_FIELDS: tuple[Param, ...] = (
     Param("tool_name", location=ParamLocation.BODY, required=True,
@@ -134,6 +203,19 @@ _PS_FIELDS: tuple[Param, ...] = (
           default=False, help="Run all prompts in a single LLM call"),
     Param("enable_challenge", type=ParamType.BOOL, location=ParamLocation.BODY,
           default=False, help="Enable LLM challenge for extraction validation"),
+    # GOTCHAS #2: an exported tool's settings schema lists challenge_llm as
+    # required even when enable_challenge is false, so a tool instance whose
+    # metadata.challenge_llm is "" fails deploy-time validation with a 422 that
+    # only surfaces at `deployment run`. Setting it on the project before
+    # `export-tool` means the exported metadata carries a real adapter id.
+    Param("challenge_llm", type=ParamType.UUID, location=ParamLocation.BODY,
+          help="LLM adapter used to challenge extractions. Set this before "
+               "`export-tool` even with --no-enable-challenge: the exported tool "
+               "requires a non-empty challenge_llm at deploy time, and an empty one "
+               "fails `deployment run` with a 422"),
+    Param("monitor_llm", type=ParamType.UUID, location=ParamLocation.BODY,
+          help="LLM adapter used for monitoring. Defaults server-side to the "
+               "default profile's LLM"),
     Param("enable_highlight", type=ParamType.BOOL, location=ParamLocation.BODY,
           default=False, help="Record line metadata for source highlighting"),
     Param("custom_data", type=ParamType.JSON, location=ParamLocation.BODY,
@@ -149,30 +231,54 @@ _PROMPT_FIELDS: tuple[Param, ...] = (
           help="Output key for this prompt, unique within the project"),
     Param("enforce_type", location=ParamLocation.BODY, default="text",
           choices=["text", "number", "email", "date", "boolean", "json", "line-item", "table"],
-          help="Expected output type"),
+          help="Expected output type. Note: 'date' normalization is locale-ambiguous "
+               "and reads DD/MM/YYYY sources as MM/DD/YYYY (01/08/2025 -> 2025-01-08); "
+               "prefer 'text' for non-US date formats"),
     Param("prompt", location=ParamLocation.BODY, help="Prompt text sent to the LLM"),
     Param("sequence_number", type=ParamType.INT, location=ParamLocation.BODY,
           help="Position within the project"),
     Param("prompt_type", location=ParamLocation.BODY, choices=["PROMPT", "NOTES"],
           help="PROMPT extracts a value; NOTES is an annotation"),
     Param("active", type=ParamType.BOOL, location=ParamLocation.BODY, default=True,
-          help="Whether the prompt runs"),
+          help="Whether the prompt runs. Boolean flags are --active / --no-active; "
+               "`--active true` is not valid syntax"),
+    # The load-bearing field for GOTCHAS #1. `fetch-response` resolves the LLM
+    # profile from the PROMPT's own profile_manager FK and never falls back to
+    # the project default, so a prompt created without it is unrunnable -- and
+    # the resulting error names the *project* default, which is genuinely set.
+    Param("profile_manager", type=ParamType.UUID, location=ParamLocation.BODY,
+          help="LLM profile this prompt runs with. Set it at creation: fetch-response "
+               "reads this field and does NOT fall back to the project default, so a "
+               "prompt without it fails with 'Default LLM profile is not configured'"),
 )
 
 _PROFILE_FIELDS: tuple[Param, ...] = (
     Param("profile_name", location=ParamLocation.BODY, required=True,
           help="Profile name, unique within the project"),
+    # GOTCHAS #3 asked for these to be optional when --chunk-size 0 ("no RAG").
+    # They are NOT, and cannot be made so client-side: ProfileManager declares
+    # both FKs null=False, and the serializer is `fields = "__all__"`, so DRF
+    # derives required=True and the server rejects a profile without them
+    # regardless of chunk_size. Dropping the local check would only trade a fast
+    # exit-2 for a slower remote 400, so the requirement stays and the help says
+    # what to pass instead.
     Param("vector_store", type=ParamType.UUID, location=ParamLocation.BODY, required=True,
-          help="Vector DB adapter id"),
+          help="Vector DB adapter id. Required even with --chunk-size 0: the server "
+               "rejects a profile without one. With chunk_size=0 it is stored but "
+               "never queried, so any valid vector-DB adapter id will do"),
     Param("embedding_model", type=ParamType.UUID, location=ParamLocation.BODY, required=True,
-          help="Embedding adapter id"),
+          help="Embedding adapter id. Required even with --chunk-size 0, for the same "
+               "reason as --vector-store: stored, but not used when RAG is off"),
     Param("llm", type=ParamType.UUID, location=ParamLocation.BODY, required=True,
           help="LLM adapter id"),
     Param("x2text", type=ParamType.UUID, location=ParamLocation.BODY, required=True,
           help="Text extractor adapter id"),
-    Param("chunk_size", type=ParamType.INT, location=ParamLocation.BODY, help="Chunk size"),
+    Param("chunk_size", type=ParamType.INT, location=ParamLocation.BODY,
+          help="Chunk size for RAG. 0 = whole-document / no-RAG: skips embedding "
+               "and the vector DB entirely. Use 0 for short documents, or when the "
+               "vector DB is unavailable"),
     Param("chunk_overlap", type=ParamType.INT, location=ParamLocation.BODY,
-          help="Overlap between chunks"),
+          help="Overlap between chunks. Set 0 alongside chunk_size=0"),
     Param("retrieval_strategy", location=ParamLocation.BODY, default="simple",
           choices=["simple", "subquestion", "fusion", "recursive", "router",
                    "keyword_table", "automerging"],
@@ -217,7 +323,13 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
     derive_patch(_ps_update, summary="Partially update a Prompt Studio project."),
     _ep("delete", "DELETE", "/prompt-studio/{tool_id}/", "Delete a Prompt Studio project.",
         (_TOOL_ID,), subgroup=_PS, permission=Permission.FULL_ACCESS,
-        description=f"{_DELETE_NOTE} Returns 409 if the tool is exported and in use."),
+        description=f"{_DELETE_NOTE} Returns 409 if the tool is exported and in use.\n\n"
+                    "This is also the ONLY way to remove an exported registry entry: "
+                    "the registry is read-only over the API (it exposes list and "
+                    "settings-schema, with no DELETE route), and deleting the project "
+                    "cascades to the entry it published. Detach the tool from any "
+                    "workflow first (`workflow tool remove`) or this returns 409 "
+                    "(GOTCHAS #9)."),
     _ep("export-project", "GET", "/prompt-studio/project-transfer/{tool_id}",
         "Export a project as a JSON file.",
         (_TOOL_ID, Param("save", client_side=True, help="Write the export to this path")),
@@ -246,7 +358,19 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
          Param("force_export", type=ParamType.BOOL, location=ParamLocation.BODY,
                default=False, help="Export even if validation warns")),
         subgroup=_PS, body=BodyKind.JSON, permission=Permission.READ_WRITE,
-        no_trailing_slash=True),
+        no_trailing_slash=True,
+        description="Publishes the project to the tool registry, where it gets a NEW "
+                    "registry id (`function_name`) that is NOT the Prompt Studio "
+                    "tool_id. This call does not return it -- find it with "
+                    "`tool registry list`, or `api-deployment by-prompt-studio-tool` "
+                    "once deployed (GOTCHAS #5).\n\n"
+                    "Before exporting, set the project's --challenge-llm (see "
+                    "`prompt-studio patch`). The exported tool requires a non-empty "
+                    "challenge_llm at deploy time even when enable_challenge is false; "
+                    "if it is empty the attached tool instance fails validation and "
+                    "`deployment run` ends in ERROR with a 422 -- the failure surfaces "
+                    "only at that last step (GOTCHAS #2).",
+        examples=("unstract platform prompt-studio export-tool --tool-id <id>",)),
     _ep("export-info", "GET", "/prompt-studio/export/{tool_id}",
         "Show export status for a project.", (_TOOL_ID,), subgroup=_PS,
         permission=Permission.READ, no_trailing_slash=True,
@@ -270,8 +394,20 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
         subgroup=f"{_PS} file", body=BodyKind.JSON, permission=Permission.FULL_ACCESS,
         description=_DELETE_NOTE, no_trailing_slash=True),
     _ep("create", "POST", "/prompt-studio/prompt-studio-prompt/{tool_id}/",
-        "Create a prompt in a project.", (_TOOL_ID, *_PROMPT_FIELDS),
-        subgroup=f"{_PS} prompt", body=BodyKind.JSON, permission=Permission.READ_WRITE),
+        "Create a prompt in a project.", (_TOOL_ID_MIRRORED, *_PROMPT_FIELDS),
+        subgroup=f"{_PS} prompt", body=BodyKind.JSON, permission=Permission.READ_WRITE,
+        require_response_fields=("tool_id",),
+        description="Sends tool_id in the body as well as the path, so the prompt "
+                    "links to the project rather than being orphaned (tool_id: null).\n\n"
+                    "Pass --profile-manager unless you intend to supply it on every "
+                    "run: `fetch-response` resolves the LLM profile from THIS field "
+                    "and does not fall back to the project's default profile. A prompt "
+                    "created without it fails at run time with 'Default LLM profile is "
+                    "not configured' even when `profile set-default` succeeded "
+                    "(GOTCHAS #1).",
+        examples=("unstract platform prompt-studio prompt create --tool-id <id> "
+                  "--prompt-key invoice_no --prompt 'What is the invoice number?' "
+                  "--profile-manager <profile-id>",)),
     _ep("get", "GET", "/prompt-studio/prompt/{prompt_id}/", "Show one prompt.",
         (Param("prompt_id", type=ParamType.UUID, location=ParamLocation.PATH,
                required=True, help="Prompt identifier"),),
@@ -303,7 +439,16 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
     _ep("create", "POST", "/prompt-studio/profilemanager/{tool_id}",
         "Create an LLM profile (maximum 4 per project).",
         (_TOOL_ID, *_PROFILE_FIELDS), subgroup=f"{_PS} profile", body=BodyKind.JSON,
-        permission=Permission.READ_WRITE, no_trailing_slash=True),
+        permission=Permission.READ_WRITE, no_trailing_slash=True,
+        description="With --chunk-size 0 the document is sent to the LLM whole (no RAG) "
+                    "and neither the vector DB nor the embedding model is queried -- but "
+                    "the server still REQUIRES both fields, so pass any valid adapter id "
+                    "for them (GOTCHAS #3). Use chunk_size=0 for short documents, or "
+                    "when the vector DB is unavailable.",
+        examples=("unstract platform prompt-studio profile create --tool-id <id> "
+                  "--profile-name direct --llm <llm-id> --x2text <x2text-id> "
+                  "--vector-store <vdb-id> --embedding-model <emb-id> "
+                  "--chunk-size 0 --chunk-overlap 0",)),
     _ep("get", "GET", "/prompt-studio/profile-manager/{profile_id}/", "Show one LLM profile.",
         (Param("profile_id", type=ParamType.UUID, location=ParamLocation.PATH,
                required=True, help="Profile identifier"),),
@@ -320,7 +465,13 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
         (_TOOL_ID, Param("document_id", type=ParamType.UUID, location=ParamLocation.BODY,
                          required=True, help="Document identifier")),
         subgroup=_PS, body=BodyKind.JSON, permission=Permission.READ_WRITE,
-        no_trailing_slash=True),
+        no_trailing_slash=True, poll=_PS_INDEX_POLL,
+        description="Returns HTTP 202 {task_id, run_id, status:accepted}. Use --wait to "
+                    "poll to completion instead of calling `task-status` in a loop. "
+                    "Indexing writes no Output Manager row, so --wait returns the final "
+                    "task status rather than an extracted value.",
+        examples=("unstract platform prompt-studio index-document --tool-id <id> "
+                  "--document-id <doc-id> --wait",)),
     _ep("fetch-response", "POST", "/prompt-studio/fetch_response/{tool_id}",
         "Run one prompt against a document.",
         (_TOOL_ID,
@@ -331,9 +482,22 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
          Param("run_id", type=ParamType.UUID, location=ParamLocation.BODY,
                help="Execution tracking identifier"),
          Param("profile_manager", type=ParamType.UUID, location=ParamLocation.BODY,
-               help="Override the project's default LLM profile")),
+               help="LLM profile to run with. Required unless the prompt itself was "
+                    "created with a profile_manager -- there is no fallback to the "
+                    "project default")),
         subgroup=_PS, body=BodyKind.JSON, permission=Permission.READ_WRITE,
-        no_trailing_slash=True),
+        no_trailing_slash=True, poll=_PS_POLL,
+        description="Returns HTTP 202 {task_id, run_id, status:accepted}; the extracted "
+                    "value is written to the Output Manager. Use --wait to poll to "
+                    "completion and return the results, or read them with "
+                    "`prompt-studio output list`.\n\n"
+                    "If this fails with 'Default LLM profile is not configured' while "
+                    "`profile set-default` and `prompt-studio get` both show a default: "
+                    "the message is misleading. The server resolves the profile from the "
+                    "PROMPT's own profile_manager field and never consults the project "
+                    "default, so the real cause is a prompt created without one. Fix it "
+                    "permanently with `prompt patch --prompt-id <id> --profile-manager "
+                    "<profile-id>`, or pass --profile-manager on each run (GOTCHAS #1)."),
     _ep("single-pass", "POST", "/prompt-studio/single-pass-extraction/{tool_id}",
         "Run all active prompts in a single pass.",
         (_TOOL_ID,
@@ -342,8 +506,54 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
          Param("run_id", type=ParamType.UUID, location=ParamLocation.BODY,
                help="Execution tracking identifier")),
         subgroup=_PS, body=BodyKind.JSON, permission=Permission.READ_WRITE,
-        no_trailing_slash=True,
-        description="Requires single_pass_extraction_mode enabled on the project."),
+        no_trailing_slash=True, poll=_PS_SINGLE_PASS_POLL,
+        description="Requires single_pass_extraction_mode enabled on the project. "
+                    "Returns HTTP 202; use --wait to poll and return results, or read "
+                    "them with `prompt-studio output list --is-single-pass-extract`."),
+    _ep("task-status", "GET", "/prompt-studio/{tool_id}/task-status/{task_id}",
+        "Check the status of an async prompt-studio task.",
+        (_TOOL_ID,
+         Param("task_id", location=ParamLocation.PATH, required=True,
+               help="Task identifier returned by fetch-response / single-pass / "
+                    "index-document")),
+        subgroup=_PS, permission=Permission.READ, no_trailing_slash=True,
+        description="Status is one of: processing, completed, failed. The extracted "
+                    "value is not returned here -- read it with `prompt-studio output "
+                    "list`.\n\nNeeds BOTH --task-id and --tool-id: the route is "
+                    "/{tool_id}/task-status/{task_id}, and the tool_id is the same one "
+                    "passed to the call that returned the task_id. Prefer --wait on "
+                    "that call, which polls this for you.",
+        examples=("unstract platform prompt-studio task-status --tool-id <id> "
+                  "--task-id <task-id>",),
+        doc_source="backend/prompt_studio/prompt_studio_core_v2/urls.py"),
+    _ep("list", "GET", "/prompt-studio/prompt-output/",
+        "List extraction results for a project.",
+        (Param("tool_id", type=ParamType.UUID, required=True,
+               help="Prompt Studio project (tool) identifier"),
+         Param("prompt_id", type=ParamType.UUID, help="Filter to one prompt"),
+         Param("document_manager", type=ParamType.UUID, flag="--document-id",
+               help="Filter to one uploaded document"),
+         Param("profile_manager", type=ParamType.UUID, flag="--profile-id",
+               help="Filter to one LLM profile"),
+         Param("is_single_pass_extract", type=ParamType.BOOL, default=False,
+               help="Return single-pass results instead of per-prompt")),
+        subgroup=f"{_PS} output", permission=Permission.READ,
+        description="Reads the Prompt Studio Output Manager, where fetch-response and "
+                    "single-pass write their results. Each row carries prompt_id, output, "
+                    "context and modified_at; take the latest row per prompt_id.",
+        table_columns=("prompt_id", "prompt_key", "output", "modified_at"),
+        examples=("unstract platform prompt-studio output list --tool-id <id>",),
+        doc_source="backend/prompt_studio/prompt_studio_output_manager_v2/urls.py"),
+    _ep("latest", "GET", "/prompt-studio/prompt-output/latest-by-keys/",
+        "Latest result per prompt key for a project.",
+        (Param("tool_id", type=ParamType.UUID, required=True,
+               help="Prompt Studio project (tool) identifier"),),
+        subgroup=f"{_PS} output", permission=Permission.READ,
+        description="Returns the latest output keyed by prompt_key. May return {} in some "
+                    "cases where `output list` still has the data -- prefer `output list` "
+                    "if this is empty.",
+        examples=("unstract platform prompt-studio output latest --tool-id <id>",),
+        doc_source="backend/prompt_studio/prompt_studio_output_manager_v2/urls.py"),
     _ep("users", "GET", "/prompt-studio/users/{tool_id}", "List users a project is shared with.",
         (_TOOL_ID,), subgroup=_PS, permission=Permission.READ, no_trailing_slash=True),
     _ep("check-deployment-usage", "GET", "/prompt-studio/{tool_id}/check_deployment_usage/",
@@ -354,7 +564,12 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
         permission=Permission.READ),
     _ep("adapter-choices", "GET", "/prompt-studio/adapter-choices/",
         "List adapters available for LLM profiles.", subgroup=_PS,
-        permission=Permission.READ),
+        permission=Permission.READ,
+        description="Known to return 500 server_error in some organizations "
+                    "(GOTCHAS #10). If it does, enumerate adapters directly instead: "
+                    "`adapter list --adapter-type LLM` gives the ids that "
+                    "`profile create --llm` expects, filtered by kind.",
+        examples=("unstract platform adapter list --adapter-type LLM",)),
     _ep("retrieval-strategies", "GET", "/prompt-studio/{tool_id}/get_retrieval_strategies/",
         "List retrieval strategies available to a project.", (_TOOL_ID,),
         subgroup=_PS, permission=Permission.READ),
@@ -511,6 +726,121 @@ _WORKFLOWS: tuple[Endpoint, ...] = (
 
 
 # --------------------------------------------------------------------------- #
+# Workflow assembly: tool instances + endpoint configuration
+#
+# These are the two steps that turn a bare workflow into a deployable one, and
+# they have no public v1 docs page -- `doc_source` cites the backend routes, the
+# way API Hub records cite source. `workflow create` auto-creates SOURCE and
+# DESTINATION endpoints but leaves their connection_type null; an API deployment
+# then rejects the workflow until both are set to "API". Attaching the exported
+# tool is `POST /tool_instance/` keyed by the tool's *registry* id (the
+# `function_name` from `tool registry list`), NOT the Prompt Studio tool_id.
+# (CAPTURE2 GAP 1.)
+# --------------------------------------------------------------------------- #
+
+_WORKFLOW_ASSEMBLY: tuple[Endpoint, ...] = (
+    _ep("list", "GET", "/tool/", "List tools in the registry (for attaching to a workflow).",
+        subgroup="tool registry", permission=Permission.READ,
+        doc_source="backend/tool_instance_v2/urls.py",
+        description="Each tool's `function_name` is its registry id -- the value "
+                    "`workflow tool add --tool` expects. This is NOT the Prompt Studio "
+                    "tool_id; `prompt-studio export-tool` publishes a project here first.\n\n"
+                    "The registry carries no back-reference to the Prompt Studio "
+                    "tool_id and the endpoint accepts no filters, so after exporting "
+                    "you must match the entry by its `name`, which is the project's "
+                    "tool_name (GOTCHAS #5). Give projects distinct names, or the "
+                    "match is ambiguous.",
+        table_columns=("function_name", "name", "description"),
+        examples=("unstract platform tool registry list",)),
+    _ep("settings-schema", "GET", "/tool_settings_schema/",
+        "Show the settings JSON schema for a registry tool.",
+        (Param("function_name", required=True,
+               help="Registry id from `tool registry list`"),),
+        subgroup="tool registry", permission=Permission.READ,
+        doc_source="backend/tool_instance_v2/urls.py",
+        description="Reveals which adapter settings the tool requires at deploy time. "
+                    "Note: an exported tool may list `challenge_llm` as required even "
+                    "when the project has enable_challenge=false; a tool instance whose "
+                    "metadata.challenge_llm is empty then fails deployment validation "
+                    "(CAPTURE2 BUG 4). Set it with `workflow tool set-metadata`."),
+    _ep("list", "GET", "/tool_instance/", "List tools attached to workflows.",
+        (Param("workflow", type=ParamType.UUID, help="Filter to one workflow"),),
+        subgroup="workflow tool", permission=Permission.READ,
+        doc_source="backend/tool_instance_v2/urls.py",
+        table_columns=("id", "tool_id", "step", "workflow")),
+    _ep("add", "POST", "/tool_instance/", "Attach a registry tool to a workflow.",
+        (Param("workflow_id", type=ParamType.UUID, location=ParamLocation.BODY,
+               required=True, flag="--workflow", help="Workflow to attach the tool to"),
+         Param("tool_id", location=ParamLocation.BODY, required=True, flag="--tool",
+               help="Registry id (function_name) from `tool registry list`")),
+        subgroup="workflow tool", body=BodyKind.JSON, permission=Permission.READ_WRITE,
+        doc_source="backend/tool_instance_v2/urls.py",
+        description="A workflow holds at most one tool. Seeds adapter settings from the "
+                    "org DEFAULT TRIAD -- set that first with `adapter default-triad set`, "
+                    "or creation 500s while still persisting a half-configured row "
+                    "(CAPTURE2 GAP 3). Attaching activates the workflow.",
+        examples=("unstract platform workflow tool add --workflow <wf-id> --tool <registry-id>",)),
+    _ep("get", "GET", "/tool_instance/{id}/", "Show one attached tool, including its metadata.",
+        (Param("id", type=ParamType.UUID, location=ParamLocation.PATH, required=True,
+               help="Tool instance id from `workflow tool list`"),),
+        subgroup="workflow tool", permission=Permission.READ,
+        doc_source="backend/tool_instance_v2/urls.py",
+        description="Read this to see the tool instance's current `metadata` before "
+                    "patching it. Required for the read-modify-write below."),
+    _ep("set-metadata", "PATCH", "/tool_instance/{id}/",
+        "Replace an attached tool's metadata (e.g. to set challenge_llm).",
+        (Param("id", type=ParamType.UUID, location=ParamLocation.PATH, required=True,
+               help="Tool instance id from `workflow tool list`"),
+         Param("metadata", type=ParamType.JSON, location=ParamLocation.BODY, required=True,
+               help="COMPLETE metadata object (accepts @file.json). This REPLACES the "
+                    "stored metadata wholesale -- it is not merged")),
+        subgroup="workflow tool", body=BodyKind.JSON, permission=Permission.READ_WRITE,
+        doc_source="backend/tool_instance_v2/urls.py",
+        description="REPLACES metadata wholesale (the backend does not merge), so you "
+                    "MUST send the full object. Sending only one key wipes "
+                    "prompt_registry_id and orphans the tool. Use this to fix the "
+                    "deploy-time challenge_llm requirement (CAPTURE2 BUG 4): read the "
+                    "instance's current metadata, add a valid LLM adapter id (from "
+                    "`settings-schema`'s enum), and pass the whole object back:\n\n"
+                    "  # 1. read the current metadata object (the `metadata` field)\n"
+                    "  unstract ... workflow tool get --id <i>\n"
+                    "  # 2. save that object to m.json, set metadata.challenge_llm,\n"
+                    "  #    then send the COMPLETE object back:\n"
+                    "  unstract ... workflow tool set-metadata --id <i> --metadata @m.json",
+        examples=("unstract platform workflow tool set-metadata --id <id> --metadata @metadata.json",)),
+    _ep("remove", "DELETE", "/tool_instance/{id}/", "Detach a tool from a workflow.",
+        (Param("id", type=ParamType.UUID, location=ParamLocation.PATH, required=True,
+               help="Tool instance id from `workflow tool list`"),),
+        subgroup="workflow tool", permission=Permission.FULL_ACCESS,
+        doc_source="backend/tool_instance_v2/urls.py",
+        description=f"{_DELETE_NOTE} A read_write key cannot DELETE a tool instance "
+                    "even though it can create one (CAPTURE2 GAP 5)."),
+    _ep("list", "GET", "/workflow/endpoint/", "List a workflow's source/destination endpoints.",
+        (Param("workflow", type=ParamType.UUID, help="Filter to one workflow"),
+         Param("endpoint_type", choices=["SOURCE", "DESTINATION"], help="Filter by side"),
+         Param("connection_type",
+               choices=["FILESYSTEM", "DATABASE", "API", "MANUALREVIEW"],
+               help="Filter by connection type")),
+        subgroup="workflow endpoint", permission=Permission.READ,
+        doc_source="backend/workflow_manager/endpoint_v2/urls.py",
+        table_columns=("id", "endpoint_type", "connection_type"),
+        description="Both endpoints are auto-created by `workflow create` with a null "
+                    "connection_type; set them to API before creating a deployment."),
+    _ep("set", "PATCH", "/workflow/endpoint/{id}/", "Configure a workflow endpoint.",
+        (Param("id", type=ParamType.UUID, location=ParamLocation.PATH, required=True,
+               help="Endpoint id from `workflow endpoint list`"),
+         Param("connection_type", location=ParamLocation.BODY, required=True,
+               choices=["API", "FILESYSTEM", "DATABASE", "MANUALREVIEW"],
+               help="Connection type for this endpoint")),
+        subgroup="workflow endpoint", body=BodyKind.JSON, permission=Permission.READ_WRITE,
+        doc_source="backend/workflow_manager/endpoint_v2/urls.py",
+        description="For an API deployment, set BOTH endpoints to connection_type=API. "
+                    "API and MANUALREVIEW need no connector/credentials.",
+        examples=("unstract platform workflow endpoint set --id <endpoint-id> --connection-type API",)),
+)
+
+
+# --------------------------------------------------------------------------- #
 # API Deployments (management)
 # --------------------------------------------------------------------------- #
 
@@ -573,18 +903,26 @@ _API_DEPLOYMENTS: tuple[Endpoint, ...] = (
                help="Deployment identifier"),),
         subgroup="api-deployment key", doc="v1-api-deployments.mdx", permission=Permission.READ),
     _ep("create", "POST", "/api/keys/api/{api_id}/", "Create an API key for a deployment.",
+        # `api_id` is the URL path param and `api` the body param, and the server
+        # needs BOTH -- the same value, spelled twice (GOTCHAS #6). `mirror_as`
+        # copies the path value into the body as `api`, so `--api-id` alone is
+        # enough; there is nothing for the caller to repeat.
         (Param("api_id", type=ParamType.UUID, location=ParamLocation.PATH, required=True,
-               help="Deployment identifier"),
-         Param("api", type=ParamType.UUID, location=ParamLocation.BODY,
-               help="Deployment to attach the key to"),
-         Param("pipeline", type=ParamType.UUID, location=ParamLocation.BODY,
-               help="Pipeline to attach the key to"),
+               mirror_as="api", help="Deployment identifier. Also sent as the body's "
+                                     "`api` field, so it need not be repeated"),
          Param("description", location=ParamLocation.BODY, help="Description (max 255 chars)"),
          Param("is_active", type=ParamType.BOOL, location=ParamLocation.BODY, default=True,
                help="Whether the key is usable")),
         subgroup="api-deployment key", body=BodyKind.JSON, doc="v1-api-deployments.mdx",
         permission=Permission.READ_WRITE,
-        constraints=(MutuallyExclusive(("api", "pipeline")),)),
+        description="Creating a key for a *pipeline* is a different route -- use "
+                    "`pipeline key create`, which takes --pipeline-id.",
+        doc_conflict="The docs list `api` and `pipeline` as body params. `api` is "
+                     "mirrored from the --api-id path param (it is always the same "
+                     "value, and the docs' own example repeats it), and `pipeline` is "
+                     "dropped: this route is /api/keys/api/{api_id}/, so a pipeline key "
+                     "belongs on `pipeline key create`. Do not restore either flag.",
+        examples=("unstract platform api-deployment key create --api-id <deployment-id>",)),
     _ep("get", "GET", "/api/keys/{id}/", "Show one API key.",
         (Param("id", type=ParamType.UUID, location=ParamLocation.PATH, required=True,
                help="Key identifier"),),
@@ -686,18 +1024,24 @@ _PIPELINES: tuple[Endpoint, ...] = (
         subgroup="pipeline key", doc="v1-etl-pipelines.mdx", permission=Permission.READ),
     _ep("create", "POST", "/api/keys/pipeline/{pipeline_id}/",
         "Create an API key for a pipeline.",
+        # Same path/body duplication as `api-deployment key create` (GOTCHAS #6):
+        # the URL takes `pipeline_id`, the body wants the same value as `pipeline`.
         (Param("pipeline_id", type=ParamType.UUID, location=ParamLocation.PATH,
-               required=True, help="Pipeline identifier"),
-         Param("pipeline", type=ParamType.UUID, location=ParamLocation.BODY,
-               help="Pipeline to attach the key to"),
-         Param("api", type=ParamType.UUID, location=ParamLocation.BODY,
-               help="Deployment to attach the key to"),
+               required=True, mirror_as="pipeline",
+               help="Pipeline identifier. Also sent as the body's `pipeline` field, "
+                    "so it need not be repeated"),
          Param("description", location=ParamLocation.BODY, help="Description (max 255 chars)"),
          Param("is_active", type=ParamType.BOOL, location=ParamLocation.BODY, default=True,
                help="Whether the key is usable")),
         subgroup="pipeline key", body=BodyKind.JSON, doc="v1-etl-pipelines.mdx",
         permission=Permission.READ_WRITE,
-        constraints=(MutuallyExclusive(("pipeline", "api")),)),
+        description="Creating a key for an *API deployment* is a different route -- use "
+                    "`api-deployment key create`, which takes --api-id.",
+        doc_conflict="Mirror of the `api-deployment key create` divergence: `pipeline` "
+                     "is mirrored from --pipeline-id, and the `api` body param is "
+                     "dropped because this route is /api/keys/pipeline/{pipeline_id}/. "
+                     "Do not restore either flag.",
+        examples=("unstract platform pipeline key create --pipeline-id <pipeline-id>",)),
 )
 
 
@@ -755,7 +1099,12 @@ _ADAPTERS: tuple[Endpoint, ...] = (
     _ep("list", "GET", "/adapter/", "List configured adapter instances.",
         (Param("adapter_type", choices=_ADAPTER_TYPES, help="Filter by category"),),
         subgroup="adapter", doc="v1-adapters.mdx", permission=Permission.READ,
-        table_columns=("id", "adapter_name", "adapter_type", "model", "is_available")),
+        description="`is_available` reflects the adapter CLASS being installed, NOT "
+                    "whether your API key may use it. An adapter owned by another user "
+                    "and not shared will still 403 at extraction. Check created_by_email "
+                    "and share adapters to the org (or set a default triad) before use.",
+        table_columns=("id", "adapter_name", "adapter_type", "model",
+                       "is_available", "created_by_email")),
     _ep("create", "POST", "/adapter/", "Create an adapter instance.", _AD_FIELDS,
         subgroup="adapter", body=BodyKind.JSON, doc="v1-adapters.mdx",
         permission=Permission.READ_WRITE),
@@ -775,7 +1124,13 @@ _ADAPTERS: tuple[Endpoint, ...] = (
     _ep("users", "GET", "/adapter/users/{id}/", "List users an adapter is shared with.",
         (_AD_ID,), subgroup="adapter", doc="v1-adapters.mdx", permission=Permission.READ),
     _ep("get", "GET", "/adapter/default_triad/", "Show the organization's default adapters.",
-        subgroup="adapter default-triad", doc="v1-adapters.mdx", permission=Permission.READ),
+        subgroup="adapter default-triad", doc="v1-adapters.mdx", permission=Permission.READ,
+        description="Returns an empty object `{}` when no default triad has been set "
+                    "for the organization -- that is 'unset', not an error (GOTCHAS "
+                    "#10). Set one with `adapter default-triad set`; `workflow tool "
+                    "add` seeds a tool instance's adapters from it, so configuring it "
+                    "first avoids a half-configured tool instance.",
+        examples=("unstract platform adapter default-triad get",)),
     # The request keys here differ from the response keys of the GET above
     # (llm_default vs default_llm_adapter). That asymmetry is upstream.
     _ep("set", "POST", "/adapter/default_triad/", "Set the organization's default adapters.",
@@ -975,6 +1330,7 @@ _GROUPS: tuple[Endpoint, ...] = (
 ENDPOINTS: tuple[Endpoint, ...] = (
     *_PROMPT_STUDIO,
     *_WORKFLOWS,
+    *_WORKFLOW_ASSEMBLY,
     *_API_DEPLOYMENTS,
     *_PIPELINES,
     *_ADAPTERS,

@@ -174,15 +174,86 @@ class CLIError(Exception):
         return {"error": payload}
 
     def emit(self, secrets: list[str] | None = None) -> None:
-        """Write the structured error to stderr. Never to stdout."""
+        """Write the structured error to stderr, and to stdout when piped.
+
+        Humans always get it on stderr. When stdout is not a TTY -- the agent /
+        wrapper case -- the same envelope is *also* written to stdout, so a
+        pipeline that feeds stdout to a JSON parser sees a valid object instead of
+        an empty stream (DOC 9). A result and an error never share an invocation's
+        stdout: emit runs only on the error path, which produces no result output.
+        """
         text = json.dumps(self.to_dict(), indent=2, default=str)
         if secrets:
             text = scrub(text, secrets)
         print(text, file=sys.stderr)
+        if not sys.stdout.isatty():
+            print(text, file=sys.stdout)
+
+    def emit_stdout_only(self, secrets: list[str] | None = None) -> None:
+        """Write the envelope to stdout when piped, leaving stderr untouched.
+
+        For Click's own usage errors, whose human message Click has already
+        printed to stderr: this adds only the machine-readable copy on stdout
+        (DOC 9), without duplicating the human line.
+        """
+        if sys.stdout.isatty():
+            return
+        text = json.dumps(self.to_dict(), indent=2, default=str)
+        if secrets:
+            text = scrub(text, secrets)
+        print(text, file=sys.stdout)
 
 
-def hint_for(status: int, endpoint: str | None = None) -> str | None:
-    """A short, actionable next step for common failures."""
+def hint_for(status: int, endpoint: str | None = None, message: str | None = None) -> str | None:
+    """A short, actionable next step for common failures.
+
+    ``message`` lets a hint target a specific server error where the status code
+    alone is ambiguous -- an adapter-permission 403 and a dead-vector-DB 500 both
+    have a much more useful next step than the generic status hint.
+    """
+    low = (message or "").lower()
+
+    # Adapter permission (IMPROVEMENT 4): the API key identity is distinct from the
+    # human account of the same name, so an adapter can be "available" yet unusable.
+    if "permission error" in low and "adapter" in low:
+        return (
+            "One or more adapters are not shared with your API key. The API user "
+            "(e.g. *-api-rw-*@platform.internal) is a DIFFERENT identity from your "
+            "human account. Share the adapters to the org in the web console, or set "
+            "a default triad, then retry. `adapter list` shows created_by_email."
+        )
+    # The message names the *project* default, but the server never reads it: it
+    # resolves the profile from the prompt's own profile_manager FK. Chasing the
+    # project default is the wrong fix and cost real time (GOTCHAS #1).
+    if "default llm profile is not configured" in low:
+        return (
+            "Misleading message: the server resolves the LLM profile from the "
+            "PROMPT's own profile_manager field and does NOT fall back to the "
+            "project default -- so `profile set-default` cannot fix this. Set it "
+            "on the prompt: `prompt patch --prompt-id <id> --profile-manager "
+            "<profile-id>` (or pass --profile-manager on this call). Create "
+            "prompts with --profile-manager to avoid it entirely."
+        )
+    # Deploy-time tool validation (GOTCHAS #2). The 422 surfaces only at
+    # `deployment run`, long after the tool instance was attached.
+    if "tool validation failed" in low or ("challenge_llm" in low or "challenge llm" in low):
+        return (
+            "The attached tool instance likely has an empty metadata.challenge_llm, "
+            "which fails validation even when enable_challenge is false. Fix: "
+            "`workflow tool get --id <instance>` to read the CURRENT metadata, set "
+            "challenge_llm to a valid LLM adapter id, and send the COMPLETE object "
+            "back with `workflow tool set-metadata` (it replaces, never merges). "
+            "To avoid it next time, set the project's --challenge-llm before "
+            "`export-tool`."
+        )
+    # Dead vector DB (IMPROVEMENT 6): short docs don't need RAG at all.
+    if "vectordb" in low or "vector db" in low or "qdrant" in low:
+        return (
+            "The vector DB is unreachable. For short documents you can skip RAG "
+            "entirely: set the profile's chunk_size=0 (and chunk_overlap=0), which "
+            "bypasses embedding and the vector DB, then re-index."
+        )
+
     match status:
         case 401 | 403:
             return (

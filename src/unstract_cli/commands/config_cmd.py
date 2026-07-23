@@ -309,4 +309,72 @@ def config_path_cmd(output: str | None) -> None:
     emit({"path": str(path), "exists": path.exists()}, _fmt(output))
 
 
+#: A cheap authenticated GET per API group, used by `config doctor --check` to
+#: prove the resolved credential actually works. Kept read-only and side-effect
+#: free. Groups without a safe no-arg probe are reported as source-only.
+_DOCTOR_PROBES: dict[str, str] = {
+    "docstudio.platform": "docstudio.platform.prompt-studio.select-choices",
+    "llmwhisperer": "whisper.usage",
+}
+
+
+@config_group.command(
+    "doctor", help="Diagnose credential resolution and (optionally) test it live."
+)
+@click.option("--profile", "-p", default=None, help="Profile to diagnose.")
+@click.option("--check/--no-check", default=True,
+              help="Make one authenticated call per configured group to confirm it works.")
+@_output_option
+def config_doctor(profile: str | None, check: bool, output: str | None) -> None:
+    """Report where each credential resolves from, and whether it authenticates.
+
+    Answers the question that costs the most time: the CLI reports a key as "not
+    configured", but you set it -- where is it looking? For `env:` refs it says
+    whether the variable is present in THIS process (a shell `export` in a login
+    profile the CLI did not inherit is the classic trap), and with --check it
+    makes one real call so a working credential reads as working.
+    """
+    from unstract_cli.core import http
+    from unstract_cli.endpoints import get_endpoint
+
+    resolved = ResolvedConfig(file=load_config(), profile_name=profile)
+    groups: list[dict[str, Any]] = []
+
+    for target, group in ((".".join(p), g) for g, p in GROUP_PATH.items()):
+        entry: dict[str, Any] = {"target": target}
+        for key in ("base_url", "api_key", "org_id"):
+            try:
+                entry[key] = resolved.resolution_source(group, key)
+            except ConfigError:
+                entry[key] = {"resolved": False, "source": "unset"}
+
+        if check and entry["api_key"]["resolved"] and (probe := _DOCTOR_PROBES.get(target)):
+            entry["live_check"] = _probe(http, get_endpoint(probe), resolved)
+        groups.append(entry)
+
+    emit(
+        {
+            "active_profile": resolved.active_profile,
+            "config_path": str(resolved.file.path),
+            "config_exists": resolved.file.exists,
+            "groups": groups,
+        },
+        _fmt(output),
+    )
+
+
+def _probe(http: Any, endpoint: Any, resolved: ResolvedConfig) -> dict[str, Any]:
+    """Run one authenticated GET and report only pass/fail, never the payload."""
+    try:
+        plan = http.build_request(endpoint, resolved, {})
+        response = http.execute(plan, endpoint=endpoint, max_retries=0)
+    except Exception as exc:  # noqa: BLE001 - doctor must never itself crash
+        return {"ok": False, "detail": str(exc)}
+    ok = response.status < 400
+    detail = "authenticated" if ok else f"HTTP {response.status}"
+    if response.status in (401, 403):
+        detail = f"HTTP {response.status}: credential rejected"
+    return {"ok": ok, "detail": detail}
+
+
 __all__ = ["config_group"]

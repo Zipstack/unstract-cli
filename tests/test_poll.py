@@ -112,17 +112,20 @@ class TestDeployment422Defect:
 
     @staticmethod
     def _run(monkeypatch, in_progress_status_code: int):
+        # The real status GET returns a TOP-LEVEL `status`, and its `message` holds
+        # the result -- NOT the nested `{message: {execution_status}}` shape the run
+        # POST uses. Testing the true shape is what protects CAPTURE2 BUG 2.
         url = f"{PLATFORM_BASE}/deployment/api/org_test/my-api/"
         respx.get(url).mock(
             side_effect=[
                 httpx.Response(
                     in_progress_status_code,
-                    json={"message": {"execution_status": "EXECUTING"}},
+                    json={"status": "EXECUTING", "message": None},
                 ),
                 httpx.Response(
                     200,
-                    json={"message": {"execution_status": "COMPLETED",
-                                      "result": [{"file": "a.pdf", "status": "Success"}]}},
+                    json={"status": "COMPLETED",
+                          "message": [{"file": "a.pdf", "status": "Success"}]},
                 ),
             ]
         )
@@ -141,13 +144,13 @@ class TestDeployment422Defect:
     def test_current_behaviour_422_in_progress(self, monkeypatch):
         """Today: 422 + EXECUTING means 'still running', not 'failed'."""
         result = self._run(monkeypatch, 422)
-        assert extract_status(result, "execution_status") == "COMPLETED"
+        assert extract_status(result, ("status", "execution_status")) == "COMPLETED"
 
     @respx.mock
     def test_future_behaviour_200_in_progress(self, monkeypatch):
         """After the fix: 200 + EXECUTING must behave exactly the same."""
         result = self._run(monkeypatch, 200)
-        assert extract_status(result, "execution_status") == "COMPLETED"
+        assert extract_status(result, ("status", "execution_status")) == "COMPLETED"
 
     @respx.mock
     def test_both_paths_agree(self, monkeypatch):
@@ -188,7 +191,7 @@ class TestDeployment422Defect:
         url = f"{PLATFORM_BASE}/deployment/api/org_test/my-api/"
         respx.get(url).mock(
             return_value=httpx.Response(
-                422, json={"message": {"execution_status": "ERROR", "error": "tool failed"}}
+                422, json={"status": "ERROR", "message": "tool failed"}
             )
         )
         cfg = _config(
@@ -203,6 +206,115 @@ class TestDeployment422Defect:
                 sleep=lambda _: None,
             )
         assert exc.value.exit_code is ExitCode.VALIDATION
+
+    @respx.mock
+    def test_first_poll_terminal_returns_result_not_406(self, monkeypatch):
+        """CAPTURE2 BUG 2 - fast completion: the very first status poll is already
+        COMPLETED. The status endpoint is the one-shot store, so that read consumes
+        the result. The loop must recognise the top-level `status` on that read and
+        return its body (the result) -- not fail to recognise it, discard it, and
+        406 on a second poll. A single mocked read enforces 'no second read'."""
+        url = f"{PLATFORM_BASE}/deployment/api/org_test/my-api/"
+        route = respx.get(url).mock(
+            return_value=httpx.Response(
+                200,
+                json={"status": "COMPLETED",
+                      "message": [{"file": "bill.pdf", "result": {"invoice_no": "X-1"}}]},
+            )
+        )
+        cfg = _config(
+            monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
+        )
+        result = wait_for_completion(
+            endpoint=get_endpoint("docstudio.deployment.run"),
+            initial={"message": {"execution_id": "e-1", "execution_status": "PENDING"}},
+            config=cfg,
+            values={"api_name": "my-api"},
+            sleep=lambda _: None,
+        )
+        assert route.call_count == 1, "must not re-read a one-shot result"
+        assert result["message"][0]["result"]["invoice_no"] == "X-1"
+
+
+class TestPromptStudioWait:
+    """IMPROVEMENT 3 - fetch-response is fire-and-forget; --wait must poll
+    task-status to completion and then read the result from the Output Manager,
+    which is keyed by the *original request's* tool_id, not the poll handle."""
+
+    _PS_BASE = f"{PLATFORM_BASE}/api/v1/unstract/org_test/prompt-studio"
+
+    @respx.mock
+    def test_polls_task_status_then_reads_output(self, monkeypatch):
+        respx.get(f"{self._PS_BASE}/the-tool/task-status/task-9").mock(
+            side_effect=[
+                httpx.Response(200, json={"task_id": "task-9", "status": "processing"}),
+                httpx.Response(200, json={"task_id": "task-9", "status": "completed"}),
+            ]
+        )
+        output = respx.get(f"{self._PS_BASE}/prompt-output/").mock(
+            return_value=httpx.Response(
+                200, json=[{"prompt_id": "p1", "output": "42", "modified_at": "t"}]
+            )
+        )
+        cfg = _config(
+            monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
+        )
+        result = wait_for_completion(
+            endpoint=get_endpoint("docstudio.platform.prompt-studio.fetch-response"),
+            initial={"task_id": "task-9", "run_id": "r1", "status": "accepted"},
+            config=cfg,
+            values={"tool_id": "the-tool", "document_id": "d1", "id": "p1"},
+            sleep=lambda _: None,
+        )
+        assert result[0]["output"] == "42"
+        # The retrieve is narrowed to the exact prompt + document this call ran
+        # (id->prompt_id, document_id->document_manager), keyed by the original
+        # tool_id, and does NOT leak the task_id handle into the output-list call.
+        url = str(output.calls.last.request.url)
+        assert "tool_id=the-tool" in url
+        assert "prompt_id=p1" in url
+        assert "document_manager=d1" in url
+        assert "task_id" not in url
+
+    @respx.mock
+    def test_failed_task_is_terminal_failure(self, monkeypatch):
+        respx.get(f"{self._PS_BASE}/the-tool/task-status/task-9").mock(
+            return_value=httpx.Response(
+                500, json={"task_id": "task-9", "status": "failed", "error": "boom"}
+            )
+        )
+        cfg = _config(
+            monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
+        )
+        with pytest.raises(CLIError) as exc:
+            wait_for_completion(
+                endpoint=get_endpoint("docstudio.platform.prompt-studio.fetch-response"),
+                initial={"task_id": "task-9", "status": "accepted"},
+                config=cfg,
+                values={"tool_id": "the-tool"},
+                sleep=lambda _: None,
+            )
+        assert exc.value.exit_code is ExitCode.VALIDATION
+
+    @respx.mock
+    def test_single_pass_retrieve_asks_for_single_pass_rows(self, monkeypatch):
+        respx.get(f"{self._PS_BASE}/the-tool/task-status/task-9").mock(
+            return_value=httpx.Response(200, json={"status": "completed"})
+        )
+        output = respx.get(f"{self._PS_BASE}/prompt-output/").mock(
+            return_value=httpx.Response(200, json=[{"output": "sp"}])
+        )
+        cfg = _config(
+            monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
+        )
+        wait_for_completion(
+            endpoint=get_endpoint("docstudio.platform.prompt-studio.single-pass"),
+            initial={"task_id": "task-9", "status": "accepted"},
+            config=cfg,
+            values={"tool_id": "the-tool"},
+            sleep=lambda _: None,
+        )
+        assert "is_single_pass_extract=true" in str(output.calls.last.request.url)
 
 
 class TestApiHubWait:

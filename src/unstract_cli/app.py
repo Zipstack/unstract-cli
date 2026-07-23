@@ -149,10 +149,17 @@ _HAND_AUTHORED_GROUPS: dict[str, click.Group] = {"config": config_group}
 #: Fields kept at `--detail summary`. Enough to choose a command, not to call it.
 _SUMMARY_FIELDS = ("command", "kind", "summary")
 
-#: Detail levels, cheapest first. Full detail for all 143 commands is ~63k tokens
-#: -- far too much for an agent to read speculatively -- so the default is the
-#: cheap index and the agent drills in from there.
-DETAIL_LEVELS = ("summary", "full")
+#: Detail levels, cheapest first. Full detail for every command is ~50k tokens and
+#: the flat summary list is ~4.5k -- both too much for an agent to read blind -- so
+#: the default is `groups`: a ~1k-token map of the ~15 navigable groups with their
+#: command counts, from which the agent drills into exactly the subtree it needs.
+DETAIL_LEVELS = ("groups", "summary", "full")
+
+#: Below this many (recursive) leaves, a group is a reasonable single drill target
+#: and the overview stops descending into it; above it, the overview recurses so no
+#: one drill returns an unwieldy slice. Tuned so `docstudio platform` fans out into
+#: its resource subgroups while everything else stays one level deep.
+_GROUP_OVERVIEW_MAX_LEAVES = 40
 
 
 def _matches(entry: dict[str, Any], group: str | None, command: str | None) -> bool:
@@ -168,6 +175,65 @@ def _matches(entry: dict[str, Any], group: str | None, command: str | None) -> b
         if entry["path"][: len(wanted)] != wanted:
             return False
     return True
+
+
+def _navigable_groups(node: click.Group, path: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Walk the Click tree into a coarse map of navigable groups (drift-free).
+
+    Emits one entry per group at the level where it is a sensible single drill
+    target: a group with more than :data:`_GROUP_OVERVIEW_MAX_LEAVES` reachable
+    commands (and subgroups to split it) is descended into instead of emitted, so
+    `docstudio platform` fans out into its resource subgroups while smaller groups
+    stay one line. Descriptions come from each group's own ``help``, and the
+    `drill` command is the exact ``--discover --command`` prefix that selects the
+    subtree -- verified by test to return the advertised count, because this
+    project's rule is that discovery metadata must never lie about the parser.
+    """
+    leaves = _count_leaves(node)
+    subgroups = sorted(
+        (n, c) for n, c in node.commands.items() if isinstance(c, click.Group)
+    )
+    # Descend only when the group is both too big to be one drill target AND has
+    # subgroups to split it on; otherwise emit it whole.
+    if leaves > _GROUP_OVERVIEW_MAX_LEAVES and subgroups:
+        out: list[dict[str, Any]] = []
+        # A group with its own direct leaves plus oversized subgroups still needs a
+        # line for those direct leaves (e.g. `docstudio platform` has one).
+        if any(not isinstance(c, click.Group) for c in node.commands.values()):
+            out.append(_group_entry(node, path, direct_only=True))
+        for name, child in subgroups:
+            out.extend(_navigable_groups(child, (*path, name)))
+        return out
+    return [_group_entry(node, path)]
+
+
+def _count_leaves(node: click.Group) -> int:
+    """Total leaf (non-group) commands reachable under a group."""
+    total = 0
+    for child in node.commands.values():
+        total += _count_leaves(child) if isinstance(child, click.Group) else 1
+    return total
+
+
+def _group_entry(
+    node: click.Group, path: tuple[str, ...], *, direct_only: bool = False
+) -> dict[str, Any]:
+    """One line in the group overview: what it is, how big, and how to drill in."""
+    count = (
+        sum(1 for c in node.commands.values() if not isinstance(c, click.Group))
+        if direct_only
+        else _count_leaves(node)
+    )
+    drill = "unstract --discover --command '" + " ".join(path) + "'"
+    entry = {
+        "group": " ".join(path),
+        "commands": count,
+        "summary": (node.short_help or node.help or "").strip().split("\n")[0],
+        "drill": drill + " --detail summary",
+    }
+    if direct_only:
+        entry["note"] = "direct commands only; subgroups are listed separately"
+    return entry
 
 
 def discover(
@@ -218,6 +284,12 @@ def discover(
             )
 
     commands = [c for c in commands if _matches(c, group, command)]
+
+    # `groups` is the cheap entry point and only makes sense unfiltered: a filter
+    # already narrows to a subtree, so there it degrades to the flat summary list.
+    if detail == "groups" and (group or command):
+        detail = "summary"
+
     if detail == "summary":
         commands = [
             {k: c[k] for k in _SUMMARY_FIELDS if k in c} for c in commands
@@ -234,18 +306,42 @@ def discover(
             "docstudio": {
                 "name": "Document Studio",
                 "group": "docstudio",
-                "note": "Formerly named Unstract. Owns the platform, deployment and hitl API groups.",
+                "note": "Owns the platform, deployment and hitl API groups.",
             },
             "llmwhisperer": {"name": "LLMWhisperer", "group": "whisper"},
             "apihub": {"name": "API Hub", "group": "apihub"},
         },
         "detail": detail,
-        "count": len(commands),
     }
     if group:
         envelope["group"] = group
     if command:
         envelope["command_filter"] = command
+
+    # `groups`: the ~1k-token map of navigable groups, from which an agent drills
+    # into exactly one subtree. This is the default and the entry point, so it also
+    # carries the global boilerplate (exit codes, conventions, drill hints).
+    if detail == "groups":
+        tree = build_group_tree(list(ALL_ENDPOINTS))
+        overview: list[dict[str, Any]] = []
+        for name in sorted(tree):
+            overview.extend(_navigable_groups(tree[name], (name,)))
+        for name, hand in sorted(_HAND_AUTHORED_GROUPS.items()):
+            overview.extend(_navigable_groups(hand, (name,)))
+        return {
+            **envelope,
+            "group_count": len(overview),
+            "command_count": len(commands),
+            "how_to_drill": (
+                "Each group's `drill` command lists its commands (names + summaries). "
+                "Add --detail full to that command for flags and API paths, or use "
+                "--detail summary here for the flat list of all commands."
+            ),
+            "groups": overview,
+            **_GLOBAL_FACTS,
+        }
+
+    envelope["count"] = len(commands)
 
     if detail == "summary":
         # The whole point of the summary level is that an agent reads it first,
@@ -270,40 +366,48 @@ def discover(
 
     return {
         **envelope,
-        "exit_codes": {
-            "0": "success",
-            "1": "generic error",
-            "2": "usage error (bad or missing flags)",
-            "3": "authentication or authorization failure",
-            "4": "not found",
-            "5": "validation error rejected by the API",
-            "6": "rate limited or quota exceeded",
-            "7": "timed out waiting for a terminal state",
-            "8": "remote server error",
-            "9": "result already consumed (one-shot read)",
-        },
-        "conventions": {
-            "output": (
-                "--output json|yaml|table|raw. JSON is the default when stdout is "
-                "not a TTY. Payloads go to stdout; diagnostics and structured "
-                "errors go to stderr."
-            ),
-            "errors": (
-                "Failures emit a JSON object on stderr with code, message, hint "
-                "and retryable."
-            ),
-            "never_interactive": "No command ever prompts; every input is a flag or env var.",
-            "one_shot": (
-                "Commands marked one_shot return their result exactly once. Use "
-                "--save to persist it; a second read exits 9."
-            ),
-            "wait": (
-                "Commands with supports_wait accept --wait to poll to completion, "
-                "plus --poll-interval and --wait-timeout."
-            ),
-        },
+        **_GLOBAL_FACTS,
         "commands": commands,
     }
+
+
+#: Global facts an agent branches on: stable across commands, so they ride the
+#: unfiltered entry points (the groups overview and the full unfiltered list) and
+#: are omitted from narrow queries where they would outweigh the answer.
+_GLOBAL_FACTS: dict[str, Any] = {
+    "exit_codes": {
+        "0": "success",
+        "1": "generic error",
+        "2": "usage error (bad or missing flags)",
+        "3": "authentication or authorization failure",
+        "4": "not found",
+        "5": "validation error rejected by the API",
+        "6": "rate limited or quota exceeded",
+        "7": "timed out waiting for a terminal state",
+        "8": "remote server error",
+        "9": "result already consumed (one-shot read)",
+    },
+    "conventions": {
+        "output": (
+            "--output json|yaml|table|raw. JSON is the default when stdout is "
+            "not a TTY. Payloads go to stdout; diagnostics and structured "
+            "errors go to stderr."
+        ),
+        "errors": (
+            "Failures emit a JSON object on stderr with code, message, hint "
+            "and retryable."
+        ),
+        "never_interactive": "No command ever prompts; every input is a flag or env var.",
+        "one_shot": (
+            "Commands marked one_shot return their result exactly once. Use "
+            "--save to persist it; a second read exits 9."
+        ),
+        "wait": (
+            "Commands with supports_wait accept --wait to poll to completion, "
+            "plus --poll-interval and --wait-timeout."
+        ),
+    },
+}
 
 
 class UnstractCLI(click.Group):
@@ -354,9 +458,12 @@ class UnstractCLI(click.Group):
 @click.option(
     "--detail",
     type=click.Choice(DETAIL_LEVELS),
-    default="summary",
+    default="groups",
     show_default=True,
-    help="How much per command: 'summary' is names and one-liners; 'full' adds flags and API paths.",
+    help=(
+        "How much detail: 'groups' is the cheap map of navigable groups (default); "
+        "'summary' is every command with a one-liner; 'full' adds flags and API paths."
+    ),
 )
 @click.option("--profile", "-p", default=None, help="Config profile to use.")
 @click.option(
@@ -400,26 +507,19 @@ def cli(
         payload = discover(
             group=group, command=command_filter, detail=detail
         )
-        if not payload["commands"]:
-            click.echo(
-                json.dumps(
-                    {
-                        "error": {
-                            "code": "usage_error",
-                            "message": (
-                                "No commands matched"
-                                + (f" --group {group}" if group else "")
-                                + (f" --command {command_filter!r}" if command_filter else "")
-                                + "."
-                            ),
-                            "exit_code": 2,
-                            "hint": "Run `unstract --discover` to list valid groups.",
-                        }
-                    },
-                    indent=2,
-                ),
-                err=True,
-            )
+        # A filtered query returns `commands`; the unfiltered groups overview
+        # returns `groups`. "No match" only applies to a filter that hit nothing.
+        if (group or command_filter) and not payload.get("commands"):
+            from unstract_cli.core.errors import CLIError, ExitCode
+
+            CLIError(
+                "No commands matched"
+                + (f" --group {group}" if group else "")
+                + (f" --command {command_filter!r}" if command_filter else "")
+                + ".",
+                ExitCode.USAGE,
+                hint="Run `unstract --discover` to list valid groups.",
+            ).emit()
             ctx.exit(2)
         # Compact when piped: pretty-printing costs ~36% more tokens for an agent
         # that is only going to parse it anyway.

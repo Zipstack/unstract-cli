@@ -234,6 +234,93 @@ class TestRequestBuilding:
         assert exc.value.exit_code is ExitCode.USAGE
 
 
+class TestJsonParams:
+    """BUG 1 - ParamType.JSON params must reach the wire as objects, not strings."""
+
+    def _cfg(self, monkeypatch):
+        return _config(monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o")
+
+    def test_body_json_param_is_parsed_to_object(self, monkeypatch):
+        """A BODY+JSON param becomes a dict in json_body, not an escaped string."""
+        plan = build_request(
+            get_endpoint("docstudio.platform.prompt-studio.sync-prompts"),
+            self._cfg(monkeypatch),
+            {"tool_id": "t", "data": '{"prompts": [{"prompt_key": "k"}]}'},
+        )
+        assert plan.json_body["data"] == {"prompts": [{"prompt_key": "k"}]}
+        assert isinstance(plan.json_body["data"], dict)
+
+    def test_dry_run_renders_json_param_as_object(self, monkeypatch):
+        plan = build_request(
+            get_endpoint("docstudio.platform.prompt-studio.sync-prompts"),
+            self._cfg(monkeypatch),
+            {"tool_id": "t", "data": '{"a": 1}'},
+        )
+        assert plan.describe()["body"]["data"] == {"a": 1}
+
+    def test_json_param_accepts_file_reference(self, monkeypatch, tmp_path):
+        payload = tmp_path / "prompts.json"
+        payload.write_text('{"prompts": ["x"]}')
+        plan = build_request(
+            get_endpoint("docstudio.platform.prompt-studio.sync-prompts"),
+            self._cfg(monkeypatch),
+            {"tool_id": "t", "data": f"@{payload}"},
+        )
+        assert plan.json_body["data"] == {"prompts": ["x"]}
+
+    def test_invalid_json_is_usage_error(self, monkeypatch):
+        with pytest.raises(CLIError) as exc:
+            build_request(
+                get_endpoint("docstudio.platform.prompt-studio.sync-prompts"),
+                self._cfg(monkeypatch),
+                {"tool_id": "t", "data": "{not json"},
+            )
+        assert exc.value.exit_code is ExitCode.USAGE
+
+    def test_missing_json_file_is_usage_error(self, monkeypatch):
+        with pytest.raises(CLIError) as exc:
+            build_request(
+                get_endpoint("docstudio.platform.prompt-studio.sync-prompts"),
+                self._cfg(monkeypatch),
+                {"tool_id": "t", "data": "@/no/such/file.json"},
+            )
+        assert exc.value.exit_code is ExitCode.USAGE
+
+    def test_form_json_param_is_serialized_back_to_string(self, monkeypatch):
+        """FORM+JSON (deployment run --custom-data) must be a *string* in the
+        multipart field -- httpx cannot form-encode a dict, and the server
+        json.loads it. This guards against a double-encode regression."""
+        cfg = _config(
+            monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o"
+        )
+        plan = build_request(
+            get_endpoint("docstudio.deployment.run"),
+            cfg,
+            {"api_name": "inv", "custom_data": '{"k": "v"}'},
+        )
+        assert plan.data["custom_data"] == '{"k": "v"}'
+        assert isinstance(plan.data["custom_data"], str)
+
+
+class TestResponseFieldGuards:
+    """BUG 2 - mirror tool_id into the prompt-create body so it links."""
+
+    def test_prompt_create_mirrors_tool_id_into_body(self, monkeypatch):
+        plan = build_request(
+            get_endpoint("docstudio.platform.prompt-studio.prompt.create"),
+            _config(monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o"),
+            {"tool_id": "the-tool", "prompt_key": "k"},
+        )
+        # The path still carries it...
+        assert "/the-tool/" in plan.url
+        # ...and it is also sent in the body, defeating the orphaning defect.
+        assert plan.json_body["tool_id"] == "the-tool"
+
+    def test_prompt_create_declares_required_response_field(self):
+        ep = get_endpoint("docstudio.platform.prompt-studio.prompt.create")
+        assert "tool_id" in ep.require_response_fields
+
+
 class TestExecute:
     @respx.mock
     def test_success(self, monkeypatch):
@@ -243,6 +330,34 @@ class TestExecute:
         cfg = _config(monkeypatch, LLMWHISPERER_API_KEY=FAKE_KEY)
         plan = build_request(get_endpoint("whisper.usage"), cfg, {})
         assert execute(plan, max_retries=0).payload["subscription_plan"] == "free"
+
+    @respx.mock
+    def test_concatenated_json_body_becomes_one_array(self, monkeypatch):
+        """CAPTURE2 DOC 6 - an endpoint that streams several JSON objects back to
+        back would break `| json`. The CLI recovers them into one array so the
+        contract 'exactly one JSON document' holds."""
+        respx.get(f"{WHISPER_BASE}/get-usage-info").mock(
+            return_value=httpx.Response(
+                200, headers={"content-type": "application/json"},
+                content=b'{"a": 1}\n{"b": 2}',
+            )
+        )
+        cfg = _config(monkeypatch, LLMWHISPERER_API_KEY=FAKE_KEY)
+        plan = build_request(get_endpoint("whisper.usage"), cfg, {})
+        payload = execute(plan, max_retries=0).payload
+        assert payload == [{"a": 1}, {"b": 2}]
+
+    @respx.mock
+    def test_truly_malformed_json_falls_back_to_text(self, monkeypatch):
+        respx.get(f"{WHISPER_BASE}/get-usage-info").mock(
+            return_value=httpx.Response(
+                200, headers={"content-type": "application/json"},
+                content=b'{"a": 1} not json at all',
+            )
+        )
+        cfg = _config(monkeypatch, LLMWHISPERER_API_KEY=FAKE_KEY)
+        plan = build_request(get_endpoint("whisper.usage"), cfg, {})
+        assert execute(plan, max_retries=0).payload == '{"a": 1} not json at all'
 
     @respx.mock
     def test_retries_on_500_then_succeeds(self, monkeypatch):

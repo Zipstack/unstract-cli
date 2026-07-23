@@ -320,6 +320,40 @@ class ResolvedConfig:
             f"Missing required setting {product}.{key}. To fix: {'; '.join(hints)}."
         )
 
+    def resolution_source(self, product: str | ApiGroup | Product, key: str) -> dict[str, Any]:
+        """Report where a setting resolves from, without echoing a secret.
+
+        `config doctor` uses this to answer the question that costs the most time:
+        "the CLI says the key is not configured, but I set it -- where is it
+        looking?" It reports the winning source (override / env var / profile
+        literal / profile env: ref / unset) so the mismatch is obvious.
+        """
+        name = product.value if isinstance(product, (ApiGroup, Product)) else product
+
+        if self.overrides.get(f"{name}.{key}") is not None or self.overrides.get(key) is not None:
+            return {"resolved": True, "source": "flag/override"}
+
+        for env_var in ENV_VARS.get((name, key), ()):
+            if os.environ.get(env_var):
+                return {"resolved": True, "source": f"env:{env_var}"}
+
+        raw = self._profile_block(name).get(key)
+        if isinstance(raw, str) and raw.startswith("env:"):
+            var = raw[4:].strip()
+            present = bool(os.environ.get(var))
+            return {
+                "resolved": present,
+                "source": f"profile -> env:{var}",
+                "detail": None if present
+                else f"${var} is not set in this process's environment",
+            }
+        if raw not in (None, ""):
+            return {"resolved": True, "source": "profile (literal)"}
+
+        if key == "base_url" and DEFAULT_BASE_URLS.get(name):
+            return {"resolved": True, "source": "built-in default"}
+        return {"resolved": False, "source": "unset"}
+
 
 def starter_profiles() -> dict[str, dict[str, dict[str, Any]]]:
     """Profile stubs written by `config init`.

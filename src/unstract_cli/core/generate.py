@@ -261,6 +261,22 @@ def _run_endpoint(ctx: click.Context, endpoint: Endpoint, kwargs: dict[str, Any]
         http.raise_for_status(response, endpoint)
         payload = response.payload
 
+        # A 2xx does not always mean success: some endpoints return 201 while
+        # leaving a linking field NULL, silently orphaning the record (BUG 2).
+        if endpoint.require_response_fields and isinstance(payload, dict):
+            missing = [
+                f for f in endpoint.require_response_fields if payload.get(f) in (None, "")
+            ]
+            if missing:
+                raise CLIError(
+                    f"Server accepted the request (HTTP {response.status}) but left "
+                    f"{', '.join(missing)} empty; the record was not linked correctly.",
+                    ExitCode.SERVER_ERROR,
+                    endpoint=f"{endpoint.method} {endpoint.path}",
+                    details=payload,
+                    hint="This is a known server-side defect. Re-run, or report it upstream.",
+                )
+
         if kwargs.get("wait") and endpoint.poll:
             payload = wait_for_completion(
                 endpoint=endpoint,
@@ -326,9 +342,8 @@ def build_group_tree(endpoints: list[Endpoint]) -> dict[str, click.Group]:
 #: Top-level group help. One group per product built by Unstract.
 _GROUP_HELP = {
     "docstudio": (
-        "Document Studio — document extraction platform "
-        "(formerly named Unstract). Covers the Platform Management API, "
-        "deployed API workflows, and Human Quality Review."
+        "Document Studio — document extraction platform. Covers the Platform "
+        "Management API, deployed API workflows, and Human Quality Review."
     ),
     "whisper": "LLMWhisperer — convert documents to LLM-ready text.",
     "apihub": "API Hub — vertical extraction (tables, bank statements, doc splitting).",
@@ -339,6 +354,31 @@ _SUBGROUP_HELP = {
     "platform": "Platform Management API (v1) — manage Document Studio resources.",
     "deployment": "Run deployed API workflows and check their status.",
     "hitl": "Human Quality Review — retrieve approved results (Enterprise).",
+    "output": "Read extraction results from the Prompt Studio Output Manager.",
+    "tool": "Attach and configure the tool a workflow runs (deployment assembly).",
+    "endpoint": "Configure a workflow's source/destination endpoints (set to API to deploy).",
+    "registry": "Browse the tool registry to find a tool's function_name.",
+    # Resource subgroups under `docstudio platform`, so the discover groups
+    # overview reads as a map rather than "<name> commands." placeholders.
+    "prompt-studio": "Build extraction projects: prompts, profiles, files, run extraction.",
+    "workflow": "Assemble and run workflows: tools, endpoints, executions, file history.",
+    "api-deployment": "Manage deployed API endpoints and their access keys.",
+    "pipeline": "Manage ETL/Task pipelines and their executions.",
+    "adapter": "Manage LLM, embedding, vector-DB and text-extraction adapters.",
+    "connector": "Manage source/destination connectors for workflows.",
+    "group": "Manage user groups and their members.",
+    "user": "List organization users.",
+    "execution": "Inspect workflow executions and their logs.",
+    "file-history": "Inspect and clear per-file processing history.",
+    "profile": "Manage a project's LLM profiles.",
+    "prompt": "Manage a project's prompts.",
+    "file": "Upload and fetch a project's documents.",
+    "key": "Manage API keys for a deployment or pipeline.",
+    "member": "Manage a group's members.",
+    "default-triad": "Get or set the org default adapter triad.",
+    "approved": "Retrieve approved Human Quality Review results.",
+    "doc-splitter": "Split documents into parts (API Hub).",
+    "webhook": "Manage LLMWhisperer delivery webhooks.",
 }
 
 

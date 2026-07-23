@@ -7,15 +7,23 @@ requires-python = ">=3.12"
 license = { text = "Unstract" }
 
 dependencies = [
+    # Deliberately minimal, to keep the supply-chain surface small. Every entry
+    # below is actually imported by src/; anything unused has been removed.
+    #
     # Click is pinned deliberately: `--discover` depends on the shape of
     # `click.Parameter.to_info_dict()` (see IMPLEMENTATION_PLAN.md R3). A Click
     # major bump could reshape that dict and silently degrade command discovery,
-    # so `tests/test_cli.py` asserts the keys we rely on.
+    # so `tests/test_cli.py` asserts the keys we rely on. Click's only transitive
+    # dependency is colorama (Windows-only).
     "click>=8.1,<9",
-    "typer>=0.12,<1",
+    # httpx owns TLS, redirects, connection reuse and -- the part with no stdlib
+    # equivalent -- multipart/form-data encoding for file uploads. Kept because
+    # replacing it means hand-writing unaudited network code (see the note in the
+    # README/SPEC on why the dependency set stops here rather than at zero).
     "httpx>=0.27",
+    # Zero transitive dependencies each. pyyaml backs `--output yaml`; tomli-w
+    # writes the config file (reading uses the stdlib `tomllib`).
     "pyyaml>=6.0",
-    "rich>=13.0",
     "tomli-w>=1.0",
 ]
 

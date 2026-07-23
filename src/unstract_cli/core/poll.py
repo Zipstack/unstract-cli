@@ -40,10 +40,20 @@ def _dig(payload: Any, field: str) -> Any:
     return None
 
 
-def extract_status(payload: Any, field: str = "status") -> str | None:
-    """Read the status from a response body, case-normalised."""
-    value = _dig(payload, field)
-    return str(value) if value is not None else None
+def extract_status(payload: Any, field: str | tuple[str, ...] = "status") -> str | None:
+    """Read the status from a response body.
+
+    ``field`` may be a single name or a tuple of candidate names tried in order,
+    because the run POST and the status GET spell the state differently (the run
+    nests ``execution_status`` under ``message``; the status GET returns a
+    top-level ``status``). The first candidate that resolves wins.
+    """
+    fields = (field,) if isinstance(field, str) else field
+    for candidate in fields:
+        value = _dig(payload, candidate)
+        if value is not None:
+            return str(value)
+    return None
 
 
 def extract_handle(payload: Any, field: str) -> str | None:
@@ -160,11 +170,18 @@ def wait_for_completion(
         return response.payload
 
     retrieve_endpoint = get_endpoint(spec.retrieve_endpoint)
-    plan = http.build_request(
-        retrieve_endpoint,
-        config,
-        {**_carry_path_values(values or {}, retrieve_endpoint), spec.handle_param: handle},
-    )
+    retrieve_values: dict[str, Any] = _carry_path_values(values or {}, retrieve_endpoint)
+    # Some result stores are keyed by an identifier from the *original* request,
+    # not by the poll handle (prompt-studio's Output Manager is read by tool_id).
+    for entry in spec.retrieve_carry:
+        source, dest = entry if isinstance(entry, tuple) else (entry, entry)
+        if (carried_value := (values or {}).get(source)) is not None:
+            retrieve_values[dest] = carried_value
+    for name, constant in spec.retrieve_extra:
+        retrieve_values[name] = constant
+    if not spec.retrieve_omits_handle:
+        retrieve_values[spec.handle_param] = handle
+    plan = http.build_request(retrieve_endpoint, config, retrieve_values)
     result = http.execute(
         plan, endpoint=retrieve_endpoint, timeout=request_timeout, max_retries=max_retries
     )

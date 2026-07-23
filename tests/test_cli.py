@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -72,12 +74,16 @@ class TestStdoutPurity:
     """SPEC §5.1 - `unstract ... | jq` must always parse."""
 
     @respx.mock
-    def test_errors_go_to_stderr_only(self, runner, cli, whisper_env):
+    def test_errors_are_parseable_on_both_streams_when_piped(self, runner, cli, whisper_env):
+        """DOC 9 - when stdout is not a TTY (the agent/wrapper case), the error
+        envelope is mirrored to stdout so a stdout->JSON pipeline sees a valid
+        object instead of an empty stream. The human copy still goes to stderr."""
         respx.get(f"{WHISPER_BASE}/get-usage-info").mock(
             return_value=httpx.Response(403, json={"message": "Unauthorized"})
         )
         result = runner.invoke(cli, ["whisper", "usage", "--no-retry"])
-        assert result.stdout.strip() == "", "stdout must stay empty on failure"
+        # CliRunner's stdout is not a TTY -- exactly the piped case.
+        assert json.loads(result.stdout)["error"]["code"] == "auth_error"
         assert json.loads(result.stderr)["error"]["code"] == "auth_error"
 
     @respx.mock
@@ -96,6 +102,20 @@ class TestStdoutPurity:
         )
         result = runner.invoke(cli, ["whisper", "usage"])
         assert json.loads(result.stdout) == {"plan": "free"}
+
+    def test_click_usage_error_is_parseable_on_stdout(self):
+        """DOC 9, real entry point - Click's own parse errors (No such option)
+        must also emit the envelope on stdout when piped. CliRunner bypasses the
+        __main__ handler, so drive the actual console entry point in a subprocess
+        with a captured (non-TTY) stdout."""
+        proc = subprocess.run(
+            [sys.executable, "-m", "unstract_cli", "whisper", "usage", "--nope"],
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 2
+        assert json.loads(proc.stdout)["error"]["exit_code"] == 2
+        assert "No such option" in proc.stderr  # human message survives on stderr
 
 
 class TestOneShotSemantics:
@@ -131,6 +151,36 @@ class TestOneShotSemantics:
         )
         runner.invoke(cli, ["whisper", "retrieve", "--whisper-hash", "h1"])
         assert route.call_count == 1
+
+    @respx.mock
+    def test_deployment_run_wait_save_persists_one_shot_result(
+        self, runner, cli, monkeypatch, sample_file, tmp_path
+    ):
+        """CAPTURE2 BUG 2 - `run --wait --save` must persist the one-shot result on
+        its single read: no 406, no data loss."""
+        monkeypatch.setenv("UNSTRACT_DEPLOYMENT_KEY", FAKE_KEY)
+        monkeypatch.setenv("UNSTRACT_ORG_ID", "org_test")
+        base = "https://us-central.unstract.com"
+        respx.post(f"{base}/deployment/api/org_test/inv/").mock(
+            return_value=httpx.Response(
+                200, json={"message": {"execution_id": "e-9", "execution_status": "PENDING"}}
+            )
+        )
+        respx.get(f"{base}/deployment/api/org_test/inv/").mock(
+            return_value=httpx.Response(
+                200, json={"status": "COMPLETED",
+                           "message": [{"file": "bill.pdf", "result": {"invoice_no": "X-1"}}]}
+            )
+        )
+        out = tmp_path / "result.json"
+        result = runner.invoke(
+            cli,
+            ["docstudio", "deployment", "run", "--api-name", "inv",
+             "--file", str(sample_file), "--wait", "--save", str(out),
+             "--base-url", base],
+        )
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(out.read_text())["message"][0]["result"]["invoice_no"] == "X-1"
 
 
 class TestDryRun:
@@ -171,11 +221,56 @@ class TestDiscover:
     """SPEC §5.3 - the machine-readable index agents discover the CLI through."""
 
     def test_valid_json_covering_every_endpoint(self, runner, cli):
-        result = runner.invoke(cli, ["--discover"])
+        # The command list lives at --detail summary (or full); the default is now
+        # the cheaper groups overview.
+        result = runner.invoke(cli, ["--discover", "--detail", "summary"])
         assert result.exit_code == 0
         data = json.loads(result.stdout)
         endpoints = [c for c in data["commands"] if c["kind"] == "endpoint"]
         assert len(endpoints) == len(ALL_ENDPOINTS)
+
+    def test_default_is_groups_overview(self, runner, cli):
+        """The default --discover is the cheap navigable-groups map, not the flat
+        command list -- ~1k tokens instead of ~4.5k."""
+        result = runner.invoke(cli, ["--discover"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["detail"] == "groups"
+        assert "commands" not in data, "the groups overview must not carry the flat list"
+        assert data["groups"], "must list navigable groups"
+        # It stays the entry point, so it keeps the global boilerplate.
+        assert data["exit_codes"]["9"].startswith("result already consumed")
+        assert "conventions" in data
+        # And it is genuinely cheaper than the flat summary.
+        summary = json.loads(
+            runner.invoke(cli, ["--discover", "--detail", "summary"]).stdout
+        )
+        assert len(result.stdout) < len(json.dumps(summary)) / 2
+
+    def test_group_overview_drill_hints_resolve(self, runner, cli):
+        """The scar this project carries: discovery must never advertise a path the
+        parser won't honour. Every group's `drill` command must return the count it
+        advertised."""
+        overview = json.loads(runner.invoke(cli, ["--discover"]).stdout)
+        for g in overview["groups"]:
+            if g.get("note"):
+                continue  # direct-only lines advertise a partial count by design
+            filt = g["drill"].removeprefix("unstract --discover --command ")
+            filt = filt.removesuffix(" --detail summary").strip().strip("'")
+            got = discover(command=filt)
+            assert got["count"] == g["commands"], (
+                f"{g['group']!r} advertised {g['commands']} but drill returned {got['count']}"
+            )
+
+    def test_group_overview_is_drift_free(self, runner, cli):
+        """Every command reachable in the flat list falls under some overview group,
+        and the advertised counts sum to the whole surface."""
+        overview = json.loads(runner.invoke(cli, ["--discover"]).stdout)
+        # Counts of non-direct-only group lines partition the command surface.
+        total = sum(g["commands"] for g in overview["groups"] if not g.get("note"))
+        # The one direct-only line (docstudio platform's own `share`) adds its leaves.
+        total += sum(g["commands"] for g in overview["groups"] if g.get("note"))
+        assert total == overview["command_count"]
 
     def test_click_to_info_dict_contract(self):
         """R3's retirement rests on this exact shape.
@@ -281,17 +376,17 @@ class TestDiscover:
         mode = next(f for f in entry["flags"] if f["name"] == "mode")
         assert "form" in mode["choices"] and "high_quality" in mode["choices"]
 
-    def test_summary_is_the_default(self):
-        """Full detail for 143 commands is ~50k tokens -- too much to read
-        speculatively, so the cheap index is what an unadorned call returns."""
-        data = discover()
+    def test_summary_entries_are_minimal(self):
+        """At --detail summary each command carries only what's needed to choose
+        it -- names and one-liners, no flags."""
+        data = discover(detail="summary")
         assert data["detail"] == "summary"
         entry = data["commands"][0]
         assert set(entry) <= {"command", "kind", "summary"}
         assert "flags" not in entry
 
     def test_summary_explains_how_to_drill_down(self):
-        data = discover()
+        data = discover(detail="summary")
         assert "--group" in data["drill_down"]["one_group"]
         assert set(data["groups"]) >= {"whisper", "docstudio", "apihub", "config"}
 
@@ -331,10 +426,12 @@ class TestDiscover:
         assert "exit_codes" not in narrow
         assert "exit_codes" in discover()
 
-    def test_no_match_exits_2_with_clean_stdout(self, runner, cli):
+    def test_no_match_exits_2_with_parseable_error(self, runner, cli):
+        """DOC 9 - the error envelope is mirrored to stdout when piped, so a
+        consumer parsing --discover output sees a valid object, not empty input."""
         result = runner.invoke(cli, ["--discover", "--group", "nope"])
         assert result.exit_code == 2
-        assert result.stdout.strip() == ""
+        assert "hint" in json.loads(result.stdout)["error"]
         assert "hint" in json.loads(result.stderr)["error"]
 
     def test_compact_when_piped(self, runner, cli):
@@ -584,3 +681,52 @@ class TestConfigCommands:
             result = runner.invoke(cli, ["whisper", "usage", "--profile", "cloud-eu"])
             assert result.exit_code == 0, result.stderr
             assert route.call_count == 1
+
+    def test_doctor_names_the_unset_env_var(self, runner, cli, isolated_env, monkeypatch):
+        """DOC 8 - an `env:` ref pointing at a variable absent from THIS process
+        is the classic silent-auth-failure trap; doctor must name it."""
+        monkeypatch.delenv("LLMWHISPERER_API_KEY", raising=False)
+        (isolated_env / "config.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.llmwhisperer]\n"
+            'api_key = "env:LLMWHISPERER_API_KEY"\n'
+        )
+        report = json.loads(runner.invoke(cli, ["config", "doctor", "--no-check"]).stdout)
+        whisper = next(g for g in report["groups"] if g["target"] == "llmwhisperer")
+        assert whisper["api_key"]["resolved"] is False
+        assert "LLMWHISPERER_API_KEY" in whisper["api_key"]["detail"]
+
+    def test_doctor_reports_env_source_when_present(self, runner, cli, isolated_env, whisper_env):
+        (isolated_env / "config.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.llmwhisperer]\n"
+            'api_key = "env:LLMWHISPERER_API_KEY"\n'
+        )
+        report = json.loads(runner.invoke(cli, ["config", "doctor", "--no-check"]).stdout)
+        whisper = next(g for g in report["groups"] if g["target"] == "llmwhisperer")
+        assert whisper["api_key"]["resolved"] is True
+        assert "LLMWHISPERER_API_KEY" in whisper["api_key"]["source"]
+
+    def test_doctor_live_check_reports_auth(self, runner, cli, isolated_env, whisper_env):
+        (isolated_env / "config.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.llmwhisperer]\n"
+            'api_key = "env:LLMWHISPERER_API_KEY"\n'
+        )
+        with respx.mock:
+            respx.get(f"{WHISPER_BASE}/get-usage-info").mock(
+                return_value=httpx.Response(200, json={"plan": "free"})
+            )
+            report = json.loads(runner.invoke(cli, ["config", "doctor"]).stdout)
+        whisper = next(g for g in report["groups"] if g["target"] == "llmwhisperer")
+        assert whisper["live_check"]["ok"] is True
+
+    def test_doctor_never_echoes_the_secret(self, runner, cli, isolated_env):
+        (isolated_env / "config.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.llmwhisperer]\n"
+            'api_key = "sk-literal-secret-value"\n'
+        )
+        out = runner.invoke(cli, ["config", "doctor", "--no-check"]).stdout
+        assert "sk-literal-secret-value" not in out
+        assert "literal" in out

@@ -16,23 +16,28 @@ jobs:
         with:
           python-version: "3.12"
 
+      # `uv sync --frozen` installs the exact, hash-pinned tree from uv.lock into
+      # a project venv -- the install path the README documents for CI. The
+      # earlier `uv pip install --system` targeted the runner's externally
+      # managed /usr interpreter and failed; `--frozen` also fails the build if
+      # uv.lock is stale versus pyproject.toml, which is what we want.
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
+        run: uv sync --frozen --extra dev
 
       - name: Lint
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Type check
-        run: mypy src
+        run: uv run mypy src
 
       - name: Test
-        run: pytest -q
+        run: uv run pytest -q
 
       # The machine-readable index is the CLI's discovery contract, so a broken
       # tree must fail the build rather than surface at runtime. Check the full
       # detail level too: that is where flag introspection actually runs.
       - name: Verify command index
         run: |
-          unstract --discover | python -c "import json,sys; json.load(sys.stdin)"
-          unstract --discover --detail full | python -c "import json,sys; json.load(sys.stdin)"
-          unstract --discover --group whisper --detail full | python -c "import json,sys; json.load(sys.stdin)"
+          uv run unstract --discover | python -c "import json,sys; json.load(sys.stdin)"
+          uv run unstract --discover --detail full | python -c "import json,sys; json.load(sys.stdin)"
+          uv run unstract --discover --group whisper --detail full | python -c "import json,sys; json.load(sys.stdin)"

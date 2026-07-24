@@ -1,9 +1,9 @@
-"""Task 0 acceptance: the schema expresses parameter patterns P1-P12.
+"""The schema expresses parameter patterns P1-P12.
 
-IMPLEMENTATION_PLAN.md §2 calls this the load-bearing design work: if any pattern
-in the endpoint reference cannot be expressed declaratively, generation degrades
-into per-command special-casing and the Skill's diff stops being meaningful.
-Each test below pins one pattern to a real record in the shipped surface.
+This is the load-bearing design work: if any pattern in the endpoint reference
+cannot be expressed declaratively, generation degrades into per-command
+special-casing and the Skill's diff stops being meaningful. Each test below pins
+one pattern to a real record in the shipped surface.
 """
 
 from __future__ import annotations

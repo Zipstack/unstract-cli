@@ -3,11 +3,11 @@
 Every command, flag, help string, validation rule and `--discover` entry is
 derived from the `Endpoint` records in `unstract_cli.endpoints`. Nothing about a
 command is written twice, so help text cannot drift from behaviour, and the
-bundled Claude Skill has exactly one place to edit (SPEC.md D1, IMPLEMENTATION_PLAN.md §1).
+bundled Claude Skill has exactly one place to edit (SPEC.md D1).
 
 The dataclasses here are frozen: records are a contract, not runtime state.
 
-Parameter patterns P1-P12 (IMPLEMENTATION_PLAN.md §2) map onto these fields as:
+Parameter patterns P1-P12 map onto these fields as:
 
 ===  ==========================  ===================================================
 P    Pattern                     Encoding
@@ -433,7 +433,7 @@ class Endpoint:
     #: P11 - some paths legitimately lack a trailing slash. Recorded so a test can
     #: assert intent rather than treating every missing slash as a typo.
     no_trailing_slash: bool = False
-    #: Optional column hints for ``--output table`` (IMPLEMENTATION_PLAN.md M1.6).
+    #: Optional column hints for ``--output table``.
     table_columns: tuple[str, ...] = ()
     #: Response key holding the payload for ``--output raw``.
     raw_field: str | None = None

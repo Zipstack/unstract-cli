@@ -63,7 +63,7 @@ def _rows_and_columns(
 ) -> tuple[list[str], list[list[str]]]:
     """Derive table columns and rows from arbitrary JSON.
 
-    The generic rule (IMPLEMENTATION_PLAN.md M1.6):
+    The generic rule:
 
     * list of objects -> columns from the union of keys, in first-seen order
     * single object   -> two-column key/value listing

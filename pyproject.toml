@@ -11,10 +11,10 @@ dependencies = [
     # below is actually imported by src/; anything unused has been removed.
     #
     # Click is pinned deliberately: `--discover` depends on the shape of
-    # `click.Parameter.to_info_dict()` (see IMPLEMENTATION_PLAN.md R3). A Click
-    # major bump could reshape that dict and silently degrade command discovery,
-    # so `tests/test_cli.py` asserts the keys we rely on. Click's only transitive
-    # dependency is colorama (Windows-only).
+    # `click.Parameter.to_info_dict()`. A Click major bump could reshape that
+    # dict and silently degrade command discovery, so `tests/test_cli.py`
+    # asserts the keys we rely on. Click's only transitive dependency is
+    # colorama (Windows-only).
     "click>=8.1,<9",
     # httpx owns TLS, redirects, connection reuse and -- the part with no stdlib
     # equivalent -- multipart/form-data encoding for file uploads. Kept because

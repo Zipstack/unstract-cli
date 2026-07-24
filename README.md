@@ -288,5 +288,4 @@ widely-reviewed packages. The remaining risk — a *compromised release* of one 
 those packages — is addressed by hash-pinned installs, not by removing audited
 dependencies: see [Reproducible, hash-pinned installs](#reproducible-hash-pinned-installs-recommended).
 
-See [`SPEC.md`](./SPEC.md) for the full specification and
-[`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for the build sequence.
+See [`SPEC.md`](./SPEC.md) for the full specification.

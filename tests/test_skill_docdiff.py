@@ -8,6 +8,7 @@ wrong or the parser is.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,25 @@ _DEPLOY_DOCS = _REPO_ROOT / "unstract-docs/docs/unstract_platform/api_deployment
 _PLATFORM_DOCS = (
     _REPO_ROOT / "unstract-docs/docs/unstract_platform/api_documentation/versions"
 )
+
+#: Set in CI. These tests are the only oracle in the suite that is not the
+#: endpoint records themselves, so silently skipping them there would leave 125
+#: hand-encoded routes with no drift protection at all while CI stayed green.
+#: With this set, a missing docs checkout fails the build instead.
+_REQUIRE_DOCS = bool(os.environ.get("UNSTRACT_REQUIRE_DOCS"))
+
+
+if _REQUIRE_DOCS:
+    missing = [
+        str(p) for p in (_LLMW_DOCS, _PLATFORM_DOCS, _DEPLOY_DOCS) if not p.exists()
+    ]
+    if missing:
+        raise RuntimeError(
+            "UNSTRACT_REQUIRE_DOCS is set but the documentation repos are not "
+            "checked out alongside this one: " + ", ".join(missing) + ". "
+            "The drift tests would silently skip, leaving the endpoint records "
+            "with no external oracle."
+        )
 
 requires_docs = pytest.mark.skipif(
     not _LLMW_DOCS.exists(), reason="documentation repos not checked out alongside"

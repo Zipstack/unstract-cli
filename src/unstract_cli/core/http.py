@@ -10,11 +10,11 @@ import json
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from urllib.parse import quote
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -607,8 +607,8 @@ def _retry_after(response: httpx.Response) -> float | None:
         if when is None:
             return None
         if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
 
     if seconds != seconds or seconds == float("inf"):  # NaN / inf guard
         return None

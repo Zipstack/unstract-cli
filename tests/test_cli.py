@@ -160,7 +160,9 @@ class TestOneShotSemantics:
         its single read: no 406, no data loss."""
         monkeypatch.setenv("UNSTRACT_DEPLOYMENT_KEY", FAKE_KEY)
         monkeypatch.setenv("UNSTRACT_ORG_ID", "org_test")
-        base = "https://us-central.unstract.com"
+        # A value that differs from DEFAULT_BASE_URLS, so this exercises the
+        # override rather than passing whether or not the flag works.
+        base = "https://override.example"
         respx.post(f"{base}/deployment/api/org_test/inv/").mock(
             return_value=httpx.Response(
                 200, json={"message": {"execution_id": "e-9", "execution_status": "PENDING"}}
@@ -815,3 +817,100 @@ class TestDiscoveryTruthfulness:
         for group in ("whisper", "docstudio", "apihub", "platform"):
             index = discover(detail="summary", group=group)
             assert index["count"] > 0, f"--group {group} matched nothing"
+
+
+class TestSettingPrecedence:
+    """flag > env > profile > default (SPEC §4.1).
+
+    Every link in this chain could be deleted with the suite still green: the
+    one covering test passed `--base-url` equal to the built-in default, so it
+    held whether or not the flag did anything. That is how the Document Studio
+    `--base-url` no-op shipped.
+    """
+
+    @respx.mock
+    def test_flag_beats_env(self, runner, cli, monkeypatch):
+        monkeypatch.setenv("LLMWHISPERER_API_KEY", FAKE_KEY)
+        monkeypatch.setenv("LLMWHISPERER_BASE_URL", "https://from-env.example")
+        route = respx.get("https://from-flag.example/get-usage-info").mock(
+            return_value=httpx.Response(200, json={"plan": "free"})
+        )
+        result = runner.invoke(
+            cli, ["whisper", "usage", "--base-url", "https://from-flag.example"]
+        )
+        assert result.exit_code == 0, result.stderr
+        assert route.called
+
+    @respx.mock
+    def test_env_beats_profile(self, runner, cli, monkeypatch, isolated_env):
+        (isolated_env / "config.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.llmwhisperer]\n"
+            'base_url = "https://from-profile.example"\n'
+        )
+        monkeypatch.setenv("LLMWHISPERER_API_KEY", FAKE_KEY)
+        monkeypatch.setenv("LLMWHISPERER_BASE_URL", "https://from-env.example")
+        route = respx.get("https://from-env.example/get-usage-info").mock(
+            return_value=httpx.Response(200, json={"plan": "free"})
+        )
+        assert runner.invoke(cli, ["whisper", "usage"]).exit_code == 0
+        assert route.called
+
+    @respx.mock
+    def test_profile_beats_default(self, runner, cli, monkeypatch, isolated_env):
+        (isolated_env / "config.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.llmwhisperer]\n"
+            'base_url = "https://from-profile.example"\n'
+        )
+        monkeypatch.setenv("LLMWHISPERER_API_KEY", FAKE_KEY)
+        monkeypatch.delenv("LLMWHISPERER_BASE_URL", raising=False)
+        route = respx.get("https://from-profile.example/get-usage-info").mock(
+            return_value=httpx.Response(200, json={"plan": "free"})
+        )
+        assert runner.invoke(cli, ["whisper", "usage"]).exit_code == 0
+        assert route.called
+
+    @respx.mock
+    def test_base_url_override_reaches_document_studio_commands(
+        self, runner, cli, monkeypatch
+    ):
+        """Product (`docstudio`) and API group (`platform`) differ, so a
+        product-keyed override silently missed and fell through to the public
+        default -- with the caller's key attached."""
+        monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", FAKE_KEY)
+        monkeypatch.setenv("UNSTRACT_ORG_ID", "org_x")
+        route = respx.get(
+            "https://eu.onprem.example/api/v1/unstract/org_x/prompt-studio/"
+        ).mock(return_value=httpx.Response(200, json=[]))
+        result = runner.invoke(
+            cli,
+            ["docstudio", "platform", "prompt-studio", "list",
+             "--base-url", "https://eu.onprem.example"],
+        )
+        assert result.exit_code == 0, result.stderr
+        assert route.called, "--base-url must reach Document Studio commands"
+
+
+class TestResponseGuards:
+    @respx.mock
+    def test_require_response_fields_rejects_a_silently_orphaned_record(
+        self, runner, cli, monkeypatch
+    ):
+        """The server returns 201 but leaves tool_id NULL, orphaning the prompt.
+
+        This guard was the only defence against that, and deleting it entirely
+        left the suite green.
+        """
+        monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", FAKE_KEY)
+        monkeypatch.setenv("UNSTRACT_ORG_ID", "org_x")
+        base = "https://us-central.unstract.com/api/v1/unstract/org_x"
+        respx.post(f"{base}/prompt-studio/prompt/").mock(
+            return_value=httpx.Response(201, json={"prompt_id": "p-1", "tool_id": None})
+        )
+        result = runner.invoke(
+            cli,
+            ["docstudio", "platform", "prompt-studio", "prompt", "create",
+             "--tool-id", "t-1", "--prompt-key", "k", "--prompt", "text"],
+        )
+        assert result.exit_code != 0, "a NULL tool_id must not report success"

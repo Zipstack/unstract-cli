@@ -335,7 +335,6 @@ def config_doctor(profile: str | None, check: bool, output: str | None) -> None:
     makes one real call so a working credential reads as working.
     """
     from unstract_cli.core import http
-    from unstract_cli.endpoints import get_endpoint
 
     ctx = click.get_current_context()
     resolved = ResolvedConfig(file=load_config(), profile_name=profile)

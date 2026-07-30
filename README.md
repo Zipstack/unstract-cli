@@ -260,10 +260,13 @@ Every group and command has full `--help` with worked examples.
 ## Development
 
 ```bash
-uv run pytest          # tests
-uv run ruff check .    # lint
-uv run mypy src        # types
+uv run --extra dev pytest          # tests
+uv run --extra dev ruff check .    # lint
+uv run --extra dev mypy src        # types
 ```
+
+The `--extra dev` is required: the test and lint tooling lives in the `dev`
+extra, so a bare `uv run pytest` fails on a fresh checkout.
 
 ### Architecture
 

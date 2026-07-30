@@ -516,12 +516,20 @@ def derive_patch(
     identifiers (path params, plus anything named in ``keep_required``). Deriving
     rather than copying means a parameter added to the PUT record cannot be
     forgotten on the PATCH one -- duplication is precisely how definitions drift.
+
+    Defaults are cleared as well as required-ness. A PUT default describes the
+    value to send when the caller supplies nothing *for a full replacement*; on a
+    partial update it would be sent for every field the user never mentioned. That
+    turned `pipeline patch --id X --cron-string ...` into a request that also set
+    ``pipeline_type=DEFAULT``, silently converting a live ETL pipeline, and made
+    `api-deployment patch --description ...` re-enable a deactivated deployment
+    and revoke org sharing. A PATCH must carry only what the user actually passed.
     """
     kept = set(keep_required)
     params = tuple(
         p
         if (p.location is ParamLocation.PATH or p.name in kept)
-        else replace(p, required=False)
+        else replace(p, required=False, default=None)
         for p in source.params
     )
     return replace(

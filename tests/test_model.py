@@ -236,3 +236,52 @@ class TestRegistryIntegrity:
     def test_methods_are_valid(self):
         valid = {"GET", "POST", "PUT", "PATCH", "DELETE"}
         assert {e.method for e in ALL_ENDPOINTS} <= valid
+
+
+class TestDerivedPatchSafety:
+    """A PATCH must carry only what the caller actually passed."""
+
+    def test_derived_patch_with_only_path_params_sends_no_body(self, monkeypatch):
+        """derive_patch cleared `required` but kept `default`, so every derived
+        PATCH sent the PUT's defaults for fields the user never mentioned --
+        silently flipping pipeline_type, is_active and shared_to_org."""
+        from unstract_cli.config.loader import ConfigFile, ResolvedConfig
+        from unstract_cli.core.http import build_request
+        from unstract_cli.core.model import ParamLocation, ParamType
+        from unstract_cli.endpoints import ALL_ENDPOINTS
+
+        cfg = ResolvedConfig(
+            file=ConfigFile(),
+            overrides={
+                f"{group}.{key}": value
+                for group in ("platform", "deployment", "hitl", "llmwhisperer", "apihub")
+                for key, value in (
+                    ("api_key", "k"), ("org_id", "o"), ("base_url", "https://x.invalid")
+                )
+            },
+        )
+
+        offenders = []
+        for endpoint in ALL_ENDPOINTS:
+            if endpoint.method.upper() != "PATCH":
+                continue
+            # Path params, plus any field deliberately kept required via
+            # keep_required -- those the caller must pass, so they belong in the
+            # body. Everything else must be absent.
+            required_names = {
+                p.py_name
+                for p in endpoint.params
+                if p.location is ParamLocation.PATH or p.required
+            }
+            values = {
+                p.py_name: ("{}" if p.type is ParamType.JSON else 1 if p.type is ParamType.INT else "x")
+                for p in endpoint.params
+                if p.py_name in required_names
+            }
+            plan = build_request(endpoint, cfg, values)
+            body = dict(plan.json_body or plan.data or {})
+            unexpected = {k: v for k, v in body.items() if k not in required_names}
+            if unexpected:
+                offenders.append((".".join(endpoint.command_path), unexpected))
+
+        assert offenders == []

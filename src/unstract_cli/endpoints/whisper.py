@@ -185,6 +185,10 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         ),
         doc_source=f"{_DOCS}/whisper_retrieve.md",
         raw_field="result_text",
+        # Reading this destroys the text. If the response is lost to a timeout,
+        # a retry returns "already delivered" rather than the data -- so the
+        # retry itself would be what loses it.
+        consumes_result=True,
         examples=(
             "unstract whisper retrieve --whisper-hash abc123 --save result.json",
             "unstract whisper retrieve --whisper-hash abc123 --text-only --output raw",

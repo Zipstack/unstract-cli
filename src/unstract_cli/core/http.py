@@ -10,6 +10,8 @@ import json
 import random
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -420,10 +422,22 @@ def execute(
 ) -> Response:
     """Send a request, retrying only where retrying is safe (SPEC.md §5.7).
 
-    Retries apply to 429 and 5xx. They never apply to 4xx: the server has already
-    rejected the request on its merits, and for one-shot reads a blind retry can
-    silently consume a result the first attempt already delivered.
+    Retries apply to 429 and 5xx, and never to 4xx: the server has already
+    rejected the request on its merits.
+
+    Two further restrictions, both about requests that are not safe to repeat:
+
+    * **Non-idempotent methods.** A 5xx or a read timeout on a POST does not mean
+      the write did not land -- the origin may have committed it and the gateway
+      lost the response. Re-sending duplicates workflow executions (and their
+      billing), projects and API keys. Only connection errors, where the request
+      provably never left, are retried for those methods.
+    * **One-shot reads.** For an endpoint whose read consumes the result, the
+      first attempt may have destroyed the payload it failed to deliver; a retry
+      returns 406 and the data is gone. Those never retry.
     """
+    if endpoint is not None and _consumes_result(endpoint):
+        max_retries = 0
     owns_client = client is None
     # Note: following redirects means a wrong trailing slash would be silently
     # "corrected" by the server rather than failing loudly, which softens the P11
@@ -447,12 +461,16 @@ def execute(
                 )
             except httpx.HTTPError as exc:
                 last_error = exc
-                if attempt >= max_retries:
+                # A ConnectError means the request never reached the server, so
+                # replaying it is safe for any method. A ReadTimeout does not:
+                # the write may well have landed and only the response was lost.
+                safe_to_replay = isinstance(exc, httpx.ConnectError) or _idempotent(plan.method)
+                if attempt >= max_retries or not safe_to_replay:
                     break
                 sleep(_backoff(attempt))
                 continue
 
-            if is_retryable(response.status_code) and attempt < max_retries:
+            if attempt < max_retries and _retryable_response(response, plan.method):
                 sleep(_retry_after(response) or _backoff(attempt))
                 continue
 
@@ -475,16 +493,77 @@ def execute(
     )
 
 
+#: Methods whose repetition is defined to be safe (RFC 9110 §9.2.2). PATCH is
+#: absent deliberately: it is not idempotent in general, and these APIs' PATCH
+#: bodies are partial updates.
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+
+
+def _idempotent(method: str) -> bool:
+    return method.upper() in _IDEMPOTENT_METHODS
+
+
+def _consumes_result(endpoint: Endpoint) -> bool:
+    """True when reading this endpoint destroys the result it returns.
+
+    For these, a retry after a lost response returns 406 rather than the data.
+    """
+    return endpoint.consumes_result or bool(endpoint.poll and endpoint.poll.one_shot)
+
+
+def _retryable_response(response: httpx.Response, method: str) -> bool:
+    """Whether this status justifies another attempt with this method.
+
+    429 is safe for any method -- the server is explicitly asking to be retried
+    and states it did not process the request. A 5xx is only safe where the
+    method is idempotent, since the write may have committed before the failure.
+    """
+    if not is_retryable(response.status_code):
+        return False
+    if response.status_code == 429:
+        return True
+    return _idempotent(method)
+
+
 def _backoff(attempt: int) -> float:
     """Exponential backoff with jitter, so retries don't synchronise across agents."""
     return min(2.0**attempt, 30.0) * (0.5 + random.random() / 2)
 
 
+#: Ceiling for a server-supplied `Retry-After`. Honouring it verbatim let a
+#: single header (`Retry-After: 86400`) park the CLI for a day, silently and
+#: uninterruptibly -- under `--wait` an agent just sees a hang.
+MAX_RETRY_AFTER = 60.0
+
+
 def _retry_after(response: httpx.Response) -> float | None:
-    try:
-        return float(response.headers.get("retry-after", ""))
-    except (TypeError, ValueError):
+    """Seconds to wait per `Retry-After`, clamped and never negative.
+
+    RFC 7231 permits either a delay in seconds or an HTTP-date; both are handled.
+    A negative or unparseable value yields None so the caller falls back to
+    exponential backoff -- passing a negative straight to `time.sleep` raised
+    ValueError out of every enclosing handler.
+    """
+    raw = response.headers.get("retry-after")
+    if not raw:
         return None
+
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+
+    if seconds != seconds or seconds == float("inf"):  # NaN / inf guard
+        return None
+    return max(0.0, min(seconds, MAX_RETRY_AFTER))
 
 
 #: Body phrases meaning "this result was already delivered". LLMWhisperer signals

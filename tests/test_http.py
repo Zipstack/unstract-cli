@@ -450,3 +450,101 @@ class TestConsumedHeuristicPrecision:
                 )
             )
         assert excinfo.value.exit_code == ExitCode.ALREADY_CONSUMED
+
+
+class TestRetrySafety:
+    """What may be replayed, and what a replay would destroy."""
+
+    def _plan(self, method):
+        from unstract_cli.core.http import RequestPlan
+
+        return RequestPlan(
+            method=method, url="https://x.invalid/y", headers={}, params={},
+            json_body=None, data=None, files=None, content=None,
+        )
+
+    @pytest.mark.parametrize(
+        "method,expected",
+        [("POST", 1), ("PATCH", 1), ("GET", 4), ("PUT", 4), ("DELETE", 4)],
+    )
+    def test_5xx_is_retried_only_for_idempotent_methods(self, method, expected):
+        """A 5xx on a POST may mean the write landed and the response was lost.
+
+        Replaying it duplicates workflow executions and their billing.
+        """
+        from unstract_cli.core.http import execute
+
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(503, json={"error": "upstream"})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        # execute() returns the final response; only transport errors raise here.
+        execute(self._plan(method), client=client, max_retries=3, sleep=lambda _: None)
+        assert calls["n"] == expected
+
+    def test_429_is_retried_even_for_post(self):
+        """429 is the server explicitly stating it did not process the request."""
+        from unstract_cli.core.http import execute
+
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(429, json={"error": "slow down"})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        execute(self._plan("POST"), client=client, max_retries=2, sleep=lambda _: None)
+        assert calls["n"] == 3
+
+    def test_one_shot_read_is_never_retried(self):
+        """The first attempt may have consumed the result it failed to deliver."""
+        from unstract_cli.core.http import execute
+        from unstract_cli.endpoints import get_endpoint
+
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            raise httpx.ReadTimeout("lost the response", request=request)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        with pytest.raises(CLIError):
+            execute(
+                self._plan("GET"),
+                endpoint=get_endpoint("whisper.retrieve"),
+                client=client,
+                max_retries=3,
+                sleep=lambda _: None,
+            )
+        assert calls["n"] == 1
+
+
+class TestRetryAfter:
+    def _resp(self, value):
+        return httpx.Response(429, headers={"retry-after": value})
+
+    def test_negative_value_does_not_reach_sleep(self):
+        """time.sleep raises ValueError on a negative, escaping every handler."""
+        from unstract_cli.core.http import _retry_after
+
+        assert _retry_after(self._resp("-5")) == 0.0
+
+    def test_large_value_is_capped(self):
+        """Retry-After: 86400 would park the CLI for a day, silently."""
+        from unstract_cli.core.http import MAX_RETRY_AFTER, _retry_after
+
+        assert _retry_after(self._resp("86400")) == MAX_RETRY_AFTER
+
+    def test_http_date_form_is_understood(self):
+        """RFC 7231 permits a date; float() alone silently ignored it."""
+        from unstract_cli.core.http import _retry_after
+
+        assert _retry_after(self._resp("Wed, 21 Oct 2099 07:28:00 GMT")) is not None
+
+    def test_unparseable_falls_back_to_backoff(self):
+        from unstract_cli.core.http import _retry_after
+
+        assert _retry_after(self._resp("soon")) is None

@@ -457,6 +457,10 @@ class Endpoint:
     #: as a failure despite a 2xx status. Guards silent-orphan defects where the
     #: server returns 201 but leaves a linking field NULL (BUG 2: `prompt create`).
     require_response_fields: tuple[str, ...] = ()
+    #: True when reading this endpoint *destroys* the result it returns, so a
+    #: retry after a lost response yields 406 rather than the data. Set on the
+    #: destructive read itself; `PollSpec.one_shot` covers the poll-driven case.
+    consumes_result: bool = False
 
     @property
     def product(self) -> Product:

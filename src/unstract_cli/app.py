@@ -102,6 +102,14 @@ def _usage_line(path: tuple[str, ...], command: click.Command) -> str:
     return " ".join(parts)
 
 
+def _with_required(entry: dict[str, Any], endpoint: Endpoint) -> dict[str, Any]:
+    """Overlay the record's requiredness onto an introspected flag entry."""
+    required = {p.py_name: p.required for p in endpoint.params}
+    if entry.get("name") in required:
+        entry["required"] = required[entry["name"]]
+    return entry
+
+
 def _endpoint_info(endpoint: Endpoint, command: click.Command) -> dict[str, Any]:
     """Combine an endpoint record with its generated command."""
     entry: dict[str, Any] = {
@@ -116,8 +124,14 @@ def _endpoint_info(endpoint: Endpoint, command: click.Command) -> dict[str, Any]
         "api_group": endpoint.api.value,
         "api": {"method": endpoint.method, "path": endpoint.path},
         "usage": _usage_line(endpoint.command_path, command),
+        # Requiredness comes from the record, not from Click. `_click_option`
+        # deliberately sets required=False on every option so the CLI can raise
+        # its own better message -- but reading it back out of Click made
+        # --discover report `required: false` for *every* parameter, so an agent
+        # building a command line from the index omitted mandatory flags and got
+        # exit 2. Discovery metadata must never lie about the parser.
         "flags": [
-            _param_info(p)
+            _with_required(_param_info(p), endpoint)
             for p in command.params
             if p.name not in _COMMON_FLAGS
         ],
@@ -168,7 +182,11 @@ def _matches(entry: dict[str, Any], group: str | None, command: str | None) -> b
     `command` matches on a path prefix, so "whisper webhook" selects all four
     webhook commands while "whisper extract" selects exactly one.
     """
-    if group and entry["path"][0] != group:
+    # Match any segment, not just the first. Platform now nests under docstudio
+    # (path ["docstudio","platform",...]), so a first-segment-only test made the
+    # `--group platform` the help text advertises return exit 2 and "No commands
+    # matched" -- discovery metadata must never lie about the parser.
+    if group and group not in entry["path"]:
         return False
     if command:
         wanted = command.removeprefix("unstract ").split()

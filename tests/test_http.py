@@ -548,3 +548,89 @@ class TestRetryAfter:
         from unstract_cli.core.http import _retry_after
 
         assert _retry_after(self._resp("soon")) is None
+
+
+class TestRequestIntegrity:
+    def test_path_params_are_percent_encoded(self, monkeypatch):
+        """`--api-name '../../../v1/admin'` must not escape its path segment."""
+        from unstract_cli.core.http import build_url
+
+        cfg = _config(monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o")
+        url = build_url(
+            get_endpoint("docstudio.deployment.run"),
+            cfg,
+            {"org_id": "o", "api_name": "../../../v1/admin"},
+        )
+        assert "/../" not in url
+        assert "..%2F..%2F..%2Fv1%2Fadmin" in url
+
+    def test_query_injection_via_path_param_is_encoded(self, monkeypatch):
+        from unstract_cli.core.http import build_url
+
+        cfg = _config(monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o")
+        url = build_url(
+            get_endpoint("docstudio.deployment.run"), cfg, {"org_id": "o", "api_name": "x?a=b"}
+        )
+        assert "?" not in url.split("/deployment/api/")[1]
+
+    def test_share_resource_still_spans_two_segments(self, monkeypatch):
+        """The one parameter that legitimately contains a slash keeps it."""
+        from unstract_cli.core.http import build_url
+
+        cfg = _config(monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o")
+        url = build_url(
+            get_endpoint("docstudio.platform.share"),
+            cfg,
+            {"org_id": "o", "resource": "api-deployment", "id": "abc"},
+        )
+        assert "/api/deployment/abc/share/" in url
+
+    def test_no_endpoint_builds_two_body_channels(self, monkeypatch):
+        """httpx silently picks one and drops the other.
+
+        `workflow execute` declared BodyKind.JSON with a FORM file, so the JSON
+        body -- including the required workflow_id -- never reached the wire.
+        """
+        from unstract_cli.core.model import ParamLocation, ParamType
+        from unstract_cli.endpoints import ALL_ENDPOINTS
+
+        cfg = _config(
+            monkeypatch,
+            UNSTRACT_PLATFORM_KEY=FAKE_KEY,
+            UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY,
+            LLMWHISPERER_API_KEY=FAKE_KEY,
+            UNSTRACT_APIHUB_KEY=FAKE_KEY,
+            UNSTRACT_APIHUB_BASE_URL="https://apihub.invalid",
+            UNSTRACT_ORG_ID="o",
+        )
+        offenders = []
+        for endpoint in ALL_ENDPOINTS:
+            values: dict = {}
+            for param in endpoint.params:
+                if param.location is ParamLocation.PATH:
+                    values[param.py_name] = "x"
+                elif param.required:
+                    values[param.py_name] = (
+                        1 if param.type is ParamType.INT else "x"
+                    )
+            try:
+                build_request(endpoint, cfg, values)
+            except CLIError as exc:
+                if "more than one request body" in str(exc):
+                    offenders.append(".".join(endpoint.command_path))
+            except Exception:
+                continue
+        assert offenders == []
+
+    def test_workflow_execute_sends_its_fields(self, monkeypatch, tmp_path):
+        """The regression itself: workflow_id must reach the wire."""
+        cfg = _config(monkeypatch, UNSTRACT_PLATFORM_KEY=FAKE_KEY, UNSTRACT_ORG_ID="o")
+        doc = tmp_path / "a.pdf"
+        doc.write_bytes(b"%PDF-1.4")
+        plan = build_request(
+            get_endpoint("docstudio.platform.workflow.execute"),
+            cfg,
+            {"org_id": "o", "workflow_id": "wf-1", "files": [str(doc)]},
+        )
+        assert plan.data["workflow_id"] == "wf-1"
+        assert plan.json_body is None

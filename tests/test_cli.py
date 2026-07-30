@@ -777,3 +777,41 @@ class TestConfigCommands:
         out = runner.invoke(cli, ["config", "doctor", "--no-check"]).stdout
         assert "sk-literal-secret-value" not in out
         assert "literal" in out
+
+
+class TestDiscoveryTruthfulness:
+    """`--discover` and `--help` are the agent's only map; they must not lie."""
+
+    def test_required_params_are_reported_required(self):
+        """_click_option sets required=False so the CLI can raise a better error.
+
+        Reading requiredness back out of Click therefore reported `required:
+        false` for every flag, so an agent building a command line from the
+        index omitted mandatory flags and got exit 2.
+        """
+        index = discover(detail="full")
+        by_command = {c["command"]: c for c in index["commands"]}
+        entry = by_command["unstract docstudio deployment run"]
+        flags = {f["name"]: f for f in entry["flags"]}
+        assert flags["api_name"]["required"] is True
+
+    def test_every_required_param_surfaces_in_the_index(self):
+        """Checked across the whole surface, not one sampled command."""
+        index = discover(detail="full")
+        by_path = {tuple(c["path"]): c for c in index["commands"]}
+        mismatches = []
+        for endpoint in ALL_ENDPOINTS:
+            entry = by_path.get(tuple(endpoint.command_path))
+            if entry is None:
+                continue
+            reported = {f["name"]: f.get("required") for f in entry["flags"]}
+            for param in endpoint.params:
+                if param.required and reported.get(param.py_name) is False:
+                    mismatches.append(f"{'.'.join(endpoint.command_path)}:{param.py_name}")
+        assert mismatches == []
+
+    def test_group_filter_matches_the_groups_its_help_advertises(self):
+        """--group help names 'platform', which nests under docstudio."""
+        for group in ("whisper", "docstudio", "apihub", "platform"):
+            index = discover(detail="summary", group=group)
+            assert index["count"] > 0, f"--group {group} matched nothing"

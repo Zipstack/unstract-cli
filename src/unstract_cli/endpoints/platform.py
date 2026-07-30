@@ -626,21 +626,24 @@ _WORKFLOWS: tuple[Endpoint, ...] = (
     _ep("delete", "DELETE", "/workflow/{id}/", "Delete a workflow.", (_WF_ID,),
         subgroup="workflow", doc="v1-workflows.mdx", permission=Permission.FULL_ACCESS,
         description=f"{_DELETE_NOTE} Only the workflow owner may delete."),
+    # MULTIPART with every field FORM-located, not JSON. Mixing BodyKind.JSON
+    # with a FORM file made httpx send only the multipart part and silently drop
+    # the JSON body -- so the required `workflow_id` never reached the wire.
     _ep("execute", "POST", "/workflow/execute/", "Execute a workflow.",
-        (Param("workflow_id", type=ParamType.UUID, location=ParamLocation.BODY,
+        (Param("workflow_id", type=ParamType.UUID, location=ParamLocation.FORM,
                required=True, help="Workflow to execute"),
-         Param("execution_action", location=ParamLocation.BODY,
+         Param("execution_action", location=ParamLocation.FORM,
                choices=["START", "NEXT", "STOP", "CONTINUE"], help="Execution action"),
-         Param("execution_id", type=ParamType.UUID, location=ParamLocation.BODY,
+         Param("execution_id", type=ParamType.UUID, location=ParamLocation.FORM,
                help="Required for NEXT, STOP and CONTINUE"),
-         Param("log_guid", type=ParamType.UUID, location=ParamLocation.BODY,
+         Param("log_guid", type=ParamType.UUID, location=ParamLocation.FORM,
                help="Correlates log entries"),
          # The API field is `files`; the flag reads better singular since it is
          # repeated once per file.
          Param("files", type=ParamType.FILE, location=ParamLocation.FORM,
                multiple=True, flag="--file",
                help="File to process, for API-mode workflows; repeatable")),
-        subgroup="workflow", body=BodyKind.JSON, doc="v1-workflows.mdx",
+        subgroup="workflow", body=BodyKind.MULTIPART, doc="v1-workflows.mdx",
         permission=Permission.READ_WRITE),
     _ep("toggle-active", "PUT", "/workflow/active/{id}/", "Toggle a workflow's active state.",
         (_WF_ID,), subgroup="workflow", doc="v1-workflows.mdx",
@@ -1307,7 +1310,7 @@ _GROUPS: tuple[Endpoint, ...] = (
         params=(
             _ORG,
             Param("resource", location=ParamLocation.PATH, required=True,
-                  choices=SHARE_RESOURCES,
+                  choices=SHARE_RESOURCES, spans_path_segments=True,
                   help="Resource type; mapped to the correct URL segment"),
             Param("id", location=ParamLocation.PATH, required=True,
                   help="Resource identifier"),

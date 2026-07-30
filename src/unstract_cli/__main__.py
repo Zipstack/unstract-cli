@@ -26,6 +26,7 @@ def main() -> int:
     (SPEC §5.4).
     """
     from unstract_cli.app import build_cli
+    from unstract_cli.config.loader import ConfigError
     from unstract_cli.core.errors import CLIError, ExitCode
 
     try:
@@ -45,6 +46,22 @@ def main() -> int:
     except click.exceptions.Abort:
         click.echo("Aborted!", err=True)
         return 1
+    except CLIError as exc:
+        exc.emit()
+        return int(exc.exit_code)
+    except ConfigError as exc:
+        # A malformed or unreadable config file. `config get` already mapped this
+        # to exit 2; its six sibling commands did not, so `config list` on a bad
+        # TOML escaped as a bare traceback with nothing on stdout -- an agent
+        # piping to a JSON parser saw an empty stream, not an error it could
+        # branch on. Handled here so every command inherits the same contract.
+        CLIError(str(exc), ExitCode.USAGE).emit()
+        return int(ExitCode.USAGE)
+    except Exception as exc:  # noqa: BLE001 - the envelope is the contract
+        # Last line of defence for the guarantee advertised in app.py: *every*
+        # failure is a structured error, never a traceback.
+        CLIError(str(exc) or exc.__class__.__name__, ExitCode.GENERIC).emit()
+        return int(ExitCode.GENERIC)
 
 
 if __name__ == "__main__":

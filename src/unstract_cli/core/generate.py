@@ -23,7 +23,7 @@ import click
 
 from unstract_cli.config.loader import ConfigError, ResolvedConfig, load_config
 from unstract_cli.core import http
-from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.errors import CLIError, ExitCode, scrub
 from unstract_cli.core.model import (
     Endpoint,
     Param,
@@ -59,6 +59,11 @@ def _help_text(param: Param) -> str:
     `--help` is the primary discovery surface (SPEC.md §5.3).
     """
     parts = [param.help.rstrip(".") if param.help else ""]
+    # Click's own `required` is deliberately left False so the CLI can raise a
+    # better message than Click's, which means `--help` would otherwise never
+    # mark a mandatory flag. Say it in the text instead.
+    if param.required:
+        parts.append("REQUIRED")
     if mapping := param.choice_map():
         parts.append(f"One of: {', '.join(mapping)}")
     if param.default is not None and not isinstance(param.default, bool):
@@ -263,7 +268,15 @@ def _run_endpoint(ctx: click.Context, endpoint: Endpoint, kwargs: dict[str, Any]
         plan = http.build_request(endpoint, config, values)
 
         if kwargs.get("dry_run"):
-            emit(plan.describe(), fmt if fmt is not OutputFormat.RAW else OutputFormat.JSON)
+            # plan.describe() redacts by header/key *name*, which misses a secret
+            # inside a value -- a FORM-located JSON param is re-serialised to a
+            # string, so `--custom-data '{"api_key":"sk-..."}'` printed the key
+            # verbatim while the same JSON in a BODY param was redacted.
+            # plan.secrets exists for exactly this; scrub the rendered output.
+            described = plan.describe()
+            if plan.secrets:
+                described = json.loads(scrub(json.dumps(described), plan.secrets))
+            emit(described, fmt if fmt is not OutputFormat.RAW else OutputFormat.JSON)
             ctx.exit(int(ExitCode.SUCCESS))
 
         diagnostic(f"{plan.method} {plan.url}", quiet=quiet, verbosity=verbosity, level=1)

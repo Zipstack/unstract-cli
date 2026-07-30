@@ -29,7 +29,7 @@ from unstract_cli.config.loader import (
     save_config,
     starter_profiles,
 )
-from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.errors import CLIError, ExitCode, scrub
 from unstract_cli.core.output import OutputFormat, default_format, emit
 
 
@@ -337,6 +337,7 @@ def config_doctor(profile: str | None, check: bool, output: str | None) -> None:
     from unstract_cli.core import http
     from unstract_cli.endpoints import get_endpoint
 
+    ctx = click.get_current_context()
     resolved = ResolvedConfig(file=load_config(), profile_name=profile)
     groups: list[dict[str, Any]] = []
 
@@ -348,8 +349,16 @@ def config_doctor(profile: str | None, check: bool, output: str | None) -> None:
             except ConfigError:
                 entry[key] = {"resolved": False, "source": "unset"}
 
-        if check and entry["api_key"]["resolved"] and (probe := _DOCTOR_PROBES.get(target)):
-            entry["live_check"] = _probe(http, get_endpoint(probe), resolved)
+        if check and entry["api_key"]["resolved"]:
+            if probe := _DOCTOR_PROBES.get(target):
+                entry["live_check"] = _probe(http, probe, resolved)
+            else:
+                # Say so explicitly. An absent `live_check` is indistinguishable
+                # from one that ran and passed, which would make `doctor --check`
+                # look like it covered more than it did.
+                entry["live_check"] = {
+                    "skipped": "no safe no-argument probe for this group"
+                }
         groups.append(entry)
 
     emit(
@@ -362,14 +371,30 @@ def config_doctor(profile: str | None, check: bool, output: str | None) -> None:
         _fmt(output),
     )
 
+    # Exit non-zero when a live check actually failed, so `config doctor && deploy`
+    # is a usable gate. Reporting `"ok": false` in the body while exiting 0 forced
+    # an agent to parse prose to discover its credentials were rejected -- the
+    # opposite of the branch-on-exit-code contract this CLI advertises.
+    if any(g.get("live_check", {}).get("ok") is False for g in groups):
+        ctx.exit(int(ExitCode.AUTH))
 
-def _probe(http: Any, endpoint: Any, resolved: ResolvedConfig) -> dict[str, Any]:
+
+def _probe(http: Any, probe_name: str, resolved: ResolvedConfig) -> dict[str, Any]:
     """Run one authenticated GET and report only pass/fail, never the payload."""
     try:
+        # Resolving the endpoint is inside the try: an unknown probe name would
+        # otherwise raise straight out of doctor, whose whole contract is that it
+        # never itself crashes.
+        from unstract_cli.endpoints import get_endpoint
+
+        endpoint = get_endpoint(probe_name)
         plan = http.build_request(endpoint, resolved, {})
         response = http.execute(plan, endpoint=endpoint, max_retries=0)
     except Exception as exc:  # noqa: BLE001 - doctor must never itself crash
-        return {"ok": False, "detail": str(exc)}
+        # Upstream messages can quote the rejected credential back at us, and
+        # this output is as likely to land in a CI log as on a screen. Every
+        # other error path scrubs; so does this one.
+        return {"ok": False, "detail": scrub(str(exc), http.collect_secrets(resolved))}
     ok = response.status < 400
     detail = "authenticated" if ok else f"HTTP {response.status}"
     if response.status in (401, 403):

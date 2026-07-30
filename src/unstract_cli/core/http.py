@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
@@ -71,13 +72,19 @@ class RequestPlan:
         body: Any = None
         if self.json_body is not None:
             body = redact_value(self.json_body)
-        elif self.files:
+        elif self.files or (self.data and self.method.upper() != "GET"):
+            # Show the form fields alongside the file parts. Listing only the
+            # files made a multipart request look as though its other fields
+            # were not being sent -- which is exactly the defect that hid
+            # `workflow execute` dropping its body.
             body = {
                 "multipart": [
                     {"field": name, "filename": meta[0], "bytes": len(meta[1])}
-                    for name, meta in self.files
+                    for name, meta in (self.files or [])
                 ]
             }
+            if self.data:
+                body["fields"] = redact_value(self.data)
         elif self.content is not None:
             body = {"binary_bytes": len(self.content)}
         elif self.data:
@@ -157,7 +164,15 @@ def build_url(endpoint: Endpoint, config: ResolvedConfig, values: dict[str, Any]
                 hint=f"Pass {param.cli_flag}, or configure it in your profile.",
             )
         placeholder = "{" + param.name + "}"
-        path = path.replace(placeholder, str(param.to_wire(value)))
+        # Percent-encode, or `--api-name '../../../v1/admin'` traverses out of
+        # the intended path and `--api-name 'x?a=b'` injects a query string.
+        # `safe=""` escapes slashes too, so a value cannot introduce a new path
+        # segment. `share --resource` opts out: its friendly `api-deployment`
+        # maps to the wire value `api/deployment`, which is meant to span two.
+        wire = str(param.to_wire(value))
+        path = path.replace(
+            placeholder, wire if param.spans_path_segments else quote(wire, safe="")
+        )
 
     return f"{str(base).rstrip('/')}/{path.lstrip('/')}"
 
@@ -331,12 +346,46 @@ def build_request(
     # headers must never leave this process (SPEC.md §4.4).
     headers = {k: v for k, v in headers.items() if k.lower() not in GATEWAY_INJECTED_HEADERS}
 
+    json_body = body if body and endpoint.body is BodyKind.JSON else None
+
+    # httpx silently picks one channel when several are populated -- it sends
+    # `files` and drops `json`, so a record declaring BodyKind.JSON alongside a
+    # FORM-located file lost its entire JSON body (including required fields)
+    # while `--dry-run` cheerfully printed the body that was about to be
+    # discarded. Fail loudly instead of shipping half a request.
+    # `data` + `files` is the one legitimate pairing: that is exactly how form
+    # fields accompany a file upload in a multipart request. Every other
+    # combination means two mutually exclusive encodings were both built.
+    channels = [
+        name
+        for name, value in (
+            ("json", json_body),
+            ("multipart", (form or None) or files),
+            ("content", content),
+        )
+        if value
+    ]
+    if len(channels) > 1:
+        populated = channels
+        raise CLIError(
+            f"Endpoint {endpoint.name!r} builds more than one request body "
+            f"({', '.join(populated)}); only one can be sent.",
+            ExitCode.GENERIC,
+            endpoint=f"{endpoint.method} {endpoint.path}",
+            hint=(
+                "This is a defect in the endpoint record: reconcile its `body` "
+                "kind with its parameter locations (a file upload needs "
+                "BodyKind.MULTIPART with FORM-located fields)."
+            ),
+            retryable=False,
+        )
+
     return RequestPlan(
         method=endpoint.method,
         url=build_url(endpoint, config, values),
         headers=headers,
         params={k: _stringify(v) for k, v in params.items() if v is not None},
-        json_body=body if body and endpoint.body is BodyKind.JSON else None,
+        json_body=json_body,
         data=form or None,
         files=files,
         content=content,

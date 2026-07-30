@@ -278,6 +278,11 @@ class Param:
     applies_when: str | None = None
     #: P12 - this field replaces rather than appends server-side.
     replace_semantics: bool = False
+    #: This path parameter's wire value intentionally spans path segments, so it
+    #: must not be percent-encoded. Only `share --resource` qualifies: its
+    #: friendly name `api-deployment` maps to the wire value `api/deployment`.
+    #: Everything else is encoded, so a value like `../../admin` cannot traverse.
+    spans_path_segments: bool = False
     #: Override the derived CLI flag name (rare; e.g. to avoid a collision).
     flag: str | None = None
     #: Exclude from the request payload (client-side only, e.g. ``--save``).

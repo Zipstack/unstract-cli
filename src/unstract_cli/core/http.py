@@ -183,8 +183,7 @@ def _config_default(param: Param, config: ResolvedConfig) -> Any:
     ``default_from`` may name several config paths; the first that resolves wins.
     That lets one setting stand in for another where they are genuinely the same
     value held in two blocks -- `deployment run`'s org_id falls back to the
-    platform block, which is the same organization and is usually already set
-    (GOTCHAS #7). An empty string counts as unset, since that is what a
+    platform block, which is the same organization and is usually already set. An empty string counts as unset, since that is what a
     half-filled `config init` stub leaves behind.
     """
     for source in param.default_sources:
@@ -201,7 +200,7 @@ def _guess_content_type(path: Path) -> str:
 
 
 def _parse_json_param(param: Param, value: object) -> object:
-    """Parse a ``ParamType.JSON`` value from a string into a real object (BUG 1).
+    """Parse a ``ParamType.JSON`` value from a string into a real object.
 
     Click hands JSON params through as plain strings, so without this the body
     field would hold a quoted string (``"data": "{...}"``) and the server would
@@ -264,9 +263,9 @@ def build_request(
             # A PATH param normally travels only in the URL. Mirroring
             # additionally copies it into the JSON body, defending against a
             # server that links a record by a body field and orphans it when the
-            # field is absent (BUG 2), or that simply wants the same identifier
+            # field is absent, or that simply wants the same identifier
             # twice under two names (`api_id` in the URL, `api` in the body --
-            # GOTCHAS #6). `body_name` is the path name unless `mirror_as` renames it.
+            # ). `body_name` is the path name unless `mirror_as` renames it.
             if param.mirrors and (raw := values.get(param.py_name)) is not None:
                 body[param.body_name] = param.to_wire(raw)
             continue
@@ -426,7 +425,7 @@ def _parse(response: httpx.Response) -> Any:
         except ValueError:
             # Some endpoints emit several JSON objects concatenated (a streamed
             # NDJSON-ish body), which a single parse rejects with "Extra data" and
-            # which breaks any `| json` consumer (CAPTURE2 DOC 6). Recover them into
+            # which breaks any `| json` consumer. Recover them into
             # one array so the CLI still emits exactly one valid JSON document; fall
             # back to raw text only if they are not clean concatenated JSON.
             if (parts := _split_concatenated_json(response.text)) is not None:

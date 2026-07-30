@@ -14,8 +14,7 @@ def main() -> int:
     (`No such option`, missing argument) reach us instead of being printed and
     swallowed internally. We then render them through the same structured error
     envelope every other error uses, additionally on stdout when piped, so a
-    wrapper feeding stdout to a JSON parser sees valid JSON on the error path too
-    (DOC 9).
+    wrapper feeding stdout to a JSON parser sees valid JSON on the error path too.
 
     That mode also changes how ``ctx.exit(code)`` behaves: instead of raising
     ``SystemExit``, Click *returns* the code from the invocation. Returning 0

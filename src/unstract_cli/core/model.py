@@ -181,10 +181,15 @@ class RequiredUnless(Constraint):
     """``params`` are required *unless* another flag holds a sentinel value.
 
     Encodes a rule the plain required/optional split cannot: a field that is
-    mandatory in general but genuinely unused in one configuration. The live case
-    is ``profile create --chunk-size 0``, which means "no RAG" -- the vector store
+    mandatory in general but genuinely unused in one configuration. The motivating
+    case is ``profile create --chunk-size 0``, meaning "no RAG" -- the vector store
     and embedding model are then never consulted, so demanding them makes the
-    caller invent a value for something that will not be read (GOTCHAS #3).
+    caller invent a value for something that will not be read.
+
+    **Currently unused by any shipped record** (the profile-create records keep
+    those fields plainly required). Retained, with tests, because the constraint
+    is the correct encoding if that rule is adopted; delete it rather than let it
+    drift if it is not.
 
     Marking such a field ``required=False`` alone would lose the check in the
     common case; this keeps it, conditioned on the flag that actually decides.
@@ -264,7 +269,7 @@ class Param:
     #: whitespace-separated list is tried in order, first resolved value winning.
     #: `deployment run` uses this to fall back to the platform block's org_id: the
     #: deployment block is a separate, initially-empty config section, and an
-    #: org_id already set for the platform API is the same organization (GOTCHAS #7).
+    #: org_id already set for the platform API is the same organization.
     default_from: str | None = None
 
     @property
@@ -289,13 +294,13 @@ class Param:
     client_side: bool = False
     #: Copy this PATH param into the JSON body as well. A defence against a server
     #: that reads an identifier only from the body and orphans the record when it
-    #: is absent (BUG 2: `prompt create` persists ``tool_id: null`). The URL still
+    #: is absent. The URL still
     #: carries the value; this just also sends it in the body under :attr:`name`.
     mirror_to_body: bool = False
     #: Body field name for the mirrored value, when the body spells the identifier
     #: differently from the path. `api-deployment key create` is the live case: the
     #: URL takes ``api_id`` while the body wants that same value as ``api``, so both
-    #: had to be passed by hand (GOTCHAS #6). Implies :attr:`mirror_to_body`.
+    #: had to be passed by hand. Implies :attr:`mirror_to_body`.
     mirror_as: str | None = None
 
     @property
@@ -372,7 +377,7 @@ class PollSpec:
     #: top-level ``status`` (and its ``message`` is the *result*, not a nested
     #: object). The poll reads the status endpoint, so ``status`` must win there --
     #: a mismatch means the terminal state goes unrecognised, the one-shot result
-    #: is consumed on that read, and the next poll returns HTTP 406 (CAPTURE2 BUG 2).
+    #: is consumed on that read, and the next poll returns HTTP 406.
     status_field: str | tuple[str, ...] = "status"
     terminal_success: tuple[str, ...] = ()
     terminal_failure: tuple[str, ...] = ()
@@ -460,7 +465,7 @@ class Endpoint:
     raw_field: str | None = None
     #: Response fields that must be non-null on success, else the call is treated
     #: as a failure despite a 2xx status. Guards silent-orphan defects where the
-    #: server returns 201 but leaves a linking field NULL (BUG 2: `prompt create`).
+    #: server returns 201 but leaves a linking field NULL.
     require_response_fields: tuple[str, ...] = ()
     #: True when reading this endpoint *destroys* the result it returns, so a
     #: retry after a lost response yields 406 rather than the data. Set on the

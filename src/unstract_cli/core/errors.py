@@ -8,7 +8,6 @@ Every failure also emits a JSON object on **stderr**, carrying `hint` and
 from __future__ import annotations
 
 import json
-import re
 import sys
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -127,9 +126,10 @@ def scrub(text: str, secrets: list[str]) -> str:
     upstream error string still must not be printed.
     """
     for secret in secrets:
-        if secret and len(secret) >= 8:
+        # No length floor: a short key is still a key, and the previous >= 8
+        # guard meant the shortest credentials were the ones never redacted.
+        if secret:
             text = text.replace(secret, REDACTED)
-            text = re.sub(re.escape(secret), REDACTED, text)
     return text
 
 
@@ -179,7 +179,7 @@ class CLIError(Exception):
         Humans always get it on stderr. When stdout is not a TTY -- the agent /
         wrapper case -- the same envelope is *also* written to stdout, so a
         pipeline that feeds stdout to a JSON parser sees a valid object instead of
-        an empty stream (DOC 9). A result and an error never share an invocation's
+        an empty stream. A result and an error never share an invocation's
         stdout: emit runs only on the error path, which produces no result output.
         """
         text = json.dumps(self.to_dict(), indent=2, default=str)
@@ -193,8 +193,7 @@ class CLIError(Exception):
         """Write the envelope to stdout when piped, leaving stderr untouched.
 
         For Click's own usage errors, whose human message Click has already
-        printed to stderr: this adds only the machine-readable copy on stdout
-        (DOC 9), without duplicating the human line.
+        printed to stderr: this adds only the machine-readable copy on stdout, without duplicating the human line.
         """
         if sys.stdout.isatty():
             return
@@ -224,7 +223,7 @@ def hint_for(status: int, endpoint: str | None = None, message: str | None = Non
         )
     # The message names the *project* default, but the server never reads it: it
     # resolves the profile from the prompt's own profile_manager FK. Chasing the
-    # project default is the wrong fix and cost real time (GOTCHAS #1).
+    # project default is the wrong fix and cost real time.
     if "default llm profile is not configured" in low:
         return (
             "Misleading message: the server resolves the LLM profile from the "
@@ -234,7 +233,7 @@ def hint_for(status: int, endpoint: str | None = None, message: str | None = Non
             "<profile-id>` (or pass --profile-manager on this call). Create "
             "prompts with --profile-manager to avoid it entirely."
         )
-    # Deploy-time tool validation (GOTCHAS #2). The 422 surfaces only at
+    # Deploy-time tool validation. The 422 surfaces only at
     # `deployment run`, long after the tool instance was attached.
     if "tool validation failed" in low or ("challenge_llm" in low or "challenge llm" in low):
         return (

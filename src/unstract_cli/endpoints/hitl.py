@@ -16,7 +16,7 @@ _ORG = Param(
     "org_id",
     location=ParamLocation.PATH,
     # Same fallback as `deployment run`: the hitl block is its own, initially
-    # empty config section, but the organization is the same one (GOTCHAS #7).
+    # empty config section, but the organization is the same one.
     default_from="hitl.org_id platform.org_id",
     help="Organization identifier. Falls back to the platform block's org_id",
 )

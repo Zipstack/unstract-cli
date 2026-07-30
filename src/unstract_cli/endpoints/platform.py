@@ -138,8 +138,8 @@ _TOOL_ID = Param("tool_id", type=ParamType.UUID, location=ParamLocation.PATH,
 
 #: `prompt create` only: the backend's `create_prompt` persists the request body
 #: verbatim and ignores the URL `pk`, so a `tool_id` absent from the body is saved
-#: as NULL -- the prompt exists but links to no project and is unreachable (BUG 2).
-#: Mirroring the path value into the body links it correctly. Verified this session.
+#: as NULL -- the prompt exists but links to no project and is unreachable.
+#: Mirroring the path value into the body links it correctly.
 _TOOL_ID_MIRRORED = replace(_TOOL_ID, mirror_to_body=True)
 
 #: `--wait` for fetch-response / single-pass. These return HTTP 202 with a
@@ -174,7 +174,7 @@ _PS_POLL = PollSpec(
 #: task-status route as fetch-response, but indexing produces no Output Manager
 #: row -- there is nothing to retrieve, so the terminal status IS the result.
 #: Without this, index-document was the one async command that forced a manual
-#: poll loop while its siblings all had --wait (GOTCHAS #8).
+#: poll loop while its siblings all had --wait.
 _PS_INDEX_POLL = replace(
     _PS_POLL,
     retrieve_endpoint=None,
@@ -204,7 +204,7 @@ _PS_FIELDS: tuple[Param, ...] = (
           default=False, help="Run all prompts in a single LLM call"),
     Param("enable_challenge", type=ParamType.BOOL, location=ParamLocation.BODY,
           default=False, help="Enable LLM challenge for extraction validation"),
-    # GOTCHAS #2: an exported tool's settings schema lists challenge_llm as
+    # an exported tool's settings schema lists challenge_llm as
     # required even when enable_challenge is false, so a tool instance whose
     # metadata.challenge_llm is "" fails deploy-time validation with a 422 that
     # only surfaces at `deployment run`. Setting it on the project before
@@ -243,7 +243,7 @@ _PROMPT_FIELDS: tuple[Param, ...] = (
     Param("active", type=ParamType.BOOL, location=ParamLocation.BODY, default=True,
           help="Whether the prompt runs. Boolean flags are --active / --no-active; "
                "`--active true` is not valid syntax"),
-    # The load-bearing field for GOTCHAS #1. `fetch-response` resolves the LLM
+    # The load-bearing field for `fetch-response` resolves the LLM
     # profile from the PROMPT's own profile_manager FK and never falls back to
     # the project default, so a prompt created without it is unrunnable -- and
     # the resulting error names the *project* default, which is genuinely set.
@@ -256,7 +256,7 @@ _PROMPT_FIELDS: tuple[Param, ...] = (
 _PROFILE_FIELDS: tuple[Param, ...] = (
     Param("profile_name", location=ParamLocation.BODY, required=True,
           help="Profile name, unique within the project"),
-    # GOTCHAS #3 asked for these to be optional when --chunk-size 0 ("no RAG").
+    # asked for these to be optional when --chunk-size 0 ("no RAG").
     # They are NOT, and cannot be made so client-side: ProfileManager declares
     # both FKs null=False, and the serializer is `fields = "__all__"`, so DRF
     # derives required=True and the server rejects a profile without them
@@ -330,7 +330,7 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
                     "settings-schema, with no DELETE route), and deleting the project "
                     "cascades to the entry it published. Detach the tool from any "
                     "workflow first (`workflow tool remove`) or this returns 409 "
-                    "(GOTCHAS #9)."),
+                    "."),
     _ep("export-project", "GET", "/prompt-studio/project-transfer/{tool_id}",
         "Export a project as a JSON file.",
         (_TOOL_ID, Param("save", client_side=True, help="Write the export to this path")),
@@ -364,13 +364,13 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
                     "registry id (`function_name`) that is NOT the Prompt Studio "
                     "tool_id. This call does not return it -- find it with "
                     "`tool registry list`, or `api-deployment by-prompt-studio-tool` "
-                    "once deployed (GOTCHAS #5).\n\n"
+                    "once deployed.\n\n"
                     "Before exporting, set the project's --challenge-llm (see "
                     "`prompt-studio patch`). The exported tool requires a non-empty "
                     "challenge_llm at deploy time even when enable_challenge is false; "
                     "if it is empty the attached tool instance fails validation and "
                     "`deployment run` ends in ERROR with a 422 -- the failure surfaces "
-                    "only at that last step (GOTCHAS #2).",
+                    "only at that last step.",
         examples=("unstract platform prompt-studio export-tool --tool-id <id>",)),
     _ep("export-info", "GET", "/prompt-studio/export/{tool_id}",
         "Show export status for a project.", (_TOOL_ID,), subgroup=_PS,
@@ -405,7 +405,7 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
                     "and does not fall back to the project's default profile. A prompt "
                     "created without it fails at run time with 'Default LLM profile is "
                     "not configured' even when `profile set-default` succeeded "
-                    "(GOTCHAS #1).",
+                    ".",
         examples=("unstract platform prompt-studio prompt create --tool-id <id> "
                   "--prompt-key invoice_no --prompt 'What is the invoice number?' "
                   "--profile-manager <profile-id>",)),
@@ -444,7 +444,7 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
         description="With --chunk-size 0 the document is sent to the LLM whole (no RAG) "
                     "and neither the vector DB nor the embedding model is queried -- but "
                     "the server still REQUIRES both fields, so pass any valid adapter id "
-                    "for them (GOTCHAS #3). Use chunk_size=0 for short documents, or "
+                    "for them. Use chunk_size=0 for short documents, or "
                     "when the vector DB is unavailable.",
         examples=("unstract platform prompt-studio profile create --tool-id <id> "
                   "--profile-name direct --llm <llm-id> --x2text <x2text-id> "
@@ -498,7 +498,7 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
                     "PROMPT's own profile_manager field and never consults the project "
                     "default, so the real cause is a prompt created without one. Fix it "
                     "permanently with `prompt patch --prompt-id <id> --profile-manager "
-                    "<profile-id>`, or pass --profile-manager on each run (GOTCHAS #1)."),
+                    "<profile-id>`, or pass --profile-manager on each run."),
     _ep("single-pass", "POST", "/prompt-studio/single-pass-extraction/{tool_id}",
         "Run all active prompts in a single pass.",
         (_TOOL_ID,
@@ -567,7 +567,7 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
         "List adapters available for LLM profiles.", subgroup=_PS,
         permission=Permission.READ,
         description="Known to return 500 server_error in some organizations "
-                    "(GOTCHAS #10). If it does, enumerate adapters directly instead: "
+                    ". If it does, enumerate adapters directly instead: "
                     "`adapter list --adapter-type LLM` gives the ids that "
                     "`profile create --llm` expects, filtered by kind.",
         examples=("unstract platform adapter list --adapter-type LLM",)),
@@ -739,7 +739,6 @@ _WORKFLOWS: tuple[Endpoint, ...] = (
 # then rejects the workflow until both are set to "API". Attaching the exported
 # tool is `POST /tool_instance/` keyed by the tool's *registry* id (the
 # `function_name` from `tool registry list`), NOT the Prompt Studio tool_id.
-# (CAPTURE2 GAP 1.)
 # --------------------------------------------------------------------------- #
 
 _WORKFLOW_ASSEMBLY: tuple[Endpoint, ...] = (
@@ -752,7 +751,7 @@ _WORKFLOW_ASSEMBLY: tuple[Endpoint, ...] = (
                     "The registry carries no back-reference to the Prompt Studio "
                     "tool_id and the endpoint accepts no filters, so after exporting "
                     "you must match the entry by its `name`, which is the project's "
-                    "tool_name (GOTCHAS #5). Give projects distinct names, or the "
+                    "tool_name. Give projects distinct names, or the "
                     "match is ambiguous.",
         table_columns=("function_name", "name", "description"),
         examples=("unstract platform tool registry list",)),
@@ -766,7 +765,7 @@ _WORKFLOW_ASSEMBLY: tuple[Endpoint, ...] = (
                     "Note: an exported tool may list `challenge_llm` as required even "
                     "when the project has enable_challenge=false; a tool instance whose "
                     "metadata.challenge_llm is empty then fails deployment validation "
-                    "(CAPTURE2 BUG 4). Set it with `workflow tool set-metadata`."),
+                    ". Set it with `workflow tool set-metadata`."),
     _ep("list", "GET", "/tool_instance/", "List tools attached to workflows.",
         (Param("workflow", type=ParamType.UUID, help="Filter to one workflow"),),
         subgroup="workflow tool", permission=Permission.READ,
@@ -781,8 +780,8 @@ _WORKFLOW_ASSEMBLY: tuple[Endpoint, ...] = (
         doc_source="backend/tool_instance_v2/urls.py",
         description="A workflow holds at most one tool. Seeds adapter settings from the "
                     "org DEFAULT TRIAD -- set that first with `adapter default-triad set`, "
-                    "or creation 500s while still persisting a half-configured row "
-                    "(CAPTURE2 GAP 3). Attaching activates the workflow.",
+                    "or creation 500s while still persisting a half-configured row. "
+                    "Attaching activates the workflow.",
         examples=("unstract platform workflow tool add --workflow <wf-id> --tool <registry-id>",)),
     _ep("get", "GET", "/tool_instance/{id}/", "Show one attached tool, including its metadata.",
         (Param("id", type=ParamType.UUID, location=ParamLocation.PATH, required=True,
@@ -803,7 +802,7 @@ _WORKFLOW_ASSEMBLY: tuple[Endpoint, ...] = (
         description="REPLACES metadata wholesale (the backend does not merge), so you "
                     "MUST send the full object. Sending only one key wipes "
                     "prompt_registry_id and orphans the tool. Use this to fix the "
-                    "deploy-time challenge_llm requirement (CAPTURE2 BUG 4): read the "
+                    "deploy-time challenge_llm requirement: read the "
                     "instance's current metadata, add a valid LLM adapter id (from "
                     "`settings-schema`'s enum), and pass the whole object back:\n\n"
                     "  # 1. read the current metadata object (the `metadata` field)\n"
@@ -818,7 +817,7 @@ _WORKFLOW_ASSEMBLY: tuple[Endpoint, ...] = (
         subgroup="workflow tool", permission=Permission.FULL_ACCESS,
         doc_source="backend/tool_instance_v2/urls.py",
         description=f"{_DELETE_NOTE} A read_write key cannot DELETE a tool instance "
-                    "even though it can create one (CAPTURE2 GAP 5)."),
+                    "even though it can create one."),
     _ep("list", "GET", "/workflow/endpoint/", "List a workflow's source/destination endpoints.",
         (Param("workflow", type=ParamType.UUID, help="Filter to one workflow"),
          Param("endpoint_type", choices=["SOURCE", "DESTINATION"], help="Filter by side"),
@@ -908,7 +907,7 @@ _API_DEPLOYMENTS: tuple[Endpoint, ...] = (
         subgroup="api-deployment key", doc="v1-api-deployments.mdx", permission=Permission.READ),
     _ep("create", "POST", "/api/keys/api/{api_id}/", "Create an API key for a deployment.",
         # `api_id` is the URL path param and `api` the body param, and the server
-        # needs BOTH -- the same value, spelled twice (GOTCHAS #6). `mirror_as`
+        # needs BOTH -- the same value, spelled twice. `mirror_as`
         # copies the path value into the body as `api`, so `--api-id` alone is
         # enough; there is nothing for the caller to repeat.
         (Param("api_id", type=ParamType.UUID, location=ParamLocation.PATH, required=True,
@@ -1028,7 +1027,7 @@ _PIPELINES: tuple[Endpoint, ...] = (
         subgroup="pipeline key", doc="v1-etl-pipelines.mdx", permission=Permission.READ),
     _ep("create", "POST", "/api/keys/pipeline/{pipeline_id}/",
         "Create an API key for a pipeline.",
-        # Same path/body duplication as `api-deployment key create` (GOTCHAS #6):
+        # Same path/body duplication as `api-deployment key create`:
         # the URL takes `pipeline_id`, the body wants the same value as `pipeline`.
         (Param("pipeline_id", type=ParamType.UUID, location=ParamLocation.PATH,
                required=True, mirror_as="pipeline",
@@ -1130,8 +1129,8 @@ _ADAPTERS: tuple[Endpoint, ...] = (
     _ep("get", "GET", "/adapter/default_triad/", "Show the organization's default adapters.",
         subgroup="adapter default-triad", doc="v1-adapters.mdx", permission=Permission.READ,
         description="Returns an empty object `{}` when no default triad has been set "
-                    "for the organization -- that is 'unset', not an error (GOTCHAS "
-                    "#10). Set one with `adapter default-triad set`; `workflow tool "
+                    "for the organization -- that is 'unset', not an error. "
+                    "Set one with `adapter default-triad set`; `workflow tool "
                     "add` seeds a tool instance's adapters from it, so configuring it "
                     "first avoids a half-configured tool instance.",
         examples=("unstract platform adapter default-triad get",)),

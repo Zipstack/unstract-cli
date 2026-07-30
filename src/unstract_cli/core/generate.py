@@ -292,7 +292,7 @@ def _run_endpoint(ctx: click.Context, endpoint: Endpoint, kwargs: dict[str, Any]
         payload = response.payload
 
         # A 2xx does not always mean success: some endpoints return 201 while
-        # leaving a linking field NULL, silently orphaning the record (BUG 2).
+        # leaving a linking field NULL, silently orphaning the record.
         if endpoint.require_response_fields and isinstance(payload, dict):
             missing = [
                 f for f in endpoint.require_response_fields if payload.get(f) in (None, "")

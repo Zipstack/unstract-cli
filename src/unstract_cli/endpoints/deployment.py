@@ -34,7 +34,7 @@ _PATH_PARAMS: tuple[Param, ...] = (
         # Falls back to the platform block: `docstudio.deployment` is a separate,
         # initially-empty config section, so a user who has configured the
         # Platform API still hit "missing org_id" here even though it is the same
-        # organization. The deployment block still wins when set (GOTCHAS #7).
+        # organization. The deployment block still wins when set.
         default_from="deployment.org_id platform.org_id",
         help="Organization identifier. Falls back to the platform block's org_id",
     ),
@@ -73,7 +73,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             "deployment and a key, wire the key in with:\n"
             "  unstract config set docstudio.deployment api_key env:UNSTRACT_DEPLOYMENT_KEY\n"
             "--org-id now falls back to the platform block's org_id, so that one "
-            "usually needs no second entry (GOTCHAS #7)."
+            "usually needs no second entry."
         ),
         params=(
             *_PATH_PARAMS,
@@ -107,7 +107,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         # read would 406). `status_field` lists `status` first because the status
         # GET returns a top-level `status` (its `message` holds the result); the
         # nested `execution_status` is the run POST's shape. Reading the wrong one
-        # made the terminal state go unrecognised (CAPTURE2 BUG 2).
+        # made the terminal state go unrecognised.
         poll=PollSpec(
             status_endpoint="docstudio.deployment.status",
             status_field=("status", "execution_status"),

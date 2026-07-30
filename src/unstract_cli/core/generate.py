@@ -102,10 +102,15 @@ def _click_option(param: Param) -> click.Option:
 
 def _resolve_config(ctx: click.Context, kwargs: dict[str, Any], endpoint: Endpoint) -> ResolvedConfig:
     overrides: dict[str, Any] = {}
+    # Key by API GROUP, not product. `ResolvedConfig.get` is called with
+    # `endpoint.api` everywhere (see `build_url`), so a product-keyed override
+    # never matches for Document Studio -- whose product (`docstudio`) differs
+    # from its groups (`platform`, `deployment`, `hitl`) -- and `--base-url`
+    # would silently fall through to the public default with the key attached.
     if base_url := kwargs.get("base_url"):
-        overrides[f"{endpoint.product.value}.base_url"] = base_url
+        overrides[f"{endpoint.api.value}.base_url"] = base_url
     if org_id := kwargs.get("org_id"):
-        overrides[f"{endpoint.product.value}.org_id"] = org_id
+        overrides[f"{endpoint.api.value}.org_id"] = org_id
 
     root = ctx.find_root().params if ctx.find_root() else {}
     cfg = load_config()

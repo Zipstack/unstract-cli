@@ -638,15 +638,16 @@ class TestConfigCommands:
         """A project's `.unstract.toml` applies to anyone working inside it.
 
         Found by walking upward, the way git and ruff locate their settings, so a
-        repo can commit its own hosts and org without every caller passing flags.
+        repo can commit its own org and profile selection without every caller
+        passing flags. Credentials and hosts are excluded -- see the test below.
         """
         monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
         project = tmp_path / "proj"
         (project / "deep" / "nested").mkdir(parents=True)
         (project / ".unstract.toml").write_text(
             'default_profile = "proj"\n\n'
-            '[profiles.proj.llmwhisperer]\n'
-            'base_url = "https://project.example/api/v2"\n'
+            '[profiles.proj.docstudio.platform]\n'
+            'org_id = "project-org"\n'
         )
         monkeypatch.chdir(project / "deep" / "nested")
 
@@ -655,9 +656,55 @@ class TestConfigCommands:
 
         current = json.loads(runner.invoke(cli, ["config", "current"]).stdout)
         assert current["active_profile"] == "proj"
-        assert current["settings"]["llmwhisperer"]["base_url"].startswith(
-            "https://project.example"
+        assert current["settings"]["docstudio.platform"]["org_id"] == "project-org"
+
+    def test_project_config_may_not_supply_credentials_or_hosts(
+        self, runner, cli, tmp_path, monkeypatch
+    ):
+        """A discovered `.unstract.toml` is attacker-controlled in an untrusted checkout.
+
+        Combined with `env:VAR` indirection it could otherwise point the CLI at an
+        attacker host and hand it an arbitrary environment variable as a Bearer
+        token, just by the user `cd`-ing into the tree. Non-secret keys still apply.
+        """
+        monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
+        monkeypatch.setenv("TOTALLY_SECRET", "leak-me")
+        project = tmp_path / "hostile"
+        project.mkdir()
+        (project / ".unstract.toml").write_text(
+            'default_profile = "x"\n\n'
+            '[profiles.x.docstudio.platform]\n'
+            'base_url = "https://attacker.example"\n'
+            'api_key = "env:TOTALLY_SECRET"\n'
+            'org_id = "still-honoured"\n'
         )
+        monkeypatch.chdir(project)
+
+        current = json.loads(runner.invoke(cli, ["config", "current"]).stdout)
+        platform = current["settings"]["docstudio.platform"]
+        assert "attacker.example" not in json.dumps(current)
+        assert "leak-me" not in json.dumps(current)
+        assert platform["api_key_configured"] is False, "env: indirection must not resolve"
+        assert platform["org_id"] == "still-honoured", "non-secret keys still apply"
+
+    def test_explicit_config_flag_may_supply_credentials(
+        self, runner, cli, tmp_path, monkeypatch
+    ):
+        """The restriction is about *discovery*, not about the file's name.
+
+        A path the user typed is trusted; one found by walking up from cwd is not.
+        """
+        monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
+        named = tmp_path / "mine.toml"
+        named.write_text(
+            'default_profile = "x"\n\n'
+            '[profiles.x.docstudio.platform]\n'
+            'base_url = "https://chosen.example"\n'
+        )
+        current = json.loads(
+            runner.invoke(cli, ["--config", str(named), "config", "current"]).stdout
+        )
+        assert current["settings"]["docstudio.platform"]["base_url"] == "https://chosen.example"
 
     def test_project_config_search_stops_at_home(self, monkeypatch, tmp_path):
         """A stray file above $HOME must not capture every invocation."""

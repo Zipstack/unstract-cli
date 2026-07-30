@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,7 +83,11 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (ApiGroup.DEPLOYMENT.value, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY",),
     (ApiGroup.DEPLOYMENT.value, "base_url"): ("UNSTRACT_BASE_URL",),
     (ApiGroup.DEPLOYMENT.value, "org_id"): ("UNSTRACT_ORG_ID",),
-    (ApiGroup.HITL.value, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY", "UNSTRACT_PLATFORM_KEY"),
+    # HITL shares the deployment credential (both are Bearer keys against the
+    # deployment host, SPEC §4.4). It deliberately does NOT chain on to the
+    # platform key: borrowing a key across API groups is credential confusion
+    # (SPEC §7.1), and it would silently send a platform key to the HITL host.
+    (ApiGroup.HITL.value, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY",),
     (ApiGroup.HITL.value, "base_url"): ("UNSTRACT_BASE_URL",),
     (ApiGroup.HITL.value, "org_id"): ("UNSTRACT_ORG_ID",),
     (ApiGroup.APIHUB.value, "api_key"): ("UNSTRACT_APIHUB_KEY",),
@@ -118,15 +123,25 @@ def config_path() -> Path:
     checked into a repo, a throwaway one in CI, and a personal default can all
     coexist, selected per invocation.
     """
+    return _resolve_config_path()[0]
+
+
+def _resolve_config_path() -> tuple[Path, bool]:
+    """Resolve the config path and whether it was discovered (not named).
+
+    The boolean is the trust signal: a path the user named explicitly (``--config``
+    or ``$UNSTRACT_CONFIG``) is trusted, one found by walking up from the working
+    directory is not. See ``UNTRUSTED_PROJECT_KEYS``.
+    """
     if _config_override is not None:
-        return _config_override
+        return _config_override, False
     if override := os.environ.get("UNSTRACT_CONFIG"):
-        return Path(override).expanduser()
+        return Path(override).expanduser(), False
     if local := find_project_config():
-        return local
+        return local, True
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
-    return base / "unstract" / "config.toml"
+    return base / "unstract" / "config.toml", False
 
 
 #: Filename a project can commit to point the CLI at its own settings.
@@ -164,6 +179,15 @@ def _deref(value: Any) -> Any:
     return value
 
 
+#: Settings a project-local config file is not allowed to supply. A discovered
+#: `.unstract.toml` is attacker-controlled in any checkout the user did not write
+#: -- combined with `env:VAR` indirection it could otherwise point the CLI at an
+#: attacker host and hand it an arbitrary environment variable as a Bearer token.
+#: Everything else (org_id, profile selection, non-secret defaults) is still
+#: honoured, so the git/ruff-style project workflow keeps working.
+UNTRUSTED_PROJECT_KEYS = frozenset({"api_key", "base_url"})
+
+
 @dataclass
 class ConfigFile:
     """Parsed contents of ``config.toml``."""
@@ -174,13 +198,22 @@ class ConfigFile:
     exists: bool = False
     #: Non-fatal diagnostics (e.g. loose file permissions), surfaced on stderr.
     warnings: tuple[str, ...] = ()
+    #: True when `path` was discovered by walking up from the working directory
+    #: rather than named explicitly. Such a file is not trusted with credentials.
+    is_project_local: bool = False
+    #: Top-level tables we do not model, retained so `config set` round-trips a
+    #: hand-edited file instead of silently deleting what it does not recognise.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 def load_config(path: Path | None = None) -> ConfigFile:
     """Load the config file. A missing file is normal, not an error."""
-    target = path or config_path()
+    if path is not None:
+        target, project_local = path, False
+    else:
+        target, project_local = _resolve_config_path()
     if not target.exists():
-        return ConfigFile(path=target, exists=False)
+        return ConfigFile(path=target, exists=False, is_project_local=project_local)
 
     try:
         with target.open("rb") as fh:
@@ -203,13 +236,48 @@ def load_config(path: Path | None = None) -> ConfigFile:
     if not isinstance(profiles, dict):
         raise ConfigError(f"`profiles` in {target} must be a table.")
 
+    # A discovered file is attacker-controlled in any checkout the user did not
+    # write. Strip credentials from it rather than ignoring the file wholesale,
+    # and say so -- a silently dropped setting is its own kind of surprise.
+    if project_local:
+        dropped = _strip_untrusted(profiles)
+        if dropped:
+            warnings.append(
+                f"Ignoring {', '.join(sorted(dropped))} from project config {target}: "
+                "a discovered .unstract.toml may not supply credentials or base URLs. "
+                "Pass --config explicitly, or set the corresponding environment variable."
+            )
+
     return ConfigFile(
         default_profile=raw.get("default_profile"),
         profiles=profiles,
         path=target,
         exists=True,
         warnings=tuple(warnings),
+        is_project_local=project_local,
+        extra={k: v for k, v in raw.items() if k not in ("profiles", "default_profile")},
     )
+
+
+def _strip_untrusted(profiles: dict[str, Any]) -> set[str]:
+    """Remove credential keys from a project-local profile tree, in place.
+
+    Returns the set of dotted names removed, for the diagnostic.
+    """
+    dropped: set[str] = set()
+
+    def walk(node: Any, trail: tuple[str, ...]) -> None:
+        if not isinstance(node, dict):
+            return
+        for key in list(node):
+            if key in UNTRUSTED_PROJECT_KEYS:
+                dropped.add(".".join((*trail, key)))
+                del node[key]
+            else:
+                walk(node[key], (*trail, key))
+
+    walk(profiles, ())
+    return dropped
 
 
 def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
@@ -221,13 +289,29 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     if cfg.default_profile:
         doc["default_profile"] = cfg.default_profile
     doc["profiles"] = cfg.profiles
+    # Round-trip anything we do not model. Rebuilding the document from known
+    # keys alone would silently delete a hand-edited top-level table.
+    for key, value in cfg.extra.items():
+        doc.setdefault(key, value)
 
+    # Write to a temp file in the same directory, then rename. An O_TRUNC write
+    # in place leaves an empty config if the process dies mid-write, and lets two
+    # concurrent `config set` runs interleave into a corrupt file. `os.replace`
+    # is atomic within a filesystem, so a reader sees either the old or the new
+    # file, never a partial one.
+    #
     # Create with 0600 from the outset rather than widening then narrowing:
     # a world-readable window, however brief, is a window.
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        tomli_w.dump(doc, fh)
-    os.chmod(target, 0o600)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".config-", suffix=".toml")
+    tmp = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            tomli_w.dump(doc, fh)
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return target
 
 

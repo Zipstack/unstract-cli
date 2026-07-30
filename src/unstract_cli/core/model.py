@@ -371,8 +371,24 @@ class PollSpec:
     status_field: str | tuple[str, ...] = "status"
     terminal_success: tuple[str, ...] = ()
     terminal_failure: tuple[str, ...] = ()
+    #: States that mean "keep polling". Declaring them explicitly lets an
+    #: *unrecognised* status fail loudly instead of being mistaken for progress
+    #: -- on a one-shot store the first poll already consumed the result, so
+    #: polling on until timeout loses it.
+    in_progress: tuple[str, ...] = ()
     handle_field: str = ""
     handle_param: str = ""
+    #: Fallback for a response that carries the handle only inside a URL, as
+    #: ``(body_field, query_param)``. The deployment run POST is the live case:
+    #: its body has no ``execution_id`` at all -- the id exists solely in the
+    #: ``status_api`` query string -- so without this `--wait` cannot poll and
+    #: silently returns the PENDING stub as though it were the result.
+    handle_from_query: tuple[str, str] | None = None
+    #: Values to forward from the *original* request into each poll of the status
+    #: endpoint. Without this the status record's own defaults apply, which for
+    #: ``include_metadata`` means the server strips the metadata the user asked
+    #: for and, on a one-shot store, discards it permanently.
+    poll_carry: tuple[str, ...] = ()
     retrieve_endpoint: str | None = None
     #: Values to forward from the *original* request into the retrieve call. Each
     #: entry is either a py_name carried as-is, or a ``(source, dest)`` pair that

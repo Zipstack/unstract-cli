@@ -412,3 +412,41 @@ class TestExecute:
         assert payload["message"] == "bad hash"
         assert payload["retryable"] is False
         assert payload["exit_code"] == 5
+
+
+class TestConsumedHeuristicPrecision:
+    """`already delivered` in a *result* is document text, not a status signal."""
+
+    def test_successful_result_containing_the_phrase_survives(self):
+        """The deployment status endpoint returns the result in `message`.
+
+        Substring-matching a stringified list let ordinary invoice or delivery-note
+        wording destroy a successful one-shot read.
+        """
+        from unstract_cli.core.http import Response, raise_for_status
+        from unstract_cli.endpoints import get_endpoint
+
+        payload = {
+            "status": "COMPLETED",
+            "message": [{"file": "note.pdf", "result": "goods were already delivered"}],
+        }
+        # Must not raise: this is a completed extraction, not a consumed result.
+        raise_for_status(
+            Response(status=200, payload=payload, headers={}, raw=b""),
+            get_endpoint("docstudio.deployment.status"),
+        )
+
+    def test_genuine_consumed_signal_still_raises(self):
+        from unstract_cli.core.errors import ExitCode
+        from unstract_cli.core.http import Response, raise_for_status
+
+        with pytest.raises(CLIError) as excinfo:
+            raise_for_status(
+                Response(
+                    status=200,
+                    payload={"message": "Whisper already delivered"},
+                    headers={},
+                    raw=b"",
+                )
+            )
+        assert excinfo.value.exit_code == ExitCode.ALREADY_CONSUMED

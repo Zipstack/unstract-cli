@@ -118,7 +118,15 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             "spreadsheets. Returns a whisper_hash immediately; use --wait to poll "
             "and retrieve the text in one step."
         ),
-        params=_EXTRACT_PARAMS,
+        params=(
+            *_EXTRACT_PARAMS,
+            # This endpoint is one_shot: with --wait, the retrieve that returns
+            # the text consumes it, and a second read 406s. Both generate.py and
+            # the exit-9 hint tell the user to pass --save, so it has to exist.
+            Param("save", client_side=True,
+                  help="With --wait, write the one-shot result to this path before "
+                       "exiting (strongly recommended: the result can be read only once)"),
+        ),
         body=BodyKind.BINARY_FILE,
         constraints=(MutuallyExclusive(("file", "url")),),
         poll=PollSpec(
@@ -126,6 +134,10 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             status_field="status",
             terminal_success=("processed",),
             terminal_failure=("error",),
+            # Documented statuses: accepted, processing, processed, error,
+            # retrieved. Declaring the in-progress pair lets an unrecognised
+            # status fail loudly rather than be mistaken for "still working".
+            in_progress=("accepted", "processing"),
             handle_field="whisper_hash",
             handle_param="whisper_hash",
             retrieve_endpoint="whisper.retrieve",

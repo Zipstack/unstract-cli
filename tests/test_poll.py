@@ -341,3 +341,103 @@ class TestApiHubWait:
             sleep=lambda _: None,
         )
         assert result["tables"][0]["rows"] == 3
+
+
+class TestOneShotDataLoss:
+    """Regressions for the ways `--wait` could lose an unrepeatable result."""
+
+    def test_handle_is_recovered_from_status_api_query(self):
+        """The deployment run POST carries no `execution_id` field at all.
+
+        Its real body is {execution_status, status_api, error, result}; the id
+        exists only inside the status_api query string. Reading only the field
+        meant `--wait` found no handle and returned the PENDING stub as success.
+        """
+        body = {
+            "message": {
+                "execution_status": "PENDING",
+                "status_api": "/deployment/api/org/inv?execution_id=abc-123",
+                "error": None,
+                "result": None,
+            }
+        }
+        assert extract_handle(body, "execution_id") is None, "field genuinely absent"
+        assert extract_handle(body, "execution_id", ("status_api", "execution_id")) == "abc-123"
+
+    def test_deployment_run_declares_the_query_fallback(self):
+        spec = get_endpoint("docstudio.deployment.run").poll
+        assert spec.handle_from_query == ("status_api", "execution_id")
+
+    @respx.mock
+    def test_missing_handle_fails_loudly_instead_of_faking_success(self, monkeypatch):
+        """Exit 0 with a PENDING body is indistinguishable from a real result."""
+        cfg = _config(
+            monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
+        )
+        initial = {"message": {"execution_status": "PENDING"}}
+        with pytest.raises(CLIError) as excinfo:
+            wait_for_completion(
+                endpoint=get_endpoint("docstudio.deployment.run"),
+                initial=initial,
+                config=cfg,
+                values={"api_name": "inv", "org_id": "org_test"},
+                sleep=lambda _: None,
+            )
+        assert excinfo.value.exit_code != 0
+        assert excinfo.value.details == initial, "the payload must survive the failure"
+
+    @respx.mock
+    def test_mid_poll_failure_carries_the_resume_handle(self, monkeypatch):
+        """A 500 mid-poll must not strand an already-billed execution."""
+        base = "https://us-central.unstract.com"
+        respx.get(f"{base}/deployment/api/org_test/inv/").mock(
+            return_value=httpx.Response(500, json={"error": "gateway blew up"})
+        )
+        cfg = _config(
+            monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
+        )
+        with pytest.raises(CLIError) as excinfo:
+            wait_for_completion(
+                endpoint=get_endpoint("docstudio.deployment.run"),
+                initial={"message": {"execution_id": "e-77", "execution_status": "PENDING"}},
+                config=cfg,
+                values={"api_name": "inv", "org_id": "org_test"},
+                max_retries=0,
+                sleep=lambda _: None,
+            )
+        assert excinfo.value.extra.get("execution_id") == "e-77"
+
+    @respx.mock
+    def test_poll_carries_include_metadata(self, monkeypatch):
+        """The status record defaults it to False; the server then drops it."""
+        base = "https://us-central.unstract.com"
+        route = respx.get(f"{base}/deployment/api/org_test/inv/").mock(
+            return_value=httpx.Response(200, json={"status": "COMPLETED", "message": "done"})
+        )
+        cfg = _config(
+            monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
+        )
+        wait_for_completion(
+            endpoint=get_endpoint("docstudio.deployment.run"),
+            initial={"message": {"execution_id": "e-1", "execution_status": "PENDING"}},
+            config=cfg,
+            values={"api_name": "inv", "org_id": "org_test", "include_metadata": True},
+            sleep=lambda _: None,
+        )
+        sent = str(route.calls[0].request.url)
+        assert "include_metadata=true" in sent.lower()
+
+
+class TestOneShotInvariants:
+    def test_every_one_shot_endpoint_exposes_save(self):
+        """A one-shot result can be read exactly once, and `--save` is the only
+        way to keep it. `whisper extract` shipped without it while the CLI's own
+        output told users to pass it."""
+        from unstract_cli.endpoints import ALL_ENDPOINTS
+
+        missing = [
+            f"{ep.product.value}.{ep.group}.{ep.name}"
+            for ep in ALL_ENDPOINTS
+            if ep.poll and ep.poll.one_shot and "save" not in {p.py_name for p in ep.params}
+        ]
+        assert missing == []

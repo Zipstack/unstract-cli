@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -147,9 +149,19 @@ def _save_payload(payload: Any, destination: str, raw_field: str | None) -> None
         else json.dumps(body, indent=2, default=str).encode()
     )
 
-    tmp = path.with_name(f".{path.name}.partial")
-    tmp.write_bytes(data)
-    tmp.replace(path)
+    # A deterministic temp name lets two agents saving to one path corrupt each
+    # other, and a plain write lands 0644 -- extraction results are at least as
+    # sensitive as the config file, which goes to lengths for 0600.
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".partial")
+    tmp = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def build_command(endpoint: Endpoint) -> click.Command:
@@ -297,7 +309,24 @@ def _run_endpoint(ctx: click.Context, endpoint: Endpoint, kwargs: dict[str, Any]
             )
 
         if destination := values.get("save"):
-            _save_payload(payload, str(destination), endpoint.raw_field)
+            # --save is the documented mitigation for one-shot data loss, so it
+            # must not itself be able to lose the result: if the write fails
+            # (missing parent, read-only mount, full disk) the payload still
+            # reaches stdout, where a shell redirect or an agent can keep it.
+            # By this point the server may already have discarded its copy.
+            try:
+                _save_payload(payload, str(destination), endpoint.raw_field)
+            except OSError as exc:
+                emit(payload, fmt, columns=endpoint.table_columns, raw_field=endpoint.raw_field)
+                raise CLIError(
+                    f"Could not write --save file {destination}: {exc}",
+                    ExitCode.GENERIC,
+                    hint=(
+                        "The result was written to stdout instead -- capture it now; "
+                        "for a one-shot endpoint it cannot be fetched again."
+                    ),
+                    retryable=False,
+                ) from exc
             diagnostic(f"saved to {destination}", quiet=quiet, verbosity=verbosity)
 
         emit(payload, fmt, columns=endpoint.table_columns, raw_field=endpoint.raw_field)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from unstract_cli.config.loader import ResolvedConfig
 from unstract_cli.core import http
@@ -56,10 +57,30 @@ def extract_status(payload: Any, field: str | tuple[str, ...] = "status") -> str
     return None
 
 
-def extract_handle(payload: Any, field: str) -> str | None:
-    """Read the job handle (whisper_hash / execution_id / file_hash)."""
+def extract_handle(
+    payload: Any, field: str, from_query: tuple[str, str] | None = None
+) -> str | None:
+    """Read the job handle (whisper_hash / execution_id / file_hash).
+
+    ``from_query`` is a ``(field, param)`` fallback for responses that carry the
+    handle only inside a URL. The deployment run POST is the live case: its body
+    is ``{"execution_status", "status_api", "error", "result"}`` with no
+    ``execution_id`` anywhere -- the id exists solely in the ``status_api`` query
+    string. Without this, `--wait` silently returned the PENDING stub as if it
+    were the finished result.
+    """
     value = _dig(payload, field)
-    return str(value) if value is not None else None
+    if value is not None:
+        return str(value)
+
+    if from_query is not None:
+        source_field, query_param = from_query
+        url = _dig(payload, source_field)
+        if isinstance(url, str) and url:
+            found = parse_qs(urlparse(url).query).get(query_param)
+            if found and found[0]:
+                return str(found[0])
+    return None
 
 
 def _carry_path_values(values: dict[str, Any], target: Endpoint) -> dict[str, Any]:
@@ -97,41 +118,72 @@ def wait_for_completion(
 
     from unstract_cli.endpoints import get_endpoint
 
-    handle = extract_handle(initial, spec.handle_field)
+    handle = extract_handle(initial, spec.handle_field, spec.handle_from_query)
     if not handle:
-        diagnostic(
-            f"--wait: no {spec.handle_field} in response; returning immediately.",
-            quiet=quiet,
-            verbosity=verbosity,
+        # Returning `initial` here would be a silent success: exit 0 with a
+        # PENDING stub that the caller records as the finished result. The user
+        # asked to wait, and the CLI cannot -- say so and let them recover from
+        # the payload, which is attached.
+        raise CLIError(
+            f"--wait: no {spec.handle_field} in the response; cannot poll.",
+            ExitCode.SERVER_ERROR,
+            details=initial if isinstance(initial, dict) else None,
+            endpoint=f"{endpoint.method} {endpoint.path}",
+            hint=(
+                "The operation may still be running. The initial response is "
+                "attached; re-run without --wait and poll with the status command."
+            ),
+            retryable=False,
         )
-        return initial
 
     status_endpoint = get_endpoint(spec.status_endpoint)
     deadline = now() + timeout
     last_status: str | None = None
+    last_payload: Any = initial
 
     # Path parameters from the original invocation must survive into the status
     # and retrieve calls: `deployment status` needs the same --api-name and
     # --org-id, and the handle alone cannot supply them.
     carried = _carry_path_values(values or {}, status_endpoint)
+    # Non-path values the user explicitly set that the status endpoint would
+    # otherwise default away (notably --include-metadata, whose default of False
+    # makes the server strip metadata and drop it from a one-shot store).
+    carried.update(
+        {
+            name: (values or {})[name]
+            for name in spec.poll_carry
+            if (values or {}).get(name) is not None
+        }
+    )
 
     while True:
         poll_values = {**carried, spec.handle_param: handle}
         plan = http.build_request(status_endpoint, config, poll_values)
-        response = http.execute(
-            plan,
-            endpoint=status_endpoint,
-            timeout=request_timeout,
-            max_retries=max_retries,
-        )
+        try:
+            response = http.execute(
+                plan,
+                endpoint=status_endpoint,
+                timeout=request_timeout,
+                max_retries=max_retries,
+            )
 
-        status = extract_status(response.payload, spec.status_field)
-
-        # Only now consider the HTTP status: if the body carried no recognisable
-        # state, a 4xx/5xx is a real failure rather than the 422 quirk.
-        if status is None:
-            http.raise_for_status(response, status_endpoint)
             status = extract_status(response.payload, spec.status_field)
+
+            # Only now consider the HTTP status: if the body carried no recognisable
+            # state, a 4xx/5xx is a real failure rather than the 422 quirk.
+            if status is None:
+                http.raise_for_status(response, status_endpoint)
+                status = extract_status(response.payload, spec.status_field)
+        except CLIError as exc:
+            # Every exit from the wait loop carries the resume handle, matching
+            # what the timeout path does. Without this an agent gets exit 8 with
+            # no handle anywhere -- and on a one-shot, already-billed execution
+            # the only recovery would be to run the whole thing again.
+            exc.extra.setdefault(spec.handle_field, handle)
+            if last_status is not None:
+                exc.extra.setdefault("last_status", last_status)
+            raise
+        last_payload = response.payload
 
         if status != last_status:
             diagnostic(f"--wait: status={status}", quiet=quiet, verbosity=verbosity, level=1)
@@ -151,6 +203,37 @@ def wait_for_completion(
         if normalised in {s.lower() for s in spec.terminal_success}:
             break
 
+        # A status we do not recognise is not "still running". Treating it as
+        # in-progress polls until timeout, and on a one-shot store the first poll
+        # already consumed the result -- so every later poll 406s and the data is
+        # gone. Fail now, with the payload, while it is still in hand.
+        #
+        # Only enforced where `in_progress` is declared: several of these APIs
+        # emit intermediate states that are not exhaustively documented (API Hub
+        # alone has QUEUED_FOR_WHISPER, WHISPERING, ...), and guessing at that
+        # list would turn a working poll into a hard failure.
+        if (
+            spec.in_progress
+            and normalised
+            and normalised
+            not in {
+                s.lower()
+                for s in (*spec.terminal_success, *spec.terminal_failure, *spec.in_progress)
+            }
+        ):
+            raise CLIError(
+                f"Unrecognised status {status!r} from the status endpoint.",
+                ExitCode.SERVER_ERROR,
+                endpoint=f"{endpoint.method} {endpoint.path}",
+                details=response.payload if isinstance(response.payload, dict) else None,
+                hint=(
+                    "The server reported a state this CLI does not model. The "
+                    "response is attached; the result may already be consumed."
+                ),
+                extra={spec.handle_field: handle},
+                retryable=False,
+            )
+
         if now() >= deadline:
             raise CLIError(
                 f"Timed out after {timeout:g}s waiting for completion "
@@ -161,7 +244,11 @@ def wait_for_completion(
                     f"The job is still running. Resume with the {spec.handle_field} "
                     f"below rather than resubmitting the document."
                 ),
-                extra={spec.handle_field: handle, "last_status": status},
+                extra={
+                    spec.handle_field: handle,
+                    "last_status": status,
+                    "last_payload": last_payload,
+                },
             )
 
         sleep(poll_interval)

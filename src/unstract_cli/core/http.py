@@ -494,16 +494,48 @@ _CONSUMED_PHRASES = ("already delivered", "already acknowledged", "already retri
 
 
 def _looks_consumed(payload: Any) -> bool:
+    """True when the body says the result was already delivered.
+
+    Only a *string* ``message`` is inspected. On the deployment status endpoint
+    ``message`` carries the extracted result itself, so stringifying a list or
+    dict and substring-matching it would let ordinary document text -- "goods
+    were already delivered", common in delivery notes and invoices -- destroy a
+    successful one-shot read.
+    """
     if not isinstance(payload, dict):
         return False
-    message = str(payload.get("message", "")).lower()
-    return any(phrase in message for phrase in _CONSUMED_PHRASES)
+    message = payload.get("message")
+    if not isinstance(message, str):
+        return False
+    lowered = message.lower()
+    return any(phrase in lowered for phrase in _CONSUMED_PHRASES)
+
+
+def _looks_successful(response: Response, endpoint: Endpoint | None = None) -> bool:
+    """True when the body reports a terminal-success state for this endpoint.
+
+    Used to keep the already-consumed heuristic from firing on a response that
+    plainly succeeded.
+    """
+    if response.status >= 400 or endpoint is None or endpoint.poll is None:
+        return False
+    successes = {s.lower() for s in endpoint.poll.terminal_success}
+    if not successes:
+        return False
+    from unstract_cli.core.poll import extract_status
+
+    status = extract_status(response.payload, endpoint.poll.status_field)
+    return status is not None and status.lower() in successes
 
 
 def raise_for_status(response: Response, endpoint: Endpoint | None = None) -> None:
     """Convert an unsuccessful -- or deceptively successful -- response into an error."""
-    # Checked before the status check: this arrives as a 200.
-    if _looks_consumed(response.payload):
+    # LLMWhisperer signals "already delivered" with a 200 and a message, so this
+    # has to run before the status check. It is gated on there being no terminal
+    # success in the body: on the deployment status endpoint a COMPLETED response
+    # carries the *result* in `message`, and matching phrases inside real document
+    # text would discard a successful one-shot read.
+    if _looks_consumed(response.payload) and not _looks_successful(response, endpoint):
         raise CLIError(
             _extract_message(response.payload) or "Result already retrieved.",
             ExitCode.ALREADY_CONSUMED,

@@ -153,6 +153,7 @@ _PS_POLL = PollSpec(
     status_field="status",
     terminal_success=("completed",),
     terminal_failure=("failed",),
+    in_progress=("accepted", "pending", "processing", "started", "running", "retry"),
     handle_field="task_id",
     handle_param="task_id",
     retrieve_endpoint="docstudio.platform.prompt-studio.output.list",

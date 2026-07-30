@@ -113,8 +113,18 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             status_field=("status", "execution_status"),
             terminal_success=("COMPLETED",),
             terminal_failure=("ERROR", "STOPPED"),
+            in_progress=("PENDING", "EXECUTING"),
             handle_field="execution_id",
             handle_param="execution_id",
+            # The run POST returns no `execution_id` anywhere in its body --
+            # {"execution_status", "status_api", "error", "result"} -- so the id
+            # has to come out of the status_api query string. Without this,
+            # --wait cannot poll and silently returns the PENDING stub.
+            handle_from_query=("status_api", "execution_id"),
+            # The status GET defaults include_metadata to False; on this one-shot
+            # store the server strips the metadata AND drops it, so a user who
+            # asked for it would lose it permanently on the poll.
+            poll_carry=("include_metadata",),
             one_shot=True,
         ),
         doc_source=f"{_DOCS}/api_execution.md",

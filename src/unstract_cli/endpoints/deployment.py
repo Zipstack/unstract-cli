@@ -88,6 +88,9 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             Param("include_metadata", type=ParamType.BOOL, location=ParamLocation.FORM,
                   default=False,
                   help="Include LLM/embedding usage and cost metadata in the result"),
+            Param("include_metrics", type=ParamType.BOOL, location=ParamLocation.FORM,
+                  default=False,
+                  help="Include execution metrics in the result"),
             Param("tags", location=ParamLocation.FORM,
                   help="Tag for this execution; must start with a letter (limit 1)"),
             Param("llm_profile_id", type=ParamType.UUID, location=ParamLocation.FORM,
@@ -124,7 +127,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             # The status GET defaults include_metadata to False; on this one-shot
             # store the server strips the metadata AND drops it, so a user who
             # asked for it would lose it permanently on the poll.
-            poll_carry=("include_metadata",),
+            poll_carry=("include_metadata", "include_metrics"),
             one_shot=True,
         ),
         doc_source=f"{_DOCS}/api_execution.md",
@@ -157,6 +160,8 @@ ENDPOINTS: tuple[Endpoint, ...] = (
                   help="Execution identifier returned by `deployment run`"),
             Param("include_metadata", type=ParamType.BOOL, default=False,
                   help="Include LLM/embedding usage and cost metadata"),
+            Param("include_metrics", type=ParamType.BOOL, default=False,
+                  help="Include execution metrics"),
             Param("save", client_side=True,
                   help="Write the result to this path before exiting (recommended)"),
         ),

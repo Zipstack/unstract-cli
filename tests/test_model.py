@@ -183,7 +183,7 @@ class TestP11LiteralPaths:
             ("docstudio.platform.prompt-studio.profile.get",
              "/api/v1/unstract/{org_id}/prompt-studio/profile-manager/{profile_id}/"),
             ("docstudio.platform.group.member.remove",
-             "/api/v1/unstract/{org_id}/groups/{id}/members/{user_id}"),
+             "/api/v1/unstract/{org_id}/groups/{id}/members/{user_id}/"),
             ("docstudio.platform.pipeline.postman-collection",
              "/api/v1/unstract/{org_id}/pipeline/api/postman_collection/{id}/"),
             ("docstudio.platform.api-deployment.postman-collection",
@@ -285,3 +285,36 @@ class TestDerivedPatchSafety:
                 offenders.append((".".join(endpoint.command_path), unexpected))
 
         assert offenders == []
+
+
+class TestSharingRoutes:
+    """Sharing is honoured on exactly one route, verified against the backend.
+
+    The `absorb_shared_users` migrations (unstract@3653b418c, 2026-07-17) removed
+    `shared_users` from AdapterInstance, ConnectorInstance, APIDeployment,
+    Pipeline, CustomTool and Workflow, backfilling it into ResourceMembership;
+    `shared_to_org` survives on those models but is `read_only=True` on every one
+    of their serializers. Declaring either on create/update/patch produced a 2xx
+    while DRF silently discarded the value -- the operator believed access had
+    been granted or revoked when nothing had changed.
+    """
+
+    def test_only_the_share_endpoint_exposes_sharing_flags(self):
+        from unstract_cli.endpoints import ALL_ENDPOINTS
+
+        offenders = [
+            endpoint.dotted_name
+            for endpoint in ALL_ENDPOINTS
+            if endpoint.dotted_name != "docstudio.platform.share"
+            and {"shared_users", "shared_to_org"} & {p.py_name for p in endpoint.params}
+        ]
+        assert offenders == [], (
+            "these routes discard sharing fields silently; use `platform share`"
+        )
+
+    def test_share_endpoint_carries_all_three_axes(self):
+        """Matches _SUPPORTED_SHARE_AXES in permissions/resource_share_views.py."""
+        share = get_endpoint("docstudio.platform.share")
+        assert {"shared_users", "shared_groups", "shared_to_org"} <= {
+            p.py_name for p in share.params
+        }

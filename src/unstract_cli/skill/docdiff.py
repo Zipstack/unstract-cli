@@ -301,6 +301,19 @@ def _normalise(path: str) -> str:
     return path.rstrip("/") or "/"
 
 
+#: Parameters the published docs still list but the backend has removed, so a
+#: record must NOT expose them. `shared_users` was dropped from AdapterInstance,
+#: ConnectorInstance, APIDeployment, Pipeline, CustomTool and Workflow by the
+#: `absorb_shared_users` migrations (2026-07-17), which backfill it into
+#: ResourceMembership; `shared_to_org` survives on the models but is
+#: `read_only=True` on every one of those serializers, so DRF silently discards
+#: a client-supplied value. Sharing is done through `platform share` instead.
+#:
+#: The docs (last updated 2026-07-08) predate the migration. Without this, the
+#: drift suite would keep asking for flags that cannot work.
+_REMOVED_UPSTREAM = frozenset({"shared_users", "shared_to_org"})
+
+
 def diff(
     doc_endpoints: list[DocEndpoint],
     cli_endpoints: tuple[Endpoint, ...] = ALL_ENDPOINTS,
@@ -341,6 +354,11 @@ def diff(
         cli_names = {p.name for p in cli.params}
         for param in doc.params:
             if param.name in cli_names:
+                continue
+            # Documented, but removed from the backend -- the docs are the stale
+            # side here, so exposing these would be drift *towards* a broken
+            # surface rather than away from one.
+            if param.name in _REMOVED_UPSTREAM:
                 continue
             # A parameter mirrored into the body from a path param is present on
             # the wire under its documented name, just not as a separate flag.

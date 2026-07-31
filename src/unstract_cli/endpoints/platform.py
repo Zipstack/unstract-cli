@@ -221,10 +221,6 @@ _PS_FIELDS: tuple[Param, ...] = (
           default=False, help="Record line metadata for source highlighting"),
     Param("custom_data", type=ParamType.JSON, location=ParamLocation.BODY,
           help="JSON object addressable in prompts as {{custom_data.key}}"),
-    Param("shared_users", type=ParamType.INT, location=ParamLocation.BODY, multiple=True,
-          replace_semantics=True, help="User IDs to share with"),
-    Param("shared_to_org", type=ParamType.BOOL, location=ParamLocation.BODY, default=False,
-          help="Share with the whole organization"),
 )
 
 _PROMPT_FIELDS: tuple[Param, ...] = (
@@ -596,10 +592,6 @@ _WF_FIELDS: tuple[Param, ...] = (
           help="Destination connector configuration"),
     Param("max_file_execution_count", type=ParamType.INT, location=ParamLocation.BODY,
           help="Maximum executions per file (minimum 1)"),
-    Param("shared_to_org", type=ParamType.BOOL, location=ParamLocation.BODY, default=False,
-          help="Share with the whole organization"),
-    Param("shared_users", type=ParamType.INT, location=ParamLocation.BODY, multiple=True,
-          replace_semantics=True, help="User IDs to share with"),
 )
 
 _wf_update = _ep("update", "PUT", "/workflow/{id}/", "Replace a workflow.",
@@ -859,10 +851,6 @@ _DEP_FIELDS: tuple[Param, ...] = (
           help="URL name, matching ^[a-zA-Z0-9_-]+$ (max 30 chars, unique per org)"),
     Param("is_active", type=ParamType.BOOL, location=ParamLocation.BODY, default=True,
           help="Whether the deployment accepts requests"),
-    Param("shared_to_org", type=ParamType.BOOL, location=ParamLocation.BODY, default=False,
-          help="Share with the whole organization"),
-    Param("shared_users", type=ParamType.INT, location=ParamLocation.BODY, multiple=True,
-          replace_semantics=True, help="User IDs to share with"),
 )
 
 _dep_update = _ep("update", "PUT", "/api/deployment/{id}/", "Replace an API deployment.",
@@ -962,10 +950,6 @@ _PIPE_FIELDS: tuple[Param, ...] = (
           choices=["ETL", "TASK", "DEFAULT", "APP"], help="Pipeline type"),
     Param("cron_string", location=ParamLocation.BODY,
           help="UNIX cron schedule; the platform enforces a minimum interval"),
-    Param("shared_users", type=ParamType.INT, location=ParamLocation.BODY, multiple=True,
-          replace_semantics=True, help="User IDs to share with"),
-    Param("shared_to_org", type=ParamType.BOOL, location=ParamLocation.BODY, default=False,
-          help="Share with the whole organization"),
 )
 
 _pipe_update = _ep("update", "PUT", "/pipeline/{id}/", "Replace a pipeline.",
@@ -1066,20 +1050,13 @@ _AD_FIELDS: tuple[Param, ...] = (
     Param("adapter_metadata", type=ParamType.JSON, location=ParamLocation.BODY,
           required=True, help="Provider configuration; encrypted at rest"),
     Param("description", location=ParamLocation.BODY, help="Description"),
-    Param("shared_to_org", type=ParamType.BOOL, location=ParamLocation.BODY, default=False,
-          help="Share with the whole organization"),
 )
 
 _ad_update = _ep("update", "PUT", "/adapter/{id}/", "Replace an adapter instance.",
                  (_AD_ID, *_AD_FIELDS), subgroup="adapter", body=BodyKind.JSON,
                  doc="v1-adapters.mdx", permission=Permission.READ_WRITE)
 
-#: Only PATCH documents `shared_users` for adapters; POST/PUT do not.
-_ad_patch = with_params(
-    derive_patch(_ad_update, summary="Partially update an adapter instance."),
-    Param("shared_users", type=ParamType.INT, location=ParamLocation.BODY,
-          multiple=True, replace_semantics=True, help="User IDs to share with"),
-)
+_ad_patch = derive_patch(_ad_update, summary="Partially update an adapter instance.")
 
 _ADAPTERS: tuple[Endpoint, ...] = (
     _ep("supported", "GET", "/supported_adapters/", "List adapters supported by the platform.",
@@ -1165,10 +1142,6 @@ _CN_FIELDS: tuple[Param, ...] = (
     Param("connector_metadata", type=ParamType.JSON, location=ParamLocation.BODY,
           help="Connection configuration; not needed when using the OAuth flow"),
     Param("connector_version", location=ParamLocation.BODY, help="Connector version"),
-    Param("shared_to_org", type=ParamType.BOOL, location=ParamLocation.BODY, default=False,
-          help="Share with the whole organization"),
-    Param("shared_users", type=ParamType.INT, location=ParamLocation.BODY, multiple=True,
-          replace_semantics=True, help="User IDs to share with"),
 )
 
 _cn_update = _ep("update", "PUT", "/connector/{id}/", "Replace a connector instance.",
@@ -1277,12 +1250,11 @@ _GROUPS: tuple[Endpoint, ...] = (
                required=True, help="User IDs to add; existing members are ignored")),
         subgroup="group member", body=BodyKind.JSON, doc="v1-user-groups.mdx",
         permission=Permission.READ_WRITE),
-    # No trailing slash on this path, unlike its siblings.
-    _ep("remove", "DELETE", "/groups/{id}/members/{user_id}", "Remove a member from a group.",
+    _ep("remove", "DELETE", "/groups/{id}/members/{user_id}/", "Remove a member from a group.",
         (_GROUP_ID, Param("user_id", type=ParamType.INT, location=ParamLocation.PATH,
                           required=True, help="User to remove")),
         subgroup="group member", doc="v1-user-groups.mdx", permission=Permission.FULL_ACCESS,
-        description=_DELETE_NOTE, no_trailing_slash=True),
+        description=_DELETE_NOTE),
     _ep("resources", "GET", "/groups/{id}/resources/",
         "List resources shared with a group.", (_GROUP_ID,), subgroup="group",
         doc="v1-user-groups.mdx", permission=Permission.READ),
@@ -1313,6 +1285,11 @@ _GROUPS: tuple[Endpoint, ...] = (
                   help="Resource type; mapped to the correct URL segment"),
             Param("id", location=ParamLocation.PATH, required=True,
                   help="Resource identifier"),
+            # The three share axes the backend actually accepts
+            # (`_SUPPORTED_SHARE_AXES` in permissions/resource_share_views.py).
+            # This endpoint is the *only* route that honours them: the per-resource
+            # create/update/patch serializers had `shared_users` removed by the
+            # `absorb_shared_users` migrations and mark `shared_to_org` read-only.
             Param("shared_users", type=ParamType.INT, location=ParamLocation.BODY,
                   multiple=True, replace_semantics=True, help="User IDs to share with"),
             Param("shared_groups", type=ParamType.INT, location=ParamLocation.BODY,

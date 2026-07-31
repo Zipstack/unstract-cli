@@ -35,6 +35,7 @@ from unstract_cli.core.model import (
     Param,
     ParamLocation,
     ParamType,
+    PollSpec,
 )
 
 #: Headers Kong injects downstream from the `apikey` lookup (SPEC.md §4.4).
@@ -638,31 +639,58 @@ def _looks_consumed(payload: Any) -> bool:
     return any(phrase in lowered for phrase in _CONSUMED_PHRASES)
 
 
-def _looks_successful(response: Response, endpoint: Endpoint | None = None) -> bool:
-    """True when the body reports a terminal-success state for this endpoint.
+def _looks_successful(
+    response: Response,
+    endpoint: Endpoint | None = None,
+    spec: PollSpec | None = None,
+) -> bool:
+    """True when the body reports a terminal-success state.
 
     Used to keep the already-consumed heuristic from firing on a response that
     plainly succeeded.
+
+    ``spec`` must be passed when the caller is a poll loop. The endpoint being
+    *read* is the status endpoint, which carries no ``poll`` of its own -- the
+    spec lives on the endpoint that started the operation. Relying on
+    ``endpoint.poll`` alone made this guard inert on exactly the path it exists
+    for: a COMPLETED deployment status whose result text contains "already
+    delivered" would still be discarded.
     """
-    if response.status >= 400 or endpoint is None or endpoint.poll is None:
+    if response.status >= 400:
         return False
-    successes = {s.lower() for s in endpoint.poll.terminal_success}
+
+    # Three sources, in order of specificity: the spec driving a poll loop, the
+    # endpoint's own declaration (set on status/retrieve endpoints, which have no
+    # PollSpec but still return finished results), then the endpoint's own poll.
+    if spec is not None:
+        successes, field = spec.terminal_success, spec.status_field
+    elif endpoint is not None and endpoint.terminal_success:
+        successes, field = endpoint.terminal_success, endpoint.status_field
+    elif endpoint is not None and endpoint.poll is not None:
+        successes, field = endpoint.poll.terminal_success, endpoint.poll.status_field
+    else:
+        return False
+
     if not successes:
         return False
     from unstract_cli.core.poll import extract_status
 
-    status = extract_status(response.payload, endpoint.poll.status_field)
-    return status is not None and status.lower() in successes
+    status = extract_status(response.payload, field)
+    return status is not None and status.lower() in {s.lower() for s in successes}
 
 
-def raise_for_status(response: Response, endpoint: Endpoint | None = None) -> None:
+def raise_for_status(
+    response: Response,
+    endpoint: Endpoint | None = None,
+    spec: PollSpec | None = None,
+) -> None:
     """Convert an unsuccessful -- or deceptively successful -- response into an error."""
     # LLMWhisperer signals "already delivered" with a 200 and a message, so this
     # has to run before the status check. It is gated on there being no terminal
     # success in the body: on the deployment status endpoint a COMPLETED response
     # carries the *result* in `message`, and matching phrases inside real document
     # text would discard a successful one-shot read.
-    if _looks_consumed(response.payload) and not _looks_successful(response, endpoint):
+    if _looks_consumed(response.payload) and not _looks_successful(response, endpoint, spec):
         raise CLIError(
             _extract_message(response.payload) or "Result already retrieved.",
             ExitCode.ALREADY_CONSUMED,

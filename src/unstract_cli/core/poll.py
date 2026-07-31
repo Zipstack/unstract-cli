@@ -172,7 +172,7 @@ def wait_for_completion(
             # Only now consider the HTTP status: if the body carried no recognisable
             # state, a 4xx/5xx is a real failure rather than the 422 quirk.
             if status is None:
-                http.raise_for_status(response, status_endpoint)
+                http.raise_for_status(response, status_endpoint, spec)
                 status = extract_status(response.payload, spec.status_field)
         except CLIError as exc:
             # Every exit from the wait loop carries the resume handle, matching

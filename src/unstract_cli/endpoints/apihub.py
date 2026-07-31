@@ -148,6 +148,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         params=(
             Param("file_hash", required=True, help="Hash returned by `apihub extract`"),
         ),
+        terminal_success=("COMPLETED",),
         doc_source=f"{_SRC} + {_POSTMAN}",
         examples=("unstract apihub status --file-hash <hash>",),
     ),

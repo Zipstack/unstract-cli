@@ -441,3 +441,37 @@ class TestOneShotInvariants:
             if ep.poll and ep.poll.one_shot and "save" not in {p.py_name for p in ep.params}
         ]
         assert missing == []
+
+
+class TestConsumedGuardWiring:
+    """The success gate must be wired INTO the poll loop, not merely exist.
+
+    A unit test calling raise_for_status directly cannot prove the loop passes
+    the spec through; dropping that argument leaves such a test green while the
+    guard goes inert in production.
+    """
+
+    @respx.mock
+    def test_completed_result_containing_the_phrase_survives_a_real_poll(self, monkeypatch):
+        base = "https://us-central.unstract.com"
+        respx.get(f"{base}/deployment/api/org_test/inv/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "COMPLETED",
+                    # Ordinary delivery-note wording inside the actual result.
+                    "message": "Goods were already delivered to depot 4",
+                },
+            )
+        )
+        cfg = _config(
+            monkeypatch, UNSTRACT_DEPLOYMENT_KEY=FAKE_KEY, UNSTRACT_ORG_ID="org_test"
+        )
+        result = wait_for_completion(
+            endpoint=get_endpoint("docstudio.deployment.run"),
+            initial={"message": {"execution_id": "e-1", "execution_status": "PENDING"}},
+            config=cfg,
+            values={"api_name": "inv", "org_id": "org_test"},
+            sleep=lambda _: None,
+        )
+        assert "already delivered" in str(result), "the completed result must survive"

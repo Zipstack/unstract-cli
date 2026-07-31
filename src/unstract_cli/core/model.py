@@ -471,6 +471,16 @@ class Endpoint:
     #: retry after a lost response yields 406 rather than the data. Set on the
     #: destructive read itself; `PollSpec.one_shot` covers the poll-driven case.
     consumes_result: bool = False
+    #: Body states that mean "this response IS the finished result", declared on
+    #: the endpoint that *returns* it rather than on whoever polls it. A status
+    #: endpoint carries no ``poll`` of its own, so without this a caller reading
+    #: it directly -- `deployment status` with no --wait -- has no way to tell a
+    #: completed result from an error, and the already-consumed heuristic
+    #: discards a successful one-shot read whose text happens to say "already
+    #: delivered".
+    terminal_success: tuple[str, ...] = ()
+    #: Field name(s) holding that state. Mirrors ``PollSpec.status_field``.
+    status_field: str | tuple[str, ...] = "status"
 
     @property
     def product(self) -> Product:

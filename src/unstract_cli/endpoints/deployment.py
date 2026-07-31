@@ -165,6 +165,11 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             Param("save", client_side=True,
                   help="Write the result to this path before exiting (recommended)"),
         ),
+        # This endpoint IS the result store, so a caller reading it directly
+        # (no --wait) must be able to recognise a finished result -- otherwise
+        # the already-consumed heuristic discards a COMPLETED body whose text
+        # happens to contain "already delivered".
+        terminal_success=("COMPLETED",),
         doc_source=f"{_DOCS}/api_execution_status.md",
         examples=(
             "unstract deployment status --api-name invoice-api --execution-id <uuid> --save out.json",

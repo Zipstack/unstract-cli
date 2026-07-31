@@ -92,6 +92,7 @@ def _ep(
     table_columns: tuple[str, ...] = (),
     require_response_fields: tuple[str, ...] = (),
     poll: PollSpec | None = None,
+    terminal_success: tuple[str, ...] = (),
     doc_source: str | None = None,
     doc_conflict: str | None = None,
 ) -> Endpoint:
@@ -124,6 +125,7 @@ def _ep(
         table_columns=table_columns,
         require_response_fields=require_response_fields,
         poll=poll,
+        terminal_success=terminal_success,
         doc_conflict=doc_conflict,
     )
 
@@ -514,6 +516,7 @@ _PROMPT_STUDIO: tuple[Endpoint, ...] = (
                help="Task identifier returned by fetch-response / single-pass / "
                     "index-document")),
         subgroup=_PS, permission=Permission.READ, no_trailing_slash=True,
+        terminal_success=("completed",),
         description="Status is one of: processing, completed, failed. The extracted "
                     "value is not returned here -- read it with `prompt-studio output "
                     "list`.\n\nNeeds BOTH --task-id and --tool-id: the route is "

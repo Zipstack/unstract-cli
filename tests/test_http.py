@@ -634,3 +634,87 @@ class TestRequestIntegrity:
         )
         assert plan.data["workflow_id"] == "wf-1"
         assert plan.json_body is None
+
+
+class TestConsumedGuardOnThePollPath:
+    """The success gate must engage on the endpoint the poll loop actually reads.
+
+    `_looks_successful` originally keyed off `endpoint.poll`, but the poll loop
+    calls raise_for_status on the *status* endpoint, which carries no PollSpec of
+    its own -- the spec lives on the endpoint that started the operation. The
+    guard was therefore inert on exactly the path it was written for.
+    """
+
+    def _resp(self, payload):
+        from unstract_cli.core.http import Response
+
+        return Response(status=200, payload=payload, headers={}, raw=b"")
+
+    def test_status_endpoint_carries_no_pollspec_of_its_own(self):
+        """The precondition that made the original guard inert."""
+        assert get_endpoint("docstudio.deployment.status").poll is None
+        assert get_endpoint("docstudio.deployment.run").poll is not None
+
+    @pytest.mark.parametrize(
+        "dotted,payload",
+        [
+            ("docstudio.deployment.status",
+             {"status": "COMPLETED", "message": "Goods were already delivered"}),
+            ("whisper.status",
+             {"status": "processed", "message": "already delivered"}),
+        ],
+    )
+    def test_bare_status_call_keeps_a_completed_result(self, dotted, payload):
+        """No --wait: generate.py calls raise_for_status with the endpoint alone.
+
+        With no PollSpec to consult, the guard could not see that the body was a
+        finished result, so a COMPLETED response whose text contained the phrase
+        was discarded as exit 9. The endpoint now declares terminal_success.
+        """
+        from unstract_cli.core.http import raise_for_status
+
+        raise_for_status(self._resp(payload), get_endpoint(dotted))
+
+    def test_endpoints_that_serve_as_poll_targets_declare_terminal_success(self):
+        """Any endpoint another one polls returns finished results directly too."""
+        from unstract_cli.endpoints import ALL_ENDPOINTS
+
+        targets = {e.poll.status_endpoint for e in ALL_ENDPOINTS if e.poll}
+        missing = [
+            t
+            for t in sorted(targets)
+            for ep in [get_endpoint(t)]
+            if ep.poll is None and not ep.terminal_success
+        ]
+        assert missing == [], "a bare read of these cannot recognise a finished result"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Goods were already delivered to depot 4",       # str result
+            [{"file": "n.pdf", "result": "already delivered"}],  # list result
+        ],
+    )
+    def test_completed_result_survives_whatever_its_shape(self, message):
+        from unstract_cli.core.http import raise_for_status
+
+        run = get_endpoint("docstudio.deployment.run")
+        raise_for_status(
+            self._resp({"status": "COMPLETED", "message": message}),
+            get_endpoint("docstudio.deployment.status"),
+            run.poll,
+        )
+
+    def test_genuine_consumed_signal_still_raises(self):
+        """Gating on success must not disable the check outright."""
+        from unstract_cli.core.errors import ExitCode
+        from unstract_cli.core.http import raise_for_status
+
+        run = get_endpoint("docstudio.deployment.run")
+        with pytest.raises(CLIError) as excinfo:
+            raise_for_status(
+                self._resp({"status": "PENDING", "message": "already delivered"}),
+                get_endpoint("docstudio.deployment.status"),
+                run.poll,
+            )
+        assert excinfo.value.exit_code == ExitCode.ALREADY_CONSUMED

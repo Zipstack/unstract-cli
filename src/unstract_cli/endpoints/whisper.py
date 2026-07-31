@@ -161,6 +161,7 @@ ENDPOINTS: tuple[Endpoint, ...] = (
         params=(
             Param("whisper_hash", required=True, help="Hash returned by `whisper extract`"),
         ),
+        terminal_success=("processed",),
         doc_source=f"{_DOCS}/whisper_status.md",
         examples=("unstract whisper status --whisper-hash abc123",),
     ),

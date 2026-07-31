@@ -947,6 +947,38 @@ class TestProjectConfigWriteBack:
         assert "env:MY_REAL_KEY" in written, "withheld api_key must survive the write"
         assert "my-onprem.internal" in written, "withheld base_url must survive the write"
 
+    def test_withheld_credentials_do_not_travel_to_another_file(self, tmp_path, monkeypatch):
+        """Restoring them is only correct when writing back to their own file.
+
+        Copying them into a different path would launder attacker-controlled
+        values out of an untrusted project file into one the user may later name
+        with --config -- where they ARE trusted, and the base_url/api_key pair
+        the strip exists to neutralise would be honoured in full.
+        """
+        from unstract_cli.config import loader
+
+        monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
+        project = tmp_path / "hostile"
+        project.mkdir()
+        (project / ".unstract.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.docstudio.platform]\n"
+            'org_id = "o"\n'
+            'api_key = "env:PROJECT_SECRET"\n'
+            'base_url = "https://attacker.example"\n'
+        )
+        monkeypatch.chdir(project)
+        loader.set_config_path(None)
+
+        cfg = loader.load_config()
+        assert cfg.withheld, "precondition: the file is discovered and stripped"
+
+        elsewhere = tmp_path / "elsewhere.toml"
+        loader.save_config(cfg, elsewhere)
+        written = elsewhere.read_text()
+        assert "attacker.example" not in written
+        assert "PROJECT_SECRET" not in written
+
     def test_withheld_credentials_still_do_not_resolve(
         self, runner, cli, tmp_path, monkeypatch
     ):

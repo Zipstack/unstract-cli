@@ -292,15 +292,21 @@ def _strip_untrusted(profiles: dict[str, Any]) -> dict[tuple[str, ...], Any]:
     return withheld
 
 
-def _restored_profiles(cfg: ConfigFile) -> dict[str, Any]:
+def _restored_profiles(cfg: ConfigFile, target: Path) -> dict[str, Any]:
     """Profiles with any withheld credentials put back, for writing.
 
     ``load_config`` strips credentials out of a *discovered* file so they cannot
     be used; that is a resolution-time guard. Writing the stripped tree back
     would delete them from the user's own file, so a copy is reassembled here.
     A value the caller has since set explicitly always wins.
+
+    **Only when writing back to the file they came from.** Restoring them into
+    any other path would copy attacker-controlled values out of an untrusted
+    project file and into one the user may later name with ``--config`` -- where
+    they are trusted, and the `base_url`/`api_key` pair the strip exists to
+    neutralise would be honoured in full.
     """
-    if not cfg.withheld:
+    if not cfg.withheld or cfg.path is None or target.resolve() != cfg.path.resolve():
         return cfg.profiles
 
     from copy import deepcopy
@@ -327,7 +333,7 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     doc: dict[str, Any] = {}
     if cfg.default_profile:
         doc["default_profile"] = cfg.default_profile
-    doc["profiles"] = _restored_profiles(cfg)
+    doc["profiles"] = _restored_profiles(cfg, target)
     # Round-trip anything we do not model. Rebuilding the document from known
     # keys alone would silently delete a hand-edited top-level table.
     for key, value in cfg.extra.items():

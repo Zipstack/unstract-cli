@@ -311,6 +311,18 @@ def _normalise(path: str) -> str:
 #:
 #: The docs (last updated 2026-07-08) predate the migration. Without this, the
 #: drift suite would keep asking for flags that cannot work.
+#:
+#: **This is temporary. Delete it — and this comment — once `unstract-docs` stops
+#: documenting these two fields on the per-resource create/update/patch
+#: endpoints.** To check whether that day has come:
+#:
+#:     grep -rn 'shared_users\|shared_to_org' \
+#:       ../unstract-docs/docs/unstract_platform/api_documentation/versions/
+#:
+#: No hits outside the `share` endpoint means the docs have caught up and this
+#: exemption is now hiding real drift rather than absorbing known-stale docs.
+#: `tests/test_skill_docdiff.py` will start failing if a record is later added
+#: that legitimately needs one of these names, which is the intended signal.
 _REMOVED_UPSTREAM = frozenset({"shared_users", "shared_to_org"})
 
 

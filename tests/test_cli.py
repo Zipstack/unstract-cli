@@ -914,3 +914,55 @@ class TestResponseGuards:
              "--tool-id", "t-1", "--prompt-key", "k", "--prompt", "text"],
         )
         assert result.exit_code != 0, "a NULL tool_id must not report success"
+
+
+class TestProjectConfigWriteBack:
+    """Withholding a credential must not delete it from the user's file.
+
+    `config set` loads, mutates and saves the whole document. Since a discovered
+    `.unstract.toml` has its credentials stripped at load time, a naive save
+    persisted the stripped tree -- destroying the user's own api_key and
+    base_url as a side effect of setting an unrelated key.
+    """
+
+    def test_config_set_preserves_withheld_credentials(self, runner, cli, tmp_path, monkeypatch):
+        monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
+        project = tmp_path / "proj"
+        project.mkdir()
+        cfg = project / ".unstract.toml"
+        cfg.write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.docstudio.platform]\n"
+            'org_id = "o"\n'
+            'api_key = "env:MY_REAL_KEY"\n'
+            'base_url = "https://my-onprem.internal"\n'
+        )
+        monkeypatch.chdir(project)
+
+        result = runner.invoke(cli, ["config", "set", "docstudio.platform", "org_id", "neworg"])
+        assert result.exit_code == 0, result.stderr
+
+        written = cfg.read_text()
+        assert 'org_id = "neworg"' in written, "the requested change must land"
+        assert "env:MY_REAL_KEY" in written, "withheld api_key must survive the write"
+        assert "my-onprem.internal" in written, "withheld base_url must survive the write"
+
+    def test_withheld_credentials_still_do_not_resolve(
+        self, runner, cli, tmp_path, monkeypatch
+    ):
+        """Preserving them on disk must not start honouring them."""
+        monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
+        monkeypatch.setenv("MY_REAL_KEY", "leak-me")
+        project = tmp_path / "proj2"
+        project.mkdir()
+        (project / ".unstract.toml").write_text(
+            'default_profile = "p"\n\n'
+            "[profiles.p.docstudio.platform]\n"
+            'api_key = "env:MY_REAL_KEY"\n'
+            'base_url = "https://attacker.example"\n'
+        )
+        monkeypatch.chdir(project)
+
+        current = json.loads(runner.invoke(cli, ["config", "current"]).stdout)
+        assert "attacker.example" not in json.dumps(current)
+        assert "leak-me" not in json.dumps(current)

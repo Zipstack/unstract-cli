@@ -204,6 +204,13 @@ class ConfigFile:
     #: Top-level tables we do not model, retained so `config set` round-trips a
     #: hand-edited file instead of silently deleting what it does not recognise.
     extra: dict[str, Any] = field(default_factory=dict)
+    #: Credential keys withheld from a project-local file, as
+    #: ``{(profile, *block_path, key): value}``. They are excluded from
+    #: *resolution* (that is the security property) but retained here so a
+    #: write-back restores them: `config set` loads, mutates and saves the whole
+    #: document, so dropping them here would delete the user's own credentials
+    #: from their own file.
+    withheld: dict[tuple[str, ...], Any] = field(default_factory=dict)
 
 
 def load_config(path: Path | None = None) -> ConfigFile:
@@ -239,11 +246,13 @@ def load_config(path: Path | None = None) -> ConfigFile:
     # A discovered file is attacker-controlled in any checkout the user did not
     # write. Strip credentials from it rather than ignoring the file wholesale,
     # and say so -- a silently dropped setting is its own kind of surprise.
+    withheld: dict[tuple[str, ...], Any] = {}
     if project_local:
-        dropped = _strip_untrusted(profiles)
-        if dropped:
+        withheld = _strip_untrusted(profiles)
+        if withheld:
+            names = sorted(".".join(k) for k in withheld)
             warnings.append(
-                f"Ignoring {', '.join(sorted(dropped))} from project config {target}: "
+                f"Ignoring {', '.join(names)} from project config {target}: "
                 "a discovered .unstract.toml may not supply credentials or base URLs. "
                 "Pass --config explicitly, or set the corresponding environment variable."
             )
@@ -256,28 +265,58 @@ def load_config(path: Path | None = None) -> ConfigFile:
         warnings=tuple(warnings),
         is_project_local=project_local,
         extra={k: v for k, v in raw.items() if k not in ("profiles", "default_profile")},
+        withheld=withheld,
     )
 
 
-def _strip_untrusted(profiles: dict[str, Any]) -> set[str]:
+def _strip_untrusted(profiles: dict[str, Any]) -> dict[tuple[str, ...], Any]:
     """Remove credential keys from a project-local profile tree, in place.
 
-    Returns the set of dotted names removed, for the diagnostic.
+    Returns ``{path_tuple: value}`` for everything removed, so ``save_config``
+    can put it back. Withholding a key from *resolution* is the security
+    property; deleting it from the user's file is not, and a write-back that
+    dropped it would destroy credentials the CLI merely declined to trust.
     """
-    dropped: set[str] = set()
+    withheld: dict[tuple[str, ...], Any] = {}
 
     def walk(node: Any, trail: tuple[str, ...]) -> None:
         if not isinstance(node, dict):
             return
         for key in list(node):
             if key in UNTRUSTED_PROJECT_KEYS:
-                dropped.add(".".join((*trail, key)))
-                del node[key]
+                withheld[(*trail, key)] = node.pop(key)
             else:
                 walk(node[key], (*trail, key))
 
     walk(profiles, ())
-    return dropped
+    return withheld
+
+
+def _restored_profiles(cfg: ConfigFile) -> dict[str, Any]:
+    """Profiles with any withheld credentials put back, for writing.
+
+    ``load_config`` strips credentials out of a *discovered* file so they cannot
+    be used; that is a resolution-time guard. Writing the stripped tree back
+    would delete them from the user's own file, so a copy is reassembled here.
+    A value the caller has since set explicitly always wins.
+    """
+    if not cfg.withheld:
+        return cfg.profiles
+
+    from copy import deepcopy
+
+    profiles = deepcopy(cfg.profiles)
+    for trail, value in cfg.withheld.items():
+        *parents, leaf = trail
+        node: dict[str, Any] = profiles
+        for segment in parents:
+            child = node.get(segment)
+            if not isinstance(child, dict):
+                child = {}
+                node[segment] = child
+            node = child
+        node.setdefault(leaf, value)
+    return profiles
 
 
 def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
@@ -288,7 +327,7 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     doc: dict[str, Any] = {}
     if cfg.default_profile:
         doc["default_profile"] = cfg.default_profile
-    doc["profiles"] = cfg.profiles
+    doc["profiles"] = _restored_profiles(cfg)
     # Round-trip anything we do not model. Rebuilding the document from known
     # keys alone would silently delete a hand-edited top-level table.
     for key, value in cfg.extra.items():

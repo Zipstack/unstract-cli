@@ -51,7 +51,7 @@ side, and the drift suite was arguing for the broken behaviour.**
 
 ## 2. Current state of the backend (verified)
 
-Checked against `unstract@023b14021` (OSS) and `unstract-cloud@78e783e5`.
+Checked against the OSS backend (`unstract@023b14021`) and the Enterprise backend repo.
 
 - **`drf-yasg>=1.21.8` is already a declared dependency** — `backend/pyproject.toml:30`,
   and `"drf_yasg"` is in `INSTALLED_APPS` (`settings/base.py:358`).
@@ -82,7 +82,7 @@ consume it here. Do not vendor a copy in this repo.**
 | Repo | Holds | Why |
 |---|---|---|
 | `unstract` (OSS) | `openapi.json`, generated + committed, CI-gated | Generated from the routes and serializers it sits beside, so it cannot drift from them |
-| `unstract-cloud` (Enterprise) | its own schema, if it adds routes | The OSS schema will not describe Enterprise-only endpoints |
+| Enterprise backend | its own schema, if it adds routes | The OSS schema will not describe Enterprise-only endpoints |
 | `unstract-cli` (here) | **consumes** it; no committed copy | A checked-in copy becomes a third artifact to keep in sync |
 
 Three reasons, in order of weight:
@@ -148,14 +148,27 @@ A backend CI job that diffs this CLI's `ALL_ENDPOINTS` against
 
 ### Option E — generate the CLI itself from the schema
 
-Once a schema exists, replace the hand-written registry with generated commands (Fern,
-Speakeasy, Stainless, or `openapi.json` → records).
+Once a schema exists, replace the hand-written registry with generated commands. Several
+vendors now generate an agent-facing CLI directly from a spec — typed subcommands,
+`--help` as JSON, pre-flight validation, dry-run, i.e. much of what this CLI built by
+hand:
+
+| Tool | Reference |
+|---|---|
+| Fern | https://buildwithfern.com/post/generate-cli-from-openapi-spec |
+| Speakeasy | https://www.speakeasy.com/docs/cli-generation/create-cli |
+| Stainless | https://www.stainless.com/blog/stainless-cli-generator-your-api-now-with---help/ |
+| Vercel `specli` | https://github.com/vercel-labs/specli |
 
 - **For:** removes hand-maintenance entirely; the 148 records stop being an artifact to
   keep in sync.
 - **Against:** only possible *after* Option A. This CLI's agent ergonomics — `--discover`,
   stable exit codes, JSON error envelopes, one-shot `--save` semantics — are ahead of
-  what stock generators emit, so generation must not regress them.
+  what stock generators emit, so generation must not regress them. Several behaviours
+  are not expressible in a schema at all (see §6).
+- **Worth stealing regardless of generation:** Speakeasy's agent mode auto-detects the
+  calling agent from the environment and adjusts output. Cheap to add to the existing
+  `--discover` surface without adopting the generator.
 - **Verdict:** the eventual destination, explicitly out of scope here.
 
 ---
@@ -187,6 +200,16 @@ Speakeasy, Stainless, or `openapi.json` → records).
 - **Versioning.** `v1` is currently an env-var string with no deprecation policy. A
   published schema invites treating it as a real contract — worth deciding deliberately
   rather than by accident.
+- **Keeping the CLI and MCP surfaces aligned.** An MCP arm is in flight
+  ([Zipstack/unstract#2207](https://github.com/Zipstack/unstract/pull/2207), open),
+  hosting deployment- and organization-scoped servers. CLI and MCP are complementary —
+  CLI for shell-outable, composable work; MCP for OAuth, audit and hosted multi-tenant
+  access — but they are now **two hand-maintained surfaces over the same API**, and this
+  registry has already proven that one such surface drifts. Without a shared source of
+  truth, an operation exposed by one and not the other is invisible until a user reports
+  it. Whichever option is adopted, worth deciding what is canonical across both, and
+  whether coverage parity is a CI check rather than a review-time observation. A schema
+  is the natural place for that check to anchor.
 
 ---
 

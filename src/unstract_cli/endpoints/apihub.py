@@ -125,6 +125,14 @@ ENDPOINTS: tuple[Endpoint, ...] = (
             status_field="status",
             terminal_success=("COMPLETED",),
             terminal_failure=("ERROR", "FAILED"),
+            # `in_progress` is deliberately left empty, which switches OFF the
+            # unrecognised-status check for this endpoint. API Hub emits
+            # intermediate states that are not exhaustively documented
+            # (QUEUED_FOR_WHISPER, QUEUED_FOR_EXTRACTION, ... ), so enumerating
+            # them from the outside would turn a working poll into a hard
+            # failure the first time a new one appears. Fill this in if the set
+            # is ever published, and the check turns itself back on.
+            in_progress=(),
             handle_field="file_hash",
             handle_param="file_hash",
             retrieve_endpoint="apihub.retrieve",

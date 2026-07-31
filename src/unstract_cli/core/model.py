@@ -385,6 +385,12 @@ class PollSpec:
     #: *unrecognised* status fail loudly instead of being mistaken for progress
     #: -- on a one-shot store the first poll already consumed the result, so
     #: polling on until timeout loses it.
+    #:
+    #: **Empty disables that check**, deliberately: an API whose intermediate
+    #: states are not exhaustively documented cannot be enumerated safely from
+    #: the outside, and guessing would turn a working poll into a hard failure
+    #: the first time an unlisted state appeared. Leaving it empty is therefore
+    #: a real choice, not an omission -- say which it is at the call site.
     in_progress: tuple[str, ...] = ()
     handle_field: str = ""
     handle_param: str = ""

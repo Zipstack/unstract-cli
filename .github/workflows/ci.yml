@@ -8,46 +8,27 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      # `secrets` is not available in a step-level `if`, so the presence of the
-      # token is promoted to a plain env var here and the steps branch on that.
-      DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
-    defaults:
-      run:
-        working-directory: unstract-cli
     steps:
-      # The drift suite resolves the docs as siblings of this repo, so check out
-      # into a subdirectory and place the docs beside it.
       - uses: actions/checkout@v4
-        with:
-          path: unstract-cli
 
-      # The drift suite compares the 125 hand-encoded endpoint records against
-      # the published docs -- the only oracle in the suite that is not the
-      # records themselves. It *skips* when these are absent, so without them CI
-      # is green while the sole protection against record drift never runs.
+      # TODO: drift detection is NOT running in CI.
       #
-      # Both docs repos are PRIVATE, and the default GITHUB_TOKEN is scoped to
-      # this repository alone, so checking them out needs a token that can read
-      # them. Add a `DOCS_REPO_TOKEN` secret (a PAT or App token with read access
-      # to Zipstack/unstract-docs and Zipstack/llmwhisperer-docs) to turn the
-      # drift suite on. Without it these steps are skipped and the drift tests
-      # skip too -- the pre-existing behaviour, not a regression.
-      - name: Check out unstract-docs
-        if: ${{ env.DOCS_REPO_TOKEN != '' }}
-        uses: actions/checkout@v4
-        with:
-          repository: Zipstack/unstract-docs
-          token: ${{ env.DOCS_REPO_TOKEN }}
-          path: unstract-docs
-
-      - name: Check out llmwhisperer-docs
-        if: ${{ env.DOCS_REPO_TOKEN != '' }}
-        uses: actions/checkout@v4
-        with:
-          repository: Zipstack/llmwhisperer-docs
-          token: ${{ env.DOCS_REPO_TOKEN }}
-          path: llmwhisperer-docs
+      # The 148 endpoint records are hand-encoded against an API with no
+      # published machine-readable schema. Nothing here checks them against the
+      # real backend, so a renamed or retyped route ships silently -- five such
+      # drifts were found by review in this PR alone.
+      #
+      # The plan is an OpenAPI schema published by the backend, diffed against
+      # ALL_ENDPOINTS in CI. See OPENAPI_SCHEMA_SPEC.md for the options, the
+      # recommendation, and the cheap interim (a backend job diffing
+      # ALL_ENDPOINTS against django.urls.get_resolver()).
+      #
+      # A docs-repo checkout was tried here and removed: both docs repos are
+      # private, so it needed a cross-repo token, and the published docs proved
+      # to lag the backend anyway (they still document fields a migration
+      # removed) -- an oracle that is itself stale is worse than none. The
+      # `tests/test_skill_docdiff.py` suite still runs locally for anyone with
+      # the docs repos checked out alongside; it just skips here.
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -68,17 +49,10 @@ jobs:
       - name: Type check
         run: uv run mypy src
 
-      # UNSTRACT_REQUIRE_DOCS turns the drift suite's skips into failures, so a
-      # docs checkout that was *meant* to happen but silently produced nothing
-      # fails the build instead of quietly reducing drift coverage to zero.
-      #
-      # It is set only when the checkout was actually attempted. Demanding the
-      # docs unconditionally would fail every run on a fork or on a repo without
-      # the secret, which is a worse outcome than the skip it guards against.
+      # The drift tests in tests/test_skill_docdiff.py skip here -- see the TODO
+      # above. Everything else runs.
       - name: Test
         run: uv run pytest -q
-        env:
-          UNSTRACT_REQUIRE_DOCS: ${{ env.DOCS_REPO_TOKEN != '' && '1' || '' }}
 
       # The machine-readable index is the CLI's discovery contract, so a broken
       # tree must fail the build rather than surface at runtime. Check the full

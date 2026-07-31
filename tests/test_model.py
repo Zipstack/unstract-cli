@@ -318,3 +318,41 @@ class TestSharingRoutes:
         assert {"shared_users", "shared_groups", "shared_to_org"} <= {
             p.py_name for p in share.params
         }
+
+
+class TestTerminalSuccessConsistency:
+    """The same fact is declared in two places; they must not disagree.
+
+    `PollSpec.terminal_success` says what the *poller* treats as done;
+    `Endpoint.terminal_success` says what a *direct read* of the status endpoint
+    treats as done. They describe one API behaviour, so a record that sets both
+    -- or a poll target whose own declaration contradicts its poller's -- is a
+    latent bug: which one wins then depends on the call path, which is exactly
+    the class of defect that made the consumed-guard inert.
+    """
+
+    def test_poll_target_agrees_with_its_poller(self):
+        from unstract_cli.endpoints import ALL_ENDPOINTS
+
+        disagreements = []
+        for endpoint in ALL_ENDPOINTS:
+            if not endpoint.poll:
+                continue
+            target = get_endpoint(endpoint.poll.status_endpoint)
+            if target.terminal_success and set(target.terminal_success) != set(
+                endpoint.poll.terminal_success
+            ):
+                disagreements.append(
+                    f"{endpoint.dotted_name} expects {endpoint.poll.terminal_success} "
+                    f"but {target.dotted_name} declares {target.terminal_success}"
+                )
+        assert disagreements == []
+
+    def test_no_endpoint_declares_the_fact_twice(self):
+        """Setting both on one record makes the winner call-path dependent."""
+        from unstract_cli.endpoints import ALL_ENDPOINTS
+
+        both = [
+            e.dotted_name for e in ALL_ENDPOINTS if e.poll and e.terminal_success
+        ]
+        assert both == [], "declare terminal_success on the PollSpec or the endpoint, not both"

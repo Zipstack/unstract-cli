@@ -61,3 +61,48 @@ def test_exit_code_reaches_the_shell(argv: list[str], expected: int) -> None:
         f"`unstract {' '.join(argv)}` should exit {expected}. A failure exiting 0 "
         "silently breaks `set -e` and any agent branching on the status code."
     )
+
+
+class TestDebugEscapeHatch:
+    """The envelope contract hides the stack; UNSTRACT_DEBUG brings it back.
+
+    Turning every unexpected exception into a structured error is right for
+    agents, but it also hides the traceback in the one case a maintainer needs
+    it -- a genuinely unexpected crash. The flag adds the stack to stderr
+    without changing the envelope or the exit code.
+    """
+
+    def _run(self, env_extra):
+        import os
+        import subprocess
+        import sys
+        import textwrap
+
+        patch = textwrap.dedent(
+            """
+            import unstract_cli.app as A
+            def boom(*a, **k): raise RuntimeError("synthetic unexpected crash")
+            A.build_cli = boom
+            from unstract_cli.__main__ import main
+            import sys; sys.exit(main())
+            """
+        )
+        return subprocess.run(
+            [sys.executable, "-c", patch, "whisper", "usage"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, **env_extra},
+            timeout=60,
+        )
+
+    def test_traceback_hidden_by_default(self):
+        result = self._run({})
+        assert result.returncode == 1
+        assert "Traceback" not in result.stderr
+        assert '"error"' in result.stderr, "the envelope is still the contract"
+
+    def test_traceback_shown_with_debug_flag(self):
+        result = self._run({"UNSTRACT_DEBUG": "1"})
+        assert result.returncode == 1, "the flag must not change the exit code"
+        assert "Traceback" in result.stderr
+        assert '"error"' in result.stderr, "the envelope is still emitted too"

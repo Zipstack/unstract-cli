@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import traceback
 
 import click
 
@@ -59,6 +61,13 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 - the envelope is the contract
         # Last line of defence for the guarantee advertised in app.py: *every*
         # failure is a structured error, never a traceback.
+        #
+        # That guarantee also hides the stack for a genuinely unexpected crash,
+        # which is the one case where a maintainer needs it. UNSTRACT_DEBUG=1
+        # adds the traceback to stderr; the envelope is emitted either way, so
+        # the machine-readable contract is unchanged.
+        if os.environ.get("UNSTRACT_DEBUG"):
+            traceback.print_exc()
         CLIError(str(exc) or exc.__class__.__name__, ExitCode.GENERIC).emit()
         return int(ExitCode.GENERIC)
 

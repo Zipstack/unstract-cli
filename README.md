@@ -149,6 +149,25 @@ unstract --profile cloud-eu whisper usage         # a profile within the active 
 cd my-project && unstract whisper usage           # picks up ./.unstract.toml
 ```
 
+> **A discovered `.unstract.toml` may not supply `api_key` or `base_url`.**
+> Those keys are ignored with a diagnostic naming what was dropped; everything
+> else (`org_id`, profile selection, non-secret defaults) still applies. The file
+> is picked up merely by working inside the tree, so in a checkout you did not
+> write it is attacker-controlled — and combined with `env:VAR` indirection it
+> could otherwise point the CLI at another host and hand it one of your
+> environment variables as a Bearer token. A config you name explicitly
+> (`--config`, `$UNSTRACT_CONFIG`) is trusted and may carry both.
+
+### Troubleshooting
+
+Every failure is a structured JSON envelope rather than a traceback, so agents
+can branch on it. When debugging an unexpected crash, `UNSTRACT_DEBUG=1` adds the
+Python traceback to stderr; the envelope and exit code are unchanged.
+
+```bash
+UNSTRACT_DEBUG=1 unstract whisper usage
+```
+
 A project file is ordinary config, so it can hold several profiles too:
 
 ```toml

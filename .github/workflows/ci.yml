@@ -8,6 +8,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # `secrets` is not available in a step-level `if`, so the presence of the
+      # token is promoted to a plain env var here and the steps branch on that.
+      DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
     defaults:
       run:
         working-directory: unstract-cli
@@ -30,19 +34,19 @@ jobs:
       # drift suite on. Without it these steps are skipped and the drift tests
       # skip too -- the pre-existing behaviour, not a regression.
       - name: Check out unstract-docs
-        if: ${{ secrets.DOCS_REPO_TOKEN != '' }}
+        if: ${{ env.DOCS_REPO_TOKEN != '' }}
         uses: actions/checkout@v4
         with:
           repository: Zipstack/unstract-docs
-          token: ${{ secrets.DOCS_REPO_TOKEN }}
+          token: ${{ env.DOCS_REPO_TOKEN }}
           path: unstract-docs
 
       - name: Check out llmwhisperer-docs
-        if: ${{ secrets.DOCS_REPO_TOKEN != '' }}
+        if: ${{ env.DOCS_REPO_TOKEN != '' }}
         uses: actions/checkout@v4
         with:
           repository: Zipstack/llmwhisperer-docs
-          token: ${{ secrets.DOCS_REPO_TOKEN }}
+          token: ${{ env.DOCS_REPO_TOKEN }}
           path: llmwhisperer-docs
 
       - name: Install uv
@@ -74,7 +78,7 @@ jobs:
       - name: Test
         run: uv run pytest -q
         env:
-          UNSTRACT_REQUIRE_DOCS: ${{ secrets.DOCS_REPO_TOKEN != '' && '1' || '' }}
+          UNSTRACT_REQUIRE_DOCS: ${{ env.DOCS_REPO_TOKEN != '' && '1' || '' }}
 
       # The machine-readable index is the CLI's discovery contract, so a broken
       # tree must fail the build rather than surface at runtime. Check the full

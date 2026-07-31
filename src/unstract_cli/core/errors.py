@@ -149,6 +149,11 @@ class CLIError(Exception):
     endpoint: str | None = None
     hint: str | None = None
     retryable: bool = False
+    #: True when the result payload has already been written to stdout, so the
+    #: envelope must not be mirrored there as well -- two JSON documents on one
+    #: stream break every strict parser. Set on the failed-`--save` path, which
+    #: prints the one-shot result before raising so it cannot be lost.
+    stdout_holds_result: bool = False
     code: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -173,7 +178,7 @@ class CLIError(Exception):
         payload.update(self.extra)
         return {"error": payload}
 
-    def emit(self, secrets: list[str] | None = None) -> None:
+    def emit(self, secrets: list[str] | None = None, *, stderr_only: bool = False) -> None:
         """Write the structured error to stderr, and to stdout when piped.
 
         Humans always get it on stderr. When stdout is not a TTY -- the agent /
@@ -181,12 +186,20 @@ class CLIError(Exception):
         pipeline that feeds stdout to a JSON parser sees a valid object instead of
         an empty stream. A result and an error never share an invocation's
         stdout: emit runs only on the error path, which produces no result output.
+
+        ``stderr_only`` is the one exception to that rule. A failed ``--save``
+        deliberately prints the payload to stdout before raising -- the result is
+        one-shot and must not be lost -- so mirroring the envelope there too would
+        put two JSON documents on one stream and break every strict parser
+        (``json.load`` raises "Extra data"; the project's own CI does exactly
+        this). The envelope still reaches stderr, and the exit code still carries
+        the failure.
         """
         text = json.dumps(self.to_dict(), indent=2, default=str)
         if secrets:
             text = scrub(text, secrets)
         print(text, file=sys.stderr)
-        if not sys.stdout.isatty():
+        if not stderr_only and not sys.stdout.isatty():
             print(text, file=sys.stdout)
 
     def emit_stdout_only(self, secrets: list[str] | None = None) -> None:

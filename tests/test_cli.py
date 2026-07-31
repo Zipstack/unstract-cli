@@ -966,3 +966,29 @@ class TestProjectConfigWriteBack:
         current = json.loads(runner.invoke(cli, ["config", "current"]).stdout)
         assert "attacker.example" not in json.dumps(current)
         assert "leak-me" not in json.dumps(current)
+
+
+class TestSaveFailureStdoutPurity:
+    """A failed --save prints the payload; the envelope must not join it there.
+
+    The one-shot result is written to stdout so it cannot be lost, but mirroring
+    the error envelope to stdout as well puts two JSON documents on one stream.
+    `json.load` then raises "Extra data" -- and this project's own CI pipes
+    stdout into exactly that parser.
+    """
+
+    @respx.mock
+    def test_stdout_stays_a_single_json_document(self, runner, cli, whisper_env):
+        respx.get(f"{WHISPER_BASE}/whisper-retrieve").mock(
+            return_value=httpx.Response(200, json={"result_text": "IRREPLACEABLE"})
+        )
+        result = runner.invoke(
+            cli,
+            ["whisper", "retrieve", "--whisper-hash", "h1",
+             "--save", "/proc/nonexistent-dir/out.json"],
+        )
+        assert result.exit_code != 0, "a failed --save must not report success"
+        # The payload survived...
+        assert json.loads(result.stdout)["result_text"] == "IRREPLACEABLE"
+        # ...and the envelope went to stderr only.
+        assert json.loads(result.stderr)["error"]["exit_code"] == result.exit_code

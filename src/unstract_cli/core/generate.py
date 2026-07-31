@@ -339,6 +339,9 @@ def _run_endpoint(ctx: click.Context, endpoint: Endpoint, kwargs: dict[str, Any]
                         "for a one-shot endpoint it cannot be fetched again."
                     ),
                     retryable=False,
+                    # The payload is already on stdout; a second document there
+                    # would break `| json.load`. stderr still carries the error.
+                    stdout_holds_result=True,
                 ) from exc
             diagnostic(f"saved to {destination}", quiet=quiet, verbosity=verbosity)
 
@@ -354,7 +357,7 @@ def _run_endpoint(ctx: click.Context, endpoint: Endpoint, kwargs: dict[str, Any]
         # must not stop the underlying error from being reported.
         with contextlib.suppress(Exception):
             secrets = http.collect_secrets(_resolve_config(ctx, values, endpoint))
-        exc.emit(secrets)
+        exc.emit(secrets, stderr_only=exc.stdout_holds_result)
         ctx.exit(int(exc.exit_code))
 
 

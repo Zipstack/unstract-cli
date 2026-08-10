@@ -1,0 +1,164 @@
+# Everything the AST walk cannot infer from the Flask handlers.
+# Keyed by handler function name. Params NOT listed here are fully derived.
+#
+# Watch the size of this file: if it grows faster than the generated surface,
+# we have rebuilt hand-written endpoint records with extra steps.
+
+_base:
+  basePath: /api/v2
+  server: https://llmwhisperer-api.us-central.unstract.com
+  security:
+    - unstract_key: []
+  securitySchemes:
+    unstract_key:
+      type: apiKey
+      in: header
+      name: unstract-key
+  defaultResponses:
+    "200":
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+
+schemas:
+  WhisperAccepted:
+    type: object
+    properties:
+      message: {type: string}
+      status: {type: string}
+      whisper_hash: {type: string}
+  WhisperStatus:
+    type: object
+    properties:
+      status: {type: string}
+      message: {type: string}
+  WhisperResult:
+    type: object
+    properties:
+      result_text: {type: string}
+      confidence_metadata: {type: array, items: {type: object, additionalProperties: true}}
+      webhook_metadata: {type: string}
+      metadata: {type: object, additionalProperties: true}
+
+operations:
+  whisper:
+    operationId: extract
+    tags: [whisper]
+    summary: Submit a document for text extraction
+    # LLMW takes its options in the query string even on POST; the body is bytes.
+    requestBody:
+      required: true
+      content:
+        application/octet-stream:
+          schema: {type: string, format: binary}
+    responses:
+      "202":
+        description: Accepted
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WhisperAccepted"}
+    params:
+      # `url=` is read but never coerced, so the walk falls back to string —
+      # correct type, wrong semantics. Flag it as a URI for the generator.
+      url: {format: uri}
+      # Defaults applied via a post-hoc `if x is not None` fallback rather than
+      # args.get's second argument, so the walk cannot see them.
+      median_filter_size: {default: 0}
+      gaussian_blur_radius: {default: 0}
+
+  whisper_status:
+    operationId: status
+    tags: [whisper]
+    summary: Poll extraction status
+    responses:
+      "200":
+        description: OK
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WhisperStatus"}
+
+  whisper_retrieve:
+    operationId: retrieve
+    tags: [whisper]
+    summary: Retrieve extraction result (destructive — one shot)
+    responses:
+      "200":
+        description: OK
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WhisperResult"}
+          text/plain:
+            schema: {type: string}
+
+  whisper_detail:
+    operationId: detail
+    tags: [whisper]
+    summary: Metadata about a whisper job
+
+  highlights:
+    operationId: highlights
+    tags: [whisper]
+    summary: Line-level highlight geometry for an extraction
+
+  usage:
+    operationId: usage
+    tags: [account]
+    summary: Detailed usage statistics
+
+  usage_info:
+    operationId: usage_info
+    tags: [account]
+    summary: Subscription usage summary
+
+  test_connection:
+    operationId: test_connection
+    tags: [account]
+    summary: Verify credentials
+
+  whisper_callback:
+    operationId: webhook
+    tags: [webhook]
+    summary: Manage extraction webhooks
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema: {type: object, additionalProperties: true}
+
+  document_insights:
+    operationId: document_insights
+    tags: [insights]
+    summary: Run document insights over a file
+    requestBody:
+      required: true
+      content:
+        application/octet-stream:
+          schema: {type: string, format: binary}
+
+  document_insights_retrieve:
+    operationId: document_insights_retrieve
+    tags: [insights]
+    summary: Retrieve document insights result
+
+  convert_to_pdf:
+    operationId: convert_to_pdf
+    tags: [convert]
+    summary: Convert a document to PDF
+    requestBody:
+      required: true
+      content:
+        application/octet-stream:
+          schema: {type: string, format: binary}
+
+  convert_xlsb_to_xlsx:
+    operationId: convert_xlsb_to_xlsx
+    tags: [convert]
+    summary: Convert an XLSB workbook to XLSX
+    requestBody:
+      required: true
+      content:
+        application/octet-stream:
+          schema: {type: string, format: binary}

@@ -1,0 +1,246 @@
+"""Exit codes, structured errors, and secret redaction.
+
+Exit codes are a stable API: a caller branches on them without parsing prose.
+Every failure also carries `hint` and `retryable` so the caller can self-correct
+rather than retry blindly.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from enum import IntEnum
+from typing import Any
+
+
+class ExitCode(IntEnum):
+    SUCCESS = 0
+    GENERIC = 1
+    USAGE = 2
+    AUTH = 3
+    NOT_FOUND = 4
+    VALIDATION = 5
+    RATE_LIMITED = 6
+    TIMEOUT = 7
+    SERVER_ERROR = 8
+    ALREADY_CONSUMED = 9
+
+
+#: HTTP status -> exit code. 422 maps to VALIDATION, which is right for a real
+#: validation failure; the deployment API's use of 422 for in-progress states is
+#: handled by the poll engine before reaching here, by branching on the response
+#: body rather than the status code.
+_STATUS_MAP: dict[int, ExitCode] = {
+    400: ExitCode.VALIDATION,
+    401: ExitCode.AUTH,
+    403: ExitCode.AUTH,
+    404: ExitCode.NOT_FOUND,
+    406: ExitCode.ALREADY_CONSUMED,
+    408: ExitCode.TIMEOUT,
+    409: ExitCode.VALIDATION,
+    422: ExitCode.VALIDATION,
+    429: ExitCode.RATE_LIMITED,
+}
+
+_ERROR_CODES: dict[ExitCode, str] = {
+    ExitCode.GENERIC: "error",
+    ExitCode.USAGE: "usage_error",
+    ExitCode.AUTH: "auth_error",
+    ExitCode.NOT_FOUND: "not_found",
+    ExitCode.VALIDATION: "validation_error",
+    ExitCode.RATE_LIMITED: "rate_limited",
+    ExitCode.TIMEOUT: "timeout",
+    ExitCode.SERVER_ERROR: "server_error",
+    ExitCode.ALREADY_CONSUMED: "already_consumed",
+}
+
+
+def exit_code_for_status(status: int) -> ExitCode:
+    """Map an HTTP status onto its exit code."""
+    if code := _STATUS_MAP.get(status):
+        return code
+    if 500 <= status < 600:
+        return ExitCode.SERVER_ERROR
+    if 400 <= status < 500:
+        return ExitCode.GENERIC
+    return ExitCode.SUCCESS
+
+
+def is_retryable(status: int) -> bool:
+    """Retry only on rate limiting and server faults -- never on 4xx.
+
+    Retrying a 4xx re-sends a request the server already rejected on its merits,
+    and for one-shot reads a blind retry can consume a result the first attempt
+    already delivered.
+    """
+    return status == 429 or 500 <= status < 600
+
+
+# --------------------------------------------------------------------------- #
+# Redaction
+# --------------------------------------------------------------------------- #
+
+_SECRET_HEADERS = {"unstract-key", "authorization", "apikey"}
+_SECRET_HEADER_PREFIXES = ("x-",)
+_SECRET_KEY_HINTS = ("key", "token", "secret", "password", "credential", "auth")
+REDACTED = "***REDACTED***"
+
+
+def redact_headers(headers: dict[str, Any]) -> dict[str, Any]:
+    """Redact credential-bearing headers."""
+    out: dict[str, Any] = {}
+    for key, value in headers.items():
+        low = key.lower()
+        secret = low in _SECRET_HEADERS or (
+            low.startswith(_SECRET_HEADER_PREFIXES)
+            and any(hint in low for hint in _SECRET_KEY_HINTS)
+        )
+        out[key] = REDACTED if secret else value
+    return out
+
+
+def redact_value(value: Any) -> Any:
+    """Recursively redact secret-looking keys in a payload."""
+    if isinstance(value, dict):
+        return {
+            k: (
+                REDACTED
+                if any(hint in str(k).lower() for hint in _SECRET_KEY_HINTS)
+                and isinstance(v, str)
+                else redact_value(v)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_value(v) for v in value]
+    return value
+
+
+def scrub(text: str, secrets: list[str]) -> str:
+    """Remove known secret literals from free text.
+
+    Last line of defence: a credential that reaches a message body via an
+    upstream error string still must not be printed. Short values are skipped --
+    redacting a 3-character "key" would mangle unrelated text.
+    """
+    for secret in secrets:
+        if secret and len(secret) >= 8:
+            text = re.sub(re.escape(secret), REDACTED, text)
+    return text
+
+
+# --------------------------------------------------------------------------- #
+# CLIError
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class CLIError(Exception):
+    """A failure that maps onto an exit code and a structured error payload."""
+
+    message: str
+    exit_code: ExitCode = ExitCode.GENERIC
+    http_status: int | None = None
+    details: Any = None
+    endpoint: str | None = None
+    hint: str | None = None
+    retryable: bool = False
+    code: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        super().__init__(self.message)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "code": self.code or _ERROR_CODES.get(self.exit_code, "error"),
+            "message": self.message,
+            "exit_code": int(self.exit_code),
+            "retryable": self.retryable,
+        }
+        if self.http_status is not None:
+            payload["http_status"] = self.http_status
+        if self.details is not None:
+            payload["details"] = self.details
+        if self.endpoint:
+            payload["endpoint"] = self.endpoint
+        if self.hint:
+            payload["hint"] = self.hint
+        payload.update(self.extra)
+        return payload
+
+
+def error_from_status(
+    status: int, message: str, *, details: Any = None, endpoint: str | None = None
+) -> CLIError:
+    """Build a CLIError from an HTTP status, with its exit code, hint and retryability."""
+    return CLIError(
+        message,
+        exit_code_for_status(status),
+        http_status=status,
+        details=details,
+        endpoint=endpoint,
+        hint=hint_for(status),
+        retryable=is_retryable(status),
+    )
+
+
+def undeclared_status_error(
+    status: int, body: Any, endpoint: str | None = None
+) -> CLIError:
+    """Report a status the spec does not declare, verbatim.
+
+    A guessed message for an unknown status is worse than none: it sends the
+    reader after the wrong cause. The body is passed through untouched.
+    """
+    return CLIError(
+        f"Undeclared status {status} with body {body!r}",
+        exit_code_for_status(status),
+        http_status=status,
+        details=body,
+        endpoint=endpoint,
+        retryable=is_retryable(status),
+    )
+
+
+def hint_for(status: int) -> str | None:
+    """A short, actionable next step for a common failure."""
+    match status:
+        case 401 | 403:
+            return (
+                "Check the API key for this product. Keys are per-product: "
+                "`unstract config doctor` reports which one resolved and from where."
+            )
+        case 404:
+            return (
+                "Verify the resource id, and that the organisation matches the "
+                "resource's own. For deployments, confirm the API name."
+            )
+        case 406:
+            return (
+                "This result was already retrieved. Results can be read exactly "
+                "once; re-running the request cannot recover them. Use --save next "
+                "time to persist on first read."
+            )
+        case 409:
+            return "The resource is in use, or conflicts with an existing one."
+        case 429:
+            return "Rate limited. Back off and retry."
+    if 500 <= status < 600:
+        return "Server-side failure. If it persists, check service status."
+    return None
+
+
+__all__ = [
+    "REDACTED",
+    "CLIError",
+    "ExitCode",
+    "error_from_status",
+    "exit_code_for_status",
+    "hint_for",
+    "is_retryable",
+    "redact_headers",
+    "redact_value",
+    "scrub",
+    "undeclared_status_error",
+]

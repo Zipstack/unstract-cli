@@ -3,6 +3,10 @@
 Branch: `poc/openapi-pipeline`. Written for someone with **no prior context** on these
 repos. Every command below was run and its output checked on 2026-08-10.
 
+If your job is to *exercise* the CLI rather than build or change it, read `AGENT_BRIEF.md`
+first — it lists the twelve commands that exist, the scenarios that are runnable, and the
+run-to-run noise that is not a defect.
+
 ---
 
 ## 1. What this is

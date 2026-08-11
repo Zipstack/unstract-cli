@@ -246,6 +246,18 @@ alone reproduces it, the other eleven are innocent. Note the checkout of the ser
 staging is running a build whose default differs. That is the whole point: **a spec default
 is a snapshot of the server's default at generation time.**
 
+**Revised 2026-08-11.** The published client used as the baseline above was 2.5 months
+stale. At `3832713` it grew `word_confidence_threshold` (PR #33) and now sends `0.3`
+unconditionally, documented as excluding any word below the threshold from the output. So
+for *this* parameter the two clients were at different versions, not disagreeing about
+defaults, and the dropped words are intended product behaviour rather than a client bug.
+
+What the bisect proved is unaffected: the service returns different text for *absent* than
+for *0.3*, so sending a declared default is not the same as omitting it. The other six
+`whisper` parameters, `retrieve`'s `text_only`, and the four multipart fields on deployment
+execute remain genuine over-sends that no published client emits. See §17 for the version
+skew itself.
+
 Two fixes work, and the choice is not obvious:
 
 - **Spec side.** Stripping the 50 `default:` keys before generating makes the generator emit
@@ -288,8 +300,11 @@ signature and the defaulted attribute values.
 
 ## 16. Smaller things that cost time
 
-- **Generation is not static.** `django.setup()` loads every app; ~40s, and a reachable
-  Postgres is mandatory. Any CI that gates the spec needs a database.
+- **Generation is not static.** `django.setup()` loads every app; ~40s. It does **not** need
+  a database, though — measured 2026-08-11 against a dead port, the spec is byte-identical
+  for both the deployment and the full tenant urlconf. The startup DB error is caught and
+  logged, and the two viewsets whose `get_queryset()` drf-spectacular calls fail with a live
+  DB too. CI needs the backend venv and nothing else.
 - **Deriving CLI flags from generated models needs two non-obvious steps**: generated
   models carry *string* annotations (`attrs.resolve_types()` before `attrs.fields()`), and
   `additional_properties` is an attrs field that will become a CLI flag if you do not filter
@@ -300,6 +315,34 @@ signature and the defaulted attribute values.
 - **`mcp_server.urls` rides along** inside `api_v2.execution_urls`, so the deployment spec
   gets two extra `mcp` operations that introspect to nothing. Harmless, but it means
   "generate just the routes I want" is not actually available.
+
+## 17. The baseline moved under the test, and the test was measuring a working tree
+
+Both published clients are installed `-e` from local checkouts, so every compat assertion is
+made against whatever happens to be checked out — not against a released version. On
+2026-08-11 `llm-whisperer-python-client` was pulled from `9862b8f` (2026-05-23) to `3832713`,
+and `test_llmw_compat.py` went from green to:
+
+```
+AssertionError: whisper lost word_confidence_threshold
+```
+
+Nothing in this repo had changed. Two separate problems sit behind that one line:
+
+- **The comparison has no fixed baseline.** A CI run must pin the published client to a
+  released version, or the drift check reports on a colleague's feature branch. Same class of
+  hazard as the unpinned generator (`gen_sdk.sh` now pins `openapi-python-client==0.29.0`);
+  this one is still open.
+- **It invalidated a conclusion after the fact.** §14's headline example was measured against
+  a baseline that has since moved, and the "the generated side is wrong" framing did not
+  survive. The mechanism did. Any measurement taken against an unpinned dependency has a
+  shelf life, and this one lasted a day.
+
+The upside is that the failure mode worked exactly as designed: an offline, sub-second check
+named the exact missing parameter, the facade fix was one line in two places, and both CLIs
+picked the new flag up with no edit at all. That asymmetry — **generated transport and CLI
+auto-expose, the facade never does** — is the cost of pinning the published contract, and it
+is the one place a human is structurally required.
 
 ---
 

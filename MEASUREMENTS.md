@@ -190,6 +190,65 @@ removes the server's default from `--help` and from the generated signature, whi
 documentation, and it drops a parameter a caller deliberately set to the default value. The
 facade filter is exact; this is cheaper. Revisit if the per-method cost bites.
 
+### Re-verified 2026-08-11, after the published client moved
+
+`whisper extract` on `utf_8_chars.pdf`, both CLIs, after adding `word_confidence_threshold`
+to the facade (see "The baseline moved" below):
+
+```
+result_text identical  : True   (4,013 chars)
+confidence_metadata    : 139 lines, 15 words, 1 entry differs
+envelope               : differs only in whisper_hash and avg_page_processing_time
+```
+
+The one differing entry is the glyph `(=` at offset 204, `0.851` vs `0.862` — same text,
+same offset, same width. **It is jitter, not a client difference.** Two *generated* runs
+differ in that same single entry; two *published* runs were identical. Per-word confidence
+on low-scoring glyphs is not stable run to run, so a parity harness must tolerate it.
+
+## Spec generation needs no database (2026-08-11)
+
+Previously recorded as requiring Postgres. Measured with the DB pointed at `127.0.0.1:1`
+before `django.setup()`:
+
+| urlconf | with live DB | with DB unreachable |
+|---|---|---|
+| `deployment` (default) | 2 paths · 4 ops · 6 schemas | **byte-identical** |
+| `backend.urls_v2` | 171 paths · 257 ops · 101 schemas | **byte-identical**, 0 diff lines |
+
+The app that connects at startup catches the error and logs a warning. drf-spectacular's
+`get_queryset()` introspection fails for `FileHistoryViewSet` and `WorkflowEndpointViewSet`
+either way — with a live DB the second one fails on `'AnonymousUser' object has no attribute
+'group_memberships'`, so both runs degrade identically.
+
+Consequence for CI: **no Postgres service, no testcontainers.** The spec-drift gate needs the
+backend venv and nothing else.
+
+## The baseline moved (2026-08-11)
+
+`llm-whisperer-python-client` was pulled `9862b8f` → `3832713` (PR #33, merged 2026-06-10),
+2.5 months of drift arriving at once. With no change in this repo:
+
+```
+test_llmw_compat.py  →  AssertionError: whisper lost word_confidence_threshold
+```
+
+| Surface | Edits needed |
+|---|---|
+| `poc/llmw_facade.py` | **2** — one signature line, one params-dict line |
+| `poc/cli_published.py` | 0 — flags derive from the published signature |
+| `poc/cli_generated.py` | 0 — flags derive from the spec |
+| generated SDK | 0 — already had the parameter |
+
+After the fix: `whisper OK — all 26 published parameters preserved`,
+`no injected defaults OK — 19 params, none unrequested`. Both CLIs expose
+`--word-confidence-threshold` (26 flags published, 32 generated).
+
+This also revises the bisect above: the baseline it ran against did not send
+`word_confidence_threshold` at all, so that parameter was version skew rather than an
+over-send. The mechanism the bisect proved — the service distinguishes *absent* from *0.3* —
+is unchanged. See `GAPS.md` §14 and §17.
+
 ### Not covered
 
 `poc/cli_published.py` now covers `whisper` and `webhook`, so both backends have a side by

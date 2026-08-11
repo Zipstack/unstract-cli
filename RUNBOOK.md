@@ -62,11 +62,19 @@ fix goes in the backend annotation or the overlay, never in `build/`.
   (override with `--source`).
 - A checkout of `unstract-llm-whisperer` at `~/zipstuff/unstract-llm-whisperer`
   (override with `--source`). Only its **source** is read; the service is never started.
-- A Postgres reachable at `localhost:5432` with the `unstract` schema set. The local
-  docker-compose stack provides this: `docker compose -f docker/docker-compose.yaml up -d db`.
-  **The backend imports its apps at generation time and one viewset touches the DB**, so
-  generation is not purely static.
 - `uv` on PATH.
+
+**No database is required.** Measured 2026-08-11 with the DB pointed at a dead port
+(`127.0.0.1:1`) before `django.setup()`: both the default `deployment` urlconf and the full
+`backend.urls_v2` produce specs **byte-identical** to a run against a live Postgres. The app
+that connects at startup logs the failure and continues, and the two viewsets whose
+`get_queryset()` drf-spectacular calls fail with a live DB too — `FileHistoryViewSet` and
+`WorkflowEndpointViewSet` degrade the same way either way. So CI needs the backend venv and
+nothing else: no Postgres service, no testcontainers.
+
+This holds as long as every `AppConfig.ready()` keeps *catching* its database errors. One
+that raises instead would break generation — which the drift gate reports as a failure, so
+no separate guard is needed.
 
 ### Environment gotchas — read before debugging anything
 
@@ -74,8 +82,8 @@ fix goes in the backend annotation or the overlay, never in `build/`.
    and `uv --env-file`. `gen_docstudio_spec.py` loads it with `python-dotenv` for exactly
    this reason. Do not "simplify" that to a shell source.
 2. **`DB_SCHEMA=public`.** `.env` defaults to schema `unstract`, which does not exist on a
-   fresh DB and makes `django.setup()` fail with an opaque error. The script forces
-   `public`.
+   fresh DB and makes `django.setup()` fail with an opaque error against a *live* DB. The
+   script forces `public`. Harmless when no DB is reachable at all.
 3. **`DJANGO_SETTINGS_MODULE=backend.settings.test`.** Other settings modules pull in
    cloud plugins that may not be present.
 4. **Which urlconf you pass decides what you get.** See the table below. Getting this
@@ -86,7 +94,7 @@ fix goes in the backend annotation or the overlay, never in `build/`.
 |---|---|
 | `deployment` *(default)* | The execute + status routes **mounted at their real prefix** (`/deployment/api/{org}/{api}/`). This is what the CLI needs. |
 | `api_v2.execution_urls` | The same routes **without** the `deployment/` prefix. Structurally wrong against a real server. Do not use. |
-| `backend.urls_v2` | The 307 tenant routes (`/api/v1/unstract/{org}/…`). Large; the stretch goal, not the POC. |
+| `backend.urls_v2` | The tenant routes (`/api/v1/unstract/{org}/…`) — 171 paths, 257 operations, 101 schemas. Large; the stretch goal, not the POC. |
 | `backend.base_urls` | Everything. |
 
 Run the generator **with the backend's own interpreter**, not a venv of this repo — it
@@ -117,6 +125,17 @@ bash tools/gen_sdk.sh
 Both specs are **deterministic** — regenerating and diffing yields no change. That is what
 makes the committed artifact a usable drift signal, so keep `sort_keys=True` in both
 generators.
+
+### Pinned inputs — what has to stay fixed for a diff to mean anything
+
+A drift signal is only as good as the things it holds constant. Two inputs are load-bearing:
+
+| Input | Pinned where | Why |
+|---|---|---|
+| `openapi-python-client` | `GENERATOR` in `tools/gen_sdk.sh` (**0.29.0**) | Unpinned, a generator upgrade and a backend change produce the same kind of diff and cannot be told apart. `gen_sdk.sh` re-installs if the venv drifts. |
+| The published clients | **not pinned yet** — installed `-e` from local checkouts | `test_llmw_compat.py` compares the facade against whatever is in the working tree. In CI this must be a released version, or the check silently measures someone's branch. |
+
+The second one is not theoretical. See §9.
 
 To see what introspection alone gives you (nothing usable), add `--no-annotate`:
 
@@ -277,9 +296,14 @@ server's own `avg_page_processing_time` differing — as is `whisper usage`. Eve
 through the CLI, so CLI, facade and generated SDK were exercised together.
 
 That LLMWhisperer parity only holds **after** the injected-defaults fix. The first side-by-side
-run disagreed, and the generated side was the wrong one: it was dropping words from the text
-(`GAPS.md` §14). The earlier one-sided run recorded here as "595 characters of correct text"
-was reading text with words missing, and nothing in the output could have revealed that.
+run disagreed, and the two sides were sending different parameters (`GAPS.md` §14).
+
+Re-verified 2026-08-11 after the facade was brought back in step with a newer published
+client (§9): `result_text` identical at 4,013 characters, `confidence_metadata` identical
+except one entry. That entry is **jitter, not a client difference** — a repeat run of the
+*generated* side against itself differs in the same single entry, while two published runs
+were identical. Expect run-to-run noise in per-word confidence on low-scoring glyphs and do
+not read a one-entry diff as a regression.
 
 **Still untested:**
 
@@ -305,6 +329,37 @@ key → 401, garbage `execution_id` → 4xx, an already-consumed status endpoint
 in under a second, need no extraction, and exercise the error handling where every silent bug
 in this POC actually lived.
 
-## 9. Where the findings are
+## 9. The gate fired for real, on the first day it existed
+
+On 2026-08-11 the `llm-whisperer-python-client` checkout was pulled forward 2.5 months
+(`9862b8f` → `3832713`, merging PR #33). `test_llmw_compat.py` failed immediately:
+
+```
+AssertionError: whisper lost word_confidence_threshold
+```
+
+The published `whisper()` had grown one parameter and now sends it unconditionally with a
+default of `0.3`. The fix was **one line in two places** in `poc/llmw_facade.py` — the
+signature and the params dict. Both CLIs then exposed `--word-confidence-threshold` with
+**zero edits**, because `cli_published.py` derives flags from the published signature and
+`cli_generated.py` derives them from the spec.
+
+Three things this pins down, and they are the argument for the whole layering:
+
+1. **The generated transport and the CLI auto-expose. The facade does not.** That asymmetry
+   is deliberate — the facade exists to pin the published contract, so it cannot also track
+   upstream automatically. It is the one place a human is required.
+2. **The offline check is what makes that safe.** No network, no key, sub-second, and it
+   named the exact missing parameter.
+3. **This is why the published client has to be pinned in CI.** The failure arrived from a
+   `git pull` in an unrelated repo, not from a change in this one.
+
+It also revises `GAPS.md` §14. The bisect that found `word_confidence_threshold` was run
+against a published client 2.5 months stale, which did not send the parameter at all. The
+mechanism it proved is unchanged and still holds — the service treats *absent* and *0.3*
+differently, so sending a spec default is not the same as omitting it — but for this one
+parameter the two clients were at different versions rather than disagreeing about defaults.
+
+## 10. Where the findings are
 
 `GAPS.md` — what broke, what the approach costs, and what is unsustainable about it.

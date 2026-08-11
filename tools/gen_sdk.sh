@@ -6,10 +6,19 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="$REPO/build/gen-venv"
 CFG="$REPO/tools/openapi-client.yaml"
+# Unpinned, a generator upgrade and a spec change produce the same diff.
+GENERATOR="openapi-python-client==0.29.0"
 
 if [ ! -x "$VENV/bin/openapi-python-client" ]; then
   uv venv "$VENV"
-  uv pip install --python "$VENV/bin/python" openapi-python-client
+  uv pip install --python "$VENV/bin/python" "$GENERATOR"
+fi
+
+want="${GENERATOR#*==}"
+have="$("$VENV/bin/openapi-python-client" --version | awk '{print $NF}')"
+if [ "$have" != "$want" ]; then
+  echo "generator is $have, expected $want — reinstalling" >&2
+  uv pip install --python "$VENV/bin/python" "$GENERATOR"
 fi
 
 gen() {

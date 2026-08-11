@@ -271,6 +271,7 @@ class GeneratedLLMWhispererClientV2:
         filename: str = "",
         webhook_metadata: str = "",
         use_webhook: str = "",
+        word_confidence_threshold: float = 0.3,
         wait_for_completion: bool = False,
         wait_timeout: int = 180,
         encoding: str = "utf-8",
@@ -296,6 +297,7 @@ class GeneratedLLMWhispererClientV2:
             "filename": filename,
             "webhook_metadata": webhook_metadata,
             "use_webhook": use_webhook,
+            "word_confidence_threshold": word_confidence_threshold,
             **extra,
         }
         params = {PARAM_ALIASES.get(k, k): v for k, v in params.items()}

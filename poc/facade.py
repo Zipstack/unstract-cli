@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+import attrs
 import httpx
 
 # `requests` is a dependency purely for its exception classes. Downstream code
@@ -152,6 +153,14 @@ class GeneratedAPIDeploymentsClient:
             # Every other backend param arrives here for free — see cli_generated.
             **kwargs,
         )
+        # The generator writes each field's declared default into the request.
+        # Sending a default is not the same as omitting it: it pins a value the
+        # server would otherwise choose, and the two diverge the moment the
+        # serializer's default changes.
+        set_by_caller = {"timeout", "include_metadata", "files", *kwargs}
+        for field in attrs.fields(ExecuteRequest):
+            if field.name not in set_by_caller and field.name != "additional_properties":
+                setattr(body, field.name, UNSET)
 
         def call():
             return execute.sync_detailed(

@@ -35,6 +35,13 @@ schemas:
     properties:
       status: {type: string}
       message: {type: string}
+  WebhookConfig:
+    type: object
+    required: [url, auth_token, webhook_name]
+    properties:
+      url: {type: string, format: uri}
+      auth_token: {type: string}
+      webhook_name: {type: string}
   WhisperResult:
     type: object
     properties:
@@ -122,11 +129,12 @@ operations:
     operationId: webhook
     tags: [webhook]
     summary: Manage extraction webhooks
+    # POST/PUT read this from the body, which the AST walk cannot see.
     requestBody:
-      required: false
+      required: true
       content:
         application/json:
-          schema: {type: object, additionalProperties: true}
+          schema: {$ref: "#/components/schemas/WebhookConfig"}
 
   document_insights:
     operationId: document_insights

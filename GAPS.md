@@ -110,6 +110,27 @@ report independent of this POC.
 This is also the strongest argument *for* the pipeline in the whole exercise: the drift was
 invisible to three code reviews and fell out of a 300-line AST walk immediately.
 
+Confirmed against the tip of `origin/main` in both repos — client `3832713`
+(`client_v2.py:460`, `:466`) and service `237870ca` (`controller_v2.py:571`, `:621`) — so it
+is not an artefact of a stale checkout. Raised as **LW-406**.
+
+Three things the follow-up surfaced that are not obvious from the table:
+
+- **Impact is uneven.** `filename` affects *every* caller, because the service default is
+  `"sample.pdf"` and so every usage report row is wrong. `line_spitter_strategy` affects only
+  callers who explicitly set `right-priority`/`mid-priority`; client and service defaults are
+  both `left-priority`, so everyone else is unaffected.
+- **Fixing it is a behaviour change, not a bug fix, from the caller's side.** A parameter
+  that has always been a no-op starts taking effect on upgrade. Anyone who tuned around it
+  doing nothing gets different extraction output.
+- **The service validates the strategy** and raises `BadRequest` for an unknown value
+  (`controller_v2.py:578`). Today a typo is silently swallowed; once the param arrives, the
+  same typo becomes a hard 400.
+
+Why three reviews missed it: the service's *local variable* is also spelled
+`line_spitter_strategy`. Only the query key it reads is correct, so anyone comparing variable
+names sees a match.
+
 ## 7. The AST walk cannot see parameters read outside the handler
 
 `url` and `url_in_post` — both public features of `whisper()` — are read in
@@ -158,7 +179,114 @@ declarations, the 406/500 responses, and explicit path parameters. None optional
 was a live failure. Budget ~30 lines *per operation* for the remaining 83, not ~30 per
 endpoint.
 
-## 11. Smaller things that cost time
+## 11. A request body the AST walk cannot see generates a model with no fields
+
+The webhook endpoint takes its payload as JSON in the body (`json.loads(request.get_data())`
+in the shared `whisper_callback` handler). The walk only reads `request.args`, so the overlay
+had to supply the body — and it supplied it as `{type: object, additionalProperties: true}`.
+
+That generates a `WebhookPostBody` with **zero attrs fields**. Nothing in the pipeline
+complains. `register_webhook(url=…, auth_token=…, webhook_name=…)` cannot be expressed, and
+had it shipped, every call would have returned `400 "Webhook name not provided in JSON"` —
+which reads as a caller bug, not a client bug.
+
+Fixed with a named `WebhookConfig` schema, 7 overlay lines. The lesson is the same as items 2
+and 4: **an untyped placeholder in the overlay is indistinguishable from a correct one until
+something calls it.** Any `additionalProperties: true` in the overlay is an unpaid debt.
+
+Related, cosmetic: `whisper_callback` serves POST/GET/PUT/DELETE from one function, and the
+walk attributes every branch's params to every method — so `webhook_post` carries a
+`webhook_name` query param that only the GET/DELETE branches read. The server ignores it.
+
+## 12. One of the eleven LLMWhisperer methods makes no HTTP call at all
+
+`get_highlight_rect()` is pure geometry over `line_metadata` — no request, no endpoint,
+nothing to generate. It has to be copied into the facade verbatim.
+
+Small in itself, but it breaks the mental model: "generate the client" is never literally all
+of the client, even for methods that look like API calls from the outside. Any per-endpoint
+cost estimate should assume a tail of methods that are not endpoints.
+
+## 13. The facade is looser than the client it replaces, by accident
+
+`check_execution_status()` in the published client expects the **relative** endpoint the API
+returns, and prefixes its own `base_url`. Hand it an absolute URL and you get
+`https://host…https://host…`. The generated facade accepts both.
+
+Accepting a superset breaks no caller, so this is not a compat failure. It is a warning about
+method: a facade rebuilt from a spec will differ in *input handling* wherever the published
+client's behaviour came from an implementation detail rather than the contract, and nothing
+in the pipeline surfaces that. `test_llmw_compat.py`-style signature checks do not catch it —
+signatures matched perfectly here. Only a differential test on inputs would.
+
+## 14. The generated client sends every spec default, and that changes the answer
+
+`_get_kwargs` writes each parameter's declared `default` into the request. The published
+client sends only the parameters it knows about. So the generated side puts **seven extra
+query parameters** on `whisper` (`allow_rotated_text`, `checkbox_confidence_threshold`,
+`derotate_threshold`, `ignore_vertical_text`, `min_table_width`,
+`watermark_angle_threshold`, `word_confidence_threshold`), one on `retrieve` (`text_only`),
+and **four extra multipart fields** on deployment execute (`include_extracted_text`,
+`include_metrics`, `tags`, `use_file_history`).
+
+Sending a default is not the same as omitting it. It pins a value the server would otherwise
+choose for itself, and the two disagree the moment the service changes a default.
+
+Measured on staging, same PDF, both CLIs, deterministic on each side:
+
+| | published | generated |
+|---|---|---|
+| Greek | `Γαζέες και μυρτιές` | `Γαζέες␣␣␣␣μυρτιές` |
+| Thai | `· เป็น มนุษย์ …` | `␣␣เป็น มนุษย์ …` |
+
+Every word scoring 0.053–0.279 vanished from `result_text` *and* from `confidence_metadata`.
+Bisected one parameter at a time against the published baseline: `word_confidence_threshold`
+alone reproduces it, the other eleven are innocent. Note the checkout of the service reads
+`request.args.get("word_confidence_threshold", 0.3)` — the same value the spec declares — so
+staging is running a build whose default differs. That is the whole point: **a spec default
+is a snapshot of the server's default at generation time.**
+
+Two fixes work, and the choice is not obvious:
+
+- **Spec side.** Stripping the 50 `default:` keys before generating makes the generator emit
+  `UNSET` and omit unset parameters entirely — verified, and the 28-parameter signature
+  survives, so CLI flag derivation is unaffected. Fixes every parameter and every backend at
+  once. Costs the default value in `--help` and in the signature, which is real documentation.
+- **Facade side (taken).** `_call(..., send_only=…)` keeps only the parameters the caller
+  actually set; the deployment facade resets untouched `ExecuteRequest` fields to `UNSET`.
+  Exact — a caller who explicitly passes the default value still sends it — but it is
+  per-method, so a method added later reintroduces the bug silently.
+
+`test_llmw_compat.py::check_no_injected_defaults` and `test_compat.py` guard both backends
+either way, and both were confirmed to fail with the fix removed.
+
+## 15. The facade had drifted where no test was looking: the constructor and the retry policy
+
+Found by the same input diffing, not by the signature check that was supposed to cover it.
+
+`check_surface` iterates public methods, and `__init__` starts with an underscore:
+
+```
+pub: (base_url, api_key, logging_level, custom_headers, max_retries, retry_min_wait, retry_max_wait)
+gen: (base_url, api_key, api_timeout, logging_level)
+```
+
+Third positional was `api_timeout` where published has `logging_level`, so
+`LLMWhispererClientV2(url, key, "INFO")` sets a timeout to a string. Four keyword arguments
+were missing outright. `api_timeout` is not a constructor argument in the published client at
+all — it is a class attribute (`client_v2.py:95`). The facade's default `base_url` was also
+missing `/api/v2`, so `client.base_url` read back wrong.
+
+The retry policy had diverged just as far: three fixed attempts against a hardcoded status
+set, `2**n` backoff, and **transport errors not retried at all**, against published's
+`max_retries+1` attempts, `429 or >= 500`, `ConnectionError`/`Timeout` retried, and
+exponential jitter bounded by two constructor arguments the facade did not have.
+
+None of this is generatable and none of it is spec drift — it is facade drift, which is the
+category the whole design leans on staying correct. `check_construction` now covers the
+signature and the defaulted attribute values.
+
+## 16. Smaller things that cost time
 
 - **Generation is not static.** `django.setup()` loads every app; ~40s, and a reachable
   Postgres is mandatory. Any CI that gates the spec needs a database.
@@ -194,3 +322,34 @@ per-endpoint cost includes an integration test, not just `@extend_schema` lines.
 priced in, the approach beats hand-transcribing 148 endpoint records — item 6 is the proof,
 and it was free. If it is not priced in, this generates wrong clients faster than anyone can
 review them.
+
+### Update after the staging run
+
+The live gate has now been cleared for both backends against `globe.unstract.com`: Document
+Studio execute and status are output-identical to the published client on both a success and
+a 422 path, and upload fidelity is confirmed in the database. `MEASUREMENTS.md` has the
+numbers.
+
+Three of the four findings added at that point — items 11, 12 and 13 — are the same shape as
+the original five: a placeholder that generates cleanly and fails only when called, a method
+that looks generatable and is not, and a behavioural difference that signature checks pass
+right over. Treat "it generated" as carrying no information whatsoever.
+
+### Update after the input diff
+
+Item 13 named the remaining hole — differential behaviour on *inputs* — and closing it was
+worth the cost. Adding `whisper` and `webhook` commands to `cli_published.py` and comparing
+the two query strings found **three more defects in one pass**: the injected spec defaults
+(item 14) and both halves of item 15.
+
+The first of those was not a latent risk. It was already wrong on staging, in the one output
+the client exists to produce, and the earlier LLMWhisperer verification recorded here and in
+`MEASUREMENTS.md` as "returned correct text" was reading text with words missing. Output
+comparison could not have caught it, because there was nothing to compare against — the
+published client had no CLI wrapper, which is exactly why that gap was listed.
+
+Twelve silent defects out of twelve. The pattern is now specific enough to act on: **compare
+what the two clients send, not only what they return.** Signature equality is necessary and
+nowhere near sufficient, and the parts of a client no spec describes — constructors, retry
+policy, which parameters get omitted — are where a facade drifts, because nothing regenerates
+them and nothing checks them.

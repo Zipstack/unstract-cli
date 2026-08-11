@@ -29,6 +29,29 @@ def raises(fn, exc):
     raise AssertionError(f"expected {exc.__name__}, nothing raised")
 
 
+def captured_body_keys():
+    """The form fields `structure_file` actually puts on the wire."""
+    import facade
+
+    seen = {}
+    original = facade.execute.sync_detailed
+
+    def capture(org, api, *, client, body):
+        seen["keys"] = list(body.to_dict())
+        raise SystemExit
+
+    facade.execute.sync_detailed = capture
+    try:
+        GeneratedAPIDeploymentsClient(
+            api_url="http://127.0.0.1:1/deployment/api/org/api-name/", api_key="k"
+        ).structure_file([__file__])
+    except SystemExit:
+        pass
+    finally:
+        facade.execute.sync_detailed = original
+    return seen["keys"]
+
+
 def main():
     # httpx's own exceptions are NOT what downstream catches — prove it.
     assert not issubclass(httpx.ConnectError, ConnectionError)
@@ -56,6 +79,11 @@ def main():
     assert raises(
         lambda: client.check_execution_status("/x/?execution_id=1"), ConnectionError
     )
+
+    # The generator writes every declared default into the multipart body; the
+    # published client sends three fields. Sending a default is not the same as
+    # omitting it — it pins a value the serializer would otherwise choose.
+    assert sorted(captured_body_keys()) == ["files", "include_metadata", "timeout"]
 
     # Return-shape contract: same keys as the published client, always.
     KEYS = {"status_code", "pending", "execution_status", "error", "extraction_result"}

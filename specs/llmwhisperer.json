@@ -1,6 +1,26 @@
 {
   "components": {
     "schemas": {
+      "WebhookConfig": {
+        "properties": {
+          "auth_token": {
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "webhook_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "auth_token",
+          "webhook_name"
+        ],
+        "type": "object"
+      },
       "WhisperAccepted": {
         "properties": {
           "message": {
@@ -839,12 +859,11 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/WebhookConfig"
               }
             }
           },
-          "required": false
+          "required": true
         },
         "responses": {
           "200": {
@@ -881,12 +900,11 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/WebhookConfig"
               }
             }
           },
-          "required": false
+          "required": true
         },
         "responses": {
           "200": {

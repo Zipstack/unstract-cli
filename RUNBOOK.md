@@ -25,10 +25,11 @@ hand-maintaining an API contract. Three layers:
                     build/sdk_*/  (httpx)                               ← generated, gitignored
                              │
                              ▼
-                    poc/facade.py                                       ← hand-written
+          poc/facade.py   ·   poc/llmw_facade.py                      ← hand-written
                              │
                              ▼
                     poc/cli_generated.py                                ← hand-written
+              deployment · whisper · webhook
 ```
 
 **Below the facade line: generated, never hand-edited.** If generated code is wrong, the
@@ -46,11 +47,13 @@ fix goes in the backend annotation or the overlay, never in `build/`.
 | `specs/docstudio.json` | **generated, committed** | The Document Studio contract. Diff it to see backend drift. |
 | `specs/llmwhisperer.json` | **generated, committed** | The LLMWhisperer contract. |
 | `specs/overlay/llmwhisperer.yaml` | hand | Everything the AST walk cannot infer — bodies, responses, tags. |
-| `poc/facade.py` | hand | Retry, poll, sync/async POST rule, dict return shapes, exception translation. |
-| `poc/cli_generated.py` | hand | Two commands over the generated SDK. Flags are derived from the generated model. |
-| `poc/cli_published.py` | hand | The same two commands over the published `unstract-client`. The baseline. |
+| `poc/facade.py` | hand | Document Studio: retry, poll, sync/async POST rule, dict return shapes, exception translation. |
+| `poc/llmw_facade.py` | hand | LLMWhisperer: all 11 public methods of `LLMWhispererClientV2`, signature-identical. Retry, the `wait_for_completion` poll loop, the error-dict contract, and `get_highlight_rect` (which makes no HTTP call at all). |
+| `poc/cli_generated.py` | hand | `deployment`, `whisper` and `webhook` command groups over the generated SDKs. Flags are derived from the generated model / `_get_kwargs` signature. |
+| `poc/cli_published.py` | hand | The same `deployment`, `whisper` and `webhook` commands over the published clients. The baseline. Its `whisper` flags come from the published method signature where the generated CLI's come from the spec, so the two flag sets are themselves a drift signal. |
 | `poc/compare.sh` | hand | Runs both against a live backend and diffs the JSON. |
-| `poc/test_compat.py` | hand | The exception-compatibility check. Run it after touching the facade. |
+| `poc/test_compat.py` | hand | The Document Studio exception-compatibility check. |
+| `poc/test_llmw_compat.py` | hand | The LLMWhisperer drop-in check: method surface, constructor, signatures, defaults, wire names, webhook body, no injected defaults, exception translation. Offline. |
 | `build/` | **generated** | SDKs and venvs. Gitignored. Delete it any time. |
 
 ## 3. Prerequisites
@@ -108,7 +111,7 @@ python3 tools/gen_llmw_spec.py
 # 3. both SDKs  (creates build/gen-venv on first run)
 bash tools/gen_sdk.sh
 #   -> generated build/sdk_docstudio (18 files)
-#   -> generated build/sdk_llmwhisperer (47 files)
+#   -> generated build/sdk_llmwhisperer (46 files)
 ```
 
 Both specs are **deterministic** — regenerating and diffing yields no change. That is what
@@ -139,6 +142,11 @@ PYTHONPATH=build:poc build/poc-venv/bin/python poc/cli_generated.py deployment s
 build/poc-venv/bin/python poc/cli_published.py deployment execute FILE --timeout -1
 ```
 
+`status_check_api_endpoint` comes back **relative** (`/deployment/api/…`). The published
+client prefixes its own `base_url`, so handing it an absolute URL yields
+`https://host…https://host…` and a retry loop of `ConnectionError`. Pass it back exactly as
+returned. The generated facade happens to accept both — see `GAPS.md` §13.
+
 Find a local deployment + key:
 
 ```sql
@@ -165,11 +173,57 @@ acknowledged`. Sharing one execution between the two CLIs makes the second look 
 
 Ignoring per-run IDs and timestamps, the two produce **identical** output for both commands.
 
-### Compatibility check — run this after any facade change
+### LLMWhisperer commands
 
 ```bash
-PYTHONPATH=build:poc build/poc-venv/bin/python poc/test_compat.py   # -> compat OK
+uv pip install --python build/poc-venv/bin/python -e ~/zipstuff/llm-whisperer-python-client
+
+set -a && . ~/zipstuff/llm-whisperer-python-client/.env && set +a   # base URL + key
+export PYTHONPATH=build:poc
+
+build/poc-venv/bin/python poc/cli_generated.py whisper usage
+build/poc-venv/bin/python poc/cli_generated.py whisper extract FILE.pdf --wait
+build/poc-venv/bin/python poc/cli_generated.py whisper retrieve <hash> --text-only
+build/poc-venv/bin/python poc/cli_generated.py webhook register NAME --callback-url URL
+
+# same commands over the published client — swap the script name to diff the two
+build/poc-venv/bin/python poc/cli_published.py whisper extract FILE.pdf --wait-timeout 600
 ```
+
+Give each side its own run and compare `extraction.result_text` and
+`extraction.confidence_metadata`. `whisper_hash` and `whisper_metadata.avg_page_processing_time`
+always differ. Staging can take several minutes on a photo PDF, so raise `--wait-timeout`
+before concluding anything from a timeout.
+
+The published `llmwhisperer-client` is installed **only for its exception class** —
+`llmw_facade.py` raises the real `LLMWhispererClientException` so downstream `except` clauses
+keep matching.
+
+`whisper extract` derives its 25 parameter flags from the generated `extract._get_kwargs`
+signature, so a parameter added to the Flask handler becomes a CLI flag with no edit to
+`cli_generated.py`. Same zero-line claim as `deployment execute`, over a backend that has no
+serializers to introspect.
+
+### Compatibility checks — run these after any facade change
+
+```bash
+PYTHONPATH=build:poc build/poc-venv/bin/python poc/test_compat.py       # -> compat OK
+PYTHONPATH=build:poc build/poc-venv/bin/python poc/test_llmw_compat.py  # -> llmw compat OK
+```
+
+`test_llmw_compat.py` asserts the LLMWhisperer facade is a drop-in: same 11 public methods,
+identical signatures and defaults, a constructor matching published positionally and by
+keyword, the two misspelled published parameter names resolving to the query keys the service
+actually reads, a webhook body carrying the three required keys, **no query parameter the
+published client would not send**, and no httpx exception escaping. It needs no network.
+
+That last one is the check that matters most and the one nothing else covers. `_get_kwargs`
+writes every spec-declared default into the request; sending a default is not the same as
+omitting it, and on staging one of them silently dropped low-confidence words from the
+extracted text (`GAPS.md` §14). The equivalent assertion for Document Studio lives in
+`test_compat.py` — the multipart body must carry exactly `files`, `include_metadata`,
+`timeout`. **If you add a facade method, add it to these two checks**; they are per-method,
+so a new method is uncovered by default.
 
 It asserts that `httpx.ConnectError` / `TimeoutException` escaping the generated transport
 are re-raised as `requests.ConnectionError` / `requests.Timeout`. This is not cosmetic:
@@ -203,7 +257,7 @@ endpoint. Nothing else in this repo changes.
 specs/docstudio.json      2 paths · 4 operations · 6 schemas · 436 lines
 specs/llmwhisperer.json  13 paths · 16 operations · 53 params · 999 lines
 build/sdk_docstudio      18 files
-build/sdk_llmwhisperer   47 files
+build/sdk_llmwhisperer   46 files
 ```
 
 The LLMWhisperer walk is validated against a known answer: `POST /whisper` must expose the
@@ -211,14 +265,45 @@ five parameters the service reads but neither the published client nor PR #1's r
 about — `min_table_width`, `derotate_threshold`, `checkbox_confidence_threshold`,
 `watermark_angle_threshold`, `ignore_vertical_text`. It finds all five.
 
-## 8. What was NOT tested
+## 8. Verified against staging, and what is still untested
 
-- The generated LLMWhisperer SDK has **never been run against the live service** — no local
-  instance exists and the hosted API is metered. Its request shape was verified by
-  inspecting `_get_kwargs` output (correct path, correct query keys, `true`/`false` bool
-  encoding that matches the service's `.lower() == "true"` parsing), not by a round trip.
-- Only `POST /deployment/api/…` and its status `GET` were exercised end to end.
+Run against `globe.unstract.com` on 2026-08-10. Numbers in `MEASUREMENTS.md`.
+
+**Verified.** Document Studio execute and status are output-identical to the published client
+on both a success and a 422 error path, with upload fidelity confirmed by reading
+`workflow_file_execution` back from the staging DB. LLMWhisperer `whisper extract` is
+output-identical too — `result_text` and `confidence_metadata` byte for byte, with only the
+server's own `avg_page_processing_time` differing — as is `whisper usage`. Every check went
+through the CLI, so CLI, facade and generated SDK were exercised together.
+
+That LLMWhisperer parity only holds **after** the injected-defaults fix. The first side-by-side
+run disagreed, and the generated side was the wrong one: it was dropping words from the text
+(`GAPS.md` §14). The earlier one-sided run recorded here as "595 characters of correct text"
+was reading text with words missing, and nothing in the output could have revealed that.
+
+**Still untested:**
+
+- **No differential test on malformed or boundary inputs.** Parity checks compare two clients
+  on *valid* inputs. The facade was found to accept an absolute status endpoint where the
+  published client requires a relative one (`GAPS.md` §13) — signature checks passed straight
+  over it, and it surfaced by accident rather than by a test.
+- Of the LLMWhisperer surface, only `whisper`, `whisper_status`, `whisper_retrieve` and
+  `get_usage_info` have made a live call. The webhook and insights operations have not.
+- Only `POST /deployment/api/…` and its status `GET` are annotated. The `/highlight/`
+  sub-route that the API deployment also serves is **not in the spec**.
 - The 307-route tenant spec (`--urlconf backend.urls_v2`) was not regenerated in this pass.
+
+### Picking a deployment for a parity run
+
+Use a workflow that reaches a terminal state fast and deterministically. One earlier pair
+diverged (published `200/COMPLETED`, generated `422/ERROR`) purely because the *server*
+recorded two different states — a race that hit 1 of 148 staging executions in 30 days. The
+clients reported faithfully; the harness just could not prove it without a DB query.
+
+Better still, do not run a workflow. Compare the two clients on deterministic failures — bad
+key → 401, garbage `execution_id` → 4xx, an already-consumed status endpoint → 406. Those run
+in under a second, need no extraction, and exercise the error handling where every silent bug
+in this POC actually lived.
 
 ## 9. Where the findings are
 

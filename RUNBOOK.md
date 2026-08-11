@@ -346,9 +346,11 @@ signature and the params dict. Both CLIs then exposed `--word-confidence-thresho
 
 Three things this pins down, and they are the argument for the whole layering:
 
-1. **The generated transport and the CLI auto-expose. The facade does not.** That asymmetry
-   is deliberate — the facade exists to pin the published contract, so it cannot also track
-   upstream automatically. It is the one place a human is required.
+1. **The generated transport and the CLI auto-expose. The facade does not** — because it
+   *re-declares* every signature. Re-declaration is the thing that blocks auto-exposure, and
+   it is a choice: mature SDKs inherit or re-export instead and get new endpoints for free.
+   Ours is justified where a published contract must be pinned, and not justified for surface
+   that has no published equivalent.
 2. **The offline check is what makes that safe.** No network, no key, sub-second, and it
    named the exact missing parameter.
 3. **This is why the published client has to be pinned in CI.** The failure arrived from a

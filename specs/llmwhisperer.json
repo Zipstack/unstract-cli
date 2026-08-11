@@ -397,6 +397,142 @@
         ]
       }
     },
+    "/api/v2/pdf-to-images": {
+      "post": {
+        "operationId": "pdf_to_images",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "file_name",
+            "required": false,
+            "schema": {
+              "default": "sample.pdf",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "png",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "default": "default",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "url",
+            "required": false,
+            "schema": {
+              "default": "",
+              "format": "uri",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "url_in_post",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "pdf to images",
+        "tags": [
+          "whisper"
+        ]
+      }
+    },
+    "/api/v2/pdf-to-images-retrieve": {
+      "get": {
+        "operationId": "pdf_to_images_retrieve",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "whisper_hash",
+            "required": false,
+            "schema": {
+              "default": "",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "pdf to images retrieve",
+        "tags": [
+          "whisper"
+        ]
+      }
+    },
+    "/api/v2/pdf-to-images-status": {
+      "get": {
+        "operationId": "pdf_to_images_status",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "whisper_hash",
+            "required": false,
+            "schema": {
+              "default": "",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "pdf to images status",
+        "tags": [
+          "whisper"
+        ]
+      }
+    },
     "/api/v2/test-connection": {
       "get": {
         "operationId": "test_connection",
@@ -636,10 +772,9 @@
           },
           {
             "in": "query",
-            "name": "page_seperator",
+            "name": "page_separator",
             "required": false,
             "schema": {
-              "default": "<<<",
               "type": "string"
             }
           },
@@ -712,7 +847,6 @@
             "name": "word_confidence_threshold",
             "required": false,
             "schema": {
-              "default": 0.3,
               "type": "number"
             }
           }

@@ -98,6 +98,12 @@ runtime-only.
 Found by diffing the AST walk against `client_v2.py`, not by inspection. Neither is in the
 KB's drift table.
 
+> **Fixed upstream 2026-08-11.** `llm-whisperer-python-client` `e8935b3` — *"send query params
+> under the names the service reads"* — adopts this finding and answers LW-406. `page_separator`
+> and `file_name` **forward** from their deprecated spellings; `line_splitter_strategy` stays
+> **dead**, because the value never reached the service and applying it now would silently change
+> extraction output. The facade mirrors the resolver, including which of the three forwards.
+
 | Client sends | Service reads | Effect |
 |---|---|---|
 | `line_spitter_strategy` | `line_splitter_strategy` (`controller_v2.py:563`) | the kwarg is silently discarded; the service always uses its default `left-priority` |
@@ -343,6 +349,45 @@ named the exact missing parameter, the facade fix was one line in two places, an
 picked the new flag up with no edit at all. That asymmetry — **generated transport and CLI
 auto-expose, the facade never does** — is the cost of pinning the published contract, and it
 is the one place a human is structurally required.
+
+## 18. The facade read the generated model, and the generated model is not always there
+
+Found by writing `poc/test_error_parity.py`, which points both clients at a local server that
+returns a scripted status and body. Two defects on the first run, both in code that had passed
+every existing check and a live round trip:
+
+- **A 500 with a well-formed body crashed.** `_unwrap_execute` read `resp.parsed.message`, but
+  the generator types an error body's `message` as a bare object, so `.execution_status` raised
+  `AttributeError` where the published client returned a shaped error.
+- **A 401 on the status endpoint reported the wrong thing.** 401 is not a declared status for
+  that operation, so `resp.parsed` was `None` and the facade returned `"Invalid JSON response
+  from API"` for a response that was perfectly valid JSON.
+
+Both have one root cause: the facade trusted `resp.parsed`, which exists only for statuses the
+spec declares and is typed loosely for error bodies. The published client reads the JSON body
+directly. The facade now does the same, which also reproduces the published client's own
+`AttributeError` when `message` arrives as a string — a drop-in replacement inherits the
+contract including its bugs.
+
+Two more things fell out of the same change:
+
+- **`_parse_response` calls `.json()` unguarded for every declared status**, so an empty or
+  truncated body escaped as `JSONDecodeError` where the published client returned a shaped
+  error. Since the facade no longer needs `resp.parsed`, it now issues the generated request via
+  `_get_kwargs` and skips the generated response parsing entirely. This removes the whole class,
+  including gap 3.
+- **The status endpoint was over-sending two injected defaults.** `status._get_kwargs` writes
+  `include_extracted_text` and `include_metrics` into every request; the published client sends
+  only `include_metadata`. This is gap 14 on the deployment side, which no check had covered
+  because the compat test inspects the execute *body* and not the status *query*. Fixed with the
+  same `send_only` filter the LLMWhisperer facade already used.
+
+The measurement that matters: **25 comparisons, 5 methods, 5 bodies each.** Everything the
+published client does on an error path is now either matched or listed with a reason. The
+remaining 13 accepted divergences are all one finding — the published client handles errors two
+different ways depending on which method you call (`whisper_status` and `whisper_detail` guard
+the parse and set `.status_code`; `get_usage_info`, `whisper_retrieve`, `get_highlight_data` and
+the webhook methods do neither), and the facade applies the guarded form everywhere.
 
 ---
 

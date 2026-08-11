@@ -34,13 +34,13 @@ def captured_body_keys():
     import facade
 
     seen = {}
-    original = facade.execute.sync_detailed
+    original = facade.execute._get_kwargs
 
-    def capture(org, api, *, client, body):
+    def capture(org, api, *, body):
         seen["keys"] = list(body.to_dict())
         raise SystemExit
 
-    facade.execute.sync_detailed = capture
+    facade.execute._get_kwargs = capture
     try:
         GeneratedAPIDeploymentsClient(
             api_url="http://127.0.0.1:1/deployment/api/org/api-name/", api_key="k"
@@ -48,7 +48,7 @@ def captured_body_keys():
     except SystemExit:
         pass
     finally:
-        facade.execute.sync_detailed = original
+        facade.execute._get_kwargs = original
     return seen["keys"]
 
 

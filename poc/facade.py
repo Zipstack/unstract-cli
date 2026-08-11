@@ -9,6 +9,7 @@ Public surface is deliberately identical to
 ``unstract.api_deployments.client.APIDeploymentsClient``.
 """
 
+import json
 import ntpath
 import sys
 import time
@@ -107,16 +108,37 @@ class GeneratedAPIDeploymentsClient:
                 f.seek(0)
         raise AssertionError("unreachable")
 
-    @staticmethod
-    def _plain(value):
-        """Generated models are attrs objects; callers are promised plain JSON.
+    def _send(self, request_kwargs, *, send_only=None):
+        """Issue a generated request without the generated response parsing.
 
-        `to_dict()` round-trips undeclared keys through `additional_properties`,
-        so nothing the backend sent is dropped by an incomplete annotation.
+        `_get_kwargs` is the generated part and owns the URL, encoding and query
+        names. `_parse_response` is skipped: it calls `.json()` unguarded for
+        every status the spec declares, so a truncated or empty body escapes as
+        `JSONDecodeError` where the published client returns a shaped error.
+
+        `send_only` names the query parameters the caller actually set; the rest
+        are the generator's injected defaults, which pin a value the server would
+        otherwise choose.
         """
-        if isinstance(value, list):
-            return [GeneratedAPIDeploymentsClient._plain(v) for v in value]
-        return value.to_dict() if hasattr(value, "to_dict") else value
+        if send_only is not None and "params" in request_kwargs:
+            request_kwargs["params"] = {
+                k: v for k, v in request_kwargs["params"].items() if k in send_only
+            }
+        return self._client.get_httpx_client().request(**request_kwargs)
+
+    @staticmethod
+    def _body(resp):
+        """Response fields come from the JSON body, not the generated model.
+
+        The generator only builds a model for statuses the spec declares, and
+        types an error body's `message` as a bare object, so an undeclared status
+        or any error response has no usable model. Callers are promised the
+        published client's dict, which is read straight from the body.
+        """
+        try:
+            return json.loads(resp.content)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            return None
 
     @staticmethod
     def _shape(status_code, execution_status, error, result):
@@ -163,9 +185,7 @@ class GeneratedAPIDeploymentsClient:
                 setattr(body, field.name, UNSET)
 
         def call():
-            return execute.sync_detailed(
-                self.org_name, self.api_name, client=self._client, body=body
-            )
+            return self._send(execute._get_kwargs(self.org_name, self.api_name, body=body))
 
         try:
             if self.api_timeout == 0:
@@ -181,57 +201,58 @@ class GeneratedAPIDeploymentsClient:
         return self._unwrap_execute(resp)
 
     def _unwrap_execute(self, resp) -> dict:
-        if resp.parsed is None:
-            if resp.status_code == 401:
-                return self._shape(resp.status_code, "", self._detail(resp), "")
-            return self._shape(
-                resp.status_code, "", "Invalid JSON response from API", ""
-            )
-        msg = resp.parsed.message
-        execution_status = msg.execution_status or ""
-        # UNSET means the key was absent (published client's `.get(k, "")`);
-        # None means the backend sent null and callers see null today.
-        result = "" if msg.result is UNSET else self._plain(msg.result)
-        error = "" if msg.error is UNSET else msg.error
-        out = self._shape(resp.status_code, execution_status, error, result)
-        if 200 <= resp.status_code < 300 and (
+        data = self._body(resp)
+        code = int(resp.status_code)
+        if data is None:
+            return self._shape(code, "", "Invalid JSON response from API", "")
+        if code == 401:
+            return self._shape(code, "", self._detail(data), "")
+        # `.get` on a non-dict `message` raises, exactly as the published client
+        # does — a drop-in replacement reproduces the contract, bugs included.
+        message = data.get("message", {})
+        execution_status = message.get("execution_status", "")
+        result = message.get("result", "")
+        out = self._shape(code, execution_status, message.get("error", ""), result)
+        if 200 <= code < 300 and (
             execution_status in IN_PROGRESS
             or (execution_status == "SUCCESS" and not result)
         ):
-            out.update({"status_check_api_endpoint": msg.status_api, "pending": True})
+            out.update(
+                {"status_check_api_endpoint": message.get("status_api"), "pending": True}
+            )
         return out
 
     @staticmethod
-    def _detail(resp) -> str:
+    def _detail(data) -> str:
         try:
-            import json
-
-            return json.loads(resp.content)["errors"][0]["detail"]
+            return data["errors"][0]["detail"]
         except Exception:
             return "Unauthorized"
 
     def check_execution_status(self, status_check_api_endpoint: str) -> dict:
         execution_id = _query_value(status_check_api_endpoint, "execution_id")
         resp = self._retry(
-            lambda: status.sync_detailed(
-                self.org_name,
-                self.api_name,
-                client=self._client,
-                execution_id=execution_id,
-                include_metadata=self.include_metadata,
+            lambda: self._send(
+                status._get_kwargs(
+                    self.org_name,
+                    self.api_name,
+                    execution_id=execution_id,
+                    include_metadata=self.include_metadata,
+                ),
+                send_only={"execution_id", "include_metadata"},
             )
         )
-        if resp.parsed is None:
-            return self._shape(
-                resp.status_code, "", "Invalid JSON response from API", ""
-            )
+        data = self._body(resp)
+        code = int(resp.status_code)
+        if data is None:
+            return self._shape(code, "", "Invalid JSON response from API", "")
         out = self._shape(
-            resp.status_code,
-            resp.parsed.status or "",
-            "",
-            "" if resp.parsed.message is UNSET else self._plain(resp.parsed.message),
+            code,
+            data.get("status", ""),
+            data.get("error", ""),
+            data.get("message", ""),
         )
-        if out["execution_status"] in IN_PROGRESS or resp.status_code >= 500:
+        if out["execution_status"] in IN_PROGRESS or code >= 500:
             out["pending"] = True
         return out
 

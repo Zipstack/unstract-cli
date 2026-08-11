@@ -244,6 +244,18 @@ def build(controller: Path, consts: dict[str, Any], overlay: dict[str, Any]) -> 
             for helper in called_names(fn) & helpers.keys():
                 query += [p for p in helpers[helper] if p["name"] not in seen]
                 seen |= {p["name"] for p in helpers[helper]}
+            # A helper that takes the argument name as a parameter hides every
+            # literal passed at the call site, so the walk cannot recover it.
+            for name, schema in over.get("addParams", {}).items():
+                if name not in seen:
+                    query.append(
+                        {
+                            "name": name,
+                            "in": "query",
+                            "required": False,
+                            "schema": dict(schema),
+                        }
+                    )
             query.sort(key=lambda p: p["name"])
             for p in query:
                 patch = over.get("params", {}).get(p["name"])

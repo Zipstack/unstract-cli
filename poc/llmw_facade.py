@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import IO, Any
 
@@ -47,11 +48,9 @@ BASE_URL_V2 = "https://llmwhisperer-api.us-central.unstract.com/api/v2"
 
 # The published signature carries two names the service never reads. Routing
 # them to the generated names makes them take effect for the first time.
-PARAM_ALIASES = {
-    "url": "url_query",
-    "line_spitter_strategy": "line_splitter_strategy",
-    "filename": "file_name",
-}
+# The generator names the query parameter `url` as `url_query` to avoid clashing
+# with the request URL. The service's other renames are resolved in `whisper`.
+PARAM_ALIASES = {"url": "url_query"}
 
 class _RetryableStatus(Exception):
     def __init__(self, response: httpx.Response) -> None:
@@ -248,6 +247,33 @@ class GeneratedLLMWhispererClientV2:
         y2 = int((baseline / original_height) * target_height)
         return (page, 0, y1, target_width, y2)
 
+    def _resolve_deprecated_param(
+        self, name, value, deprecated_name, deprecated_value, default, *, forward
+    ):
+        """Mirrors the published resolver, including which renames forward.
+
+        `forward=False` means the deprecated value is dropped rather than
+        applied: that parameter never reached the service, so honouring it now
+        would silently change extraction output on upgrade.
+        """
+        if deprecated_value is None:
+            return default if value is None else value
+        if value is not None:
+            raise LLMWhispererClientException(
+                f"Cannot pass both '{deprecated_name}' and '{name}', use '{name}' only", 1
+            )
+        message = (
+            f"'{deprecated_name}' is deprecated and will be removed in a future "
+            f"release, use '{name}' instead"
+        )
+        if not forward:
+            message += (
+                f". The value passed is ignored: '{deprecated_name}' never reached the service"
+            )
+        self.logger.warning(message)
+        warnings.warn(message, DeprecationWarning, stacklevel=3)
+        return deprecated_value if forward else default
+
     def whisper(
         self,
         file_path: str = "",
@@ -255,7 +281,7 @@ class GeneratedLLMWhispererClientV2:
         url: str = "",
         mode: str = "form",
         output_mode: str = "layout_preserving",
-        page_seperator: str = "<<<",
+        page_seperator: str | None = None,
         pages_to_extract: str = "",
         median_filter_size: int = 0,
         gaussian_blur_radius: int = 0,
@@ -263,25 +289,42 @@ class GeneratedLLMWhispererClientV2:
         horizontal_stretch_factor: float = 1.0,
         mark_vertical_lines: bool = False,
         mark_horizontal_lines: bool = False,
-        line_spitter_strategy: str = "left-priority",
+        line_spitter_strategy: str | None = None,
         add_line_nos: bool = False,
         include_line_confidence: bool = False,
+        word_confidence_threshold: float = 0.3,
         lang: str = "eng",
         tag: str = "default",
-        filename: str = "",
+        filename: str | None = None,
         webhook_metadata: str = "",
         use_webhook: str = "",
-        word_confidence_threshold: float = 0.3,
         wait_for_completion: bool = False,
         wait_timeout: int = 180,
         encoding: str = "utf-8",
+        page_separator: str | None = None,
+        line_splitter_strategy: str | None = None,
+        file_name: str | None = None,
         **extra: Any,
     ) -> Any:
         """`**extra` reaches the parameters the published signature never grew."""
+        page_separator = self._resolve_deprecated_param(
+            "page_separator", page_separator, "page_seperator", page_seperator, "<<<", forward=True
+        )
+        line_splitter_strategy = self._resolve_deprecated_param(
+            "line_splitter_strategy",
+            line_splitter_strategy,
+            "line_spitter_strategy",
+            line_spitter_strategy,
+            "left-priority",
+            forward=False,
+        )
+        file_name = self._resolve_deprecated_param(
+            "file_name", file_name, "filename", filename, "", forward=True
+        )
         params = {
             "mode": mode,
             "output_mode": output_mode,
-            "page_seperator": page_seperator,
+            "page_separator": page_separator,
             "pages_to_extract": pages_to_extract,
             "median_filter_size": median_filter_size,
             "gaussian_blur_radius": gaussian_blur_radius,
@@ -289,15 +332,15 @@ class GeneratedLLMWhispererClientV2:
             "horizontal_stretch_factor": horizontal_stretch_factor,
             "mark_vertical_lines": mark_vertical_lines,
             "mark_horizontal_lines": mark_horizontal_lines,
-            "line_spitter_strategy": line_spitter_strategy,
+            "line_splitter_strategy": line_splitter_strategy,
             "add_line_nos": add_line_nos,
             "include_line_confidence": include_line_confidence,
+            "word_confidence_threshold": word_confidence_threshold,
             "lang": lang,
             "tag": tag,
-            "filename": filename,
+            "file_name": file_name,
             "webhook_metadata": webhook_metadata,
             "use_webhook": use_webhook,
-            "word_confidence_threshold": word_confidence_threshold,
             **extra,
         }
         params = {PARAM_ALIASES.get(k, k): v for k, v in params.items()}

@@ -278,3 +278,30 @@ component schemas: 0
 
 Introspection alone yields nothing usable for this endpoint — consistent with
 `01-current-state`'s "unable to guess serializer".
+
+## Error-path parity (2026-08-11)
+
+Both clients pointed at a local `http.server` returning a scripted status and body. No network.
+
+```bash
+PYTHONPATH=build:poc build/poc-venv/bin/python poc/test_error_parity.py
+# error parity OK — 25 comparisons, 13 known
+```
+
+5 methods × 5 bodies (`401` JSON, `500` JSON with a string `message`, `500` JSON with a wrapped
+object, `400` non-JSON, `500` empty):
+
+| Method | Matches | Accepted divergences |
+|---|---|---|
+| `get_usage_info` | 0 | 5 |
+| `whisper_status` | 2 | 3 |
+| `whisper_retrieve` | 0 | 5 |
+| `structure_file` | 5 | 0 |
+| `check_execution_status` | 5 | 0 |
+
+Every LLMWhisperer divergence is the same finding: the published client guards the error parse
+in `whisper_status` and `whisper_detail` and does not in the other four, so `.status_code` is
+`None` on half its methods and a non-JSON error body escapes as `JSONDecodeError`. The facade
+applies the guarded form to all of them.
+
+Both Document Studio methods started at 3 of 5 and reached 5 of 5 — see `GAPS.md` §18.

@@ -75,6 +75,11 @@ operations:
       # args.get's second argument, so the walk cannot see them.
       median_filter_size: {default: 0}
       gaussian_blur_radius: {default: 0}
+    addParams:
+      # The service reads this through a helper that takes the argument name as
+      # an argument, so the walk sees only the deprecated misspelling it falls
+      # back to. Both are accepted; this is the one to send.
+      page_separator: {type: string}
 
   whisper_status:
     operationId: status

@@ -15,8 +15,10 @@ every request, and the clock is injected so the whole thing tests offline.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -68,22 +70,88 @@ def extract_handle(payload: Any, field: str) -> str | None:
     return str(value) if value is not None else None
 
 
+def preflight(path: str | Path) -> Path:
+    """Prove the save target is writable, before anything destructive runs.
+
+    `--save` exists to protect a read the server serves exactly once, so
+    discovering an unwritable path *after* that read is the one failure the
+    flag must not have.
+    """
+    target = Path(path).expanduser()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        existed = target.exists()
+        with target.open("a", encoding="utf-8"):
+            pass
+        if not existed:
+            target.unlink()
+    except OSError as exc:
+        raise CLIError(
+            f"Cannot write to --save target {path!r}: {exc}.",
+            ExitCode.USAGE,
+            hint="Pick a writable path; nothing has been read yet, so nothing is lost.",
+        ) from exc
+    return target
+
+
 def persist(path: str | Path, payload: Any) -> Path:
     """Write a result to disk and return where it landed.
 
     Some results can be read exactly once. Callers must persist **before** the
     read is acknowledged to the user, so a crash between the two cannot destroy
     a result the server will not serve again.
+
+    Written through a temporary file so a full disk leaves the previous copy
+    intact rather than a truncated one. A failure here raises with the payload
+    attached: by this point the only surviving copy is in memory, and it has to
+    reach stdout somehow.
     """
     target = Path(path).expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
     text = (
         payload
         if isinstance(payload, str)
         else json.dumps(payload, indent=2, default=str)
     )
-    target.write_text(text, encoding="utf-8")
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+    except OSError as exc:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise CLIError(
+            f"The result could not be written to {path!r}: {exc}.",
+            ExitCode.SAVE_FAILED,
+            details=payload,
+            hint=(
+                "`details` carries the result. It has already been read from the "
+                "service, which will not serve it again -- save it from here."
+            ),
+        ) from exc
     return target
+
+
+def classify(payload: Any, spec: PollSpec) -> str:
+    """`success`, `failure`, `pending` or `unknown` for one poll response.
+
+    Shared with the standalone status commands: a finished-and-failed execution
+    is reported inside an HTTP 200, so a command that only checks the status
+    code calls it a success.
+    """
+    status = (extract_status(payload, spec.status_field) or "").lower()
+    if status in {state.lower() for state in spec.terminal_failure}:
+        return "failure"
+    if status in {state.lower() for state in spec.terminal_success}:
+        return "success"
+    if not status or _dig(payload, "error"):
+        # An empty status, or a body carrying an error, is not progress. Polling
+        # on regardless is what turned a server fault into "still running".
+        return "unknown"
+    return "pending"
 
 
 def wait_for_completion(
@@ -96,6 +164,9 @@ def wait_for_completion(
     interval: float = 3.0,
     timeout: float = 300.0,
     on_status: Callable[[str | None], None] | None = None,
+    #: Called with the path once a result is on disk, before the caller sees
+    #: anything. The ordering it observes is the whole point of --save.
+    on_saved: Callable[[Path], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], float] = time.monotonic,
 ) -> Any:
@@ -108,14 +179,18 @@ def wait_for_completion(
     if not handle:
         return initial
 
-    success = {state.lower() for state in spec.terminal_success}
-    failure = {state.lower() for state in spec.terminal_failure}
     deadline = now() + timeout
     last_status: str | None = None
     payload: Any = initial
 
     while True:
-        payload = poll(handle)
+        try:
+            payload = poll(handle)
+        except CLIError as exc:
+            # The handle is the difference between resuming and paying to
+            # process the document a second time.
+            exc.extra.setdefault(spec.handle_field, handle)
+            raise
         status = extract_status(payload, spec.status_field)
 
         if status != last_status:
@@ -123,8 +198,8 @@ def wait_for_completion(
                 on_status(status)
             last_status = status
 
-        normalised = (status or "").lower()
-        if normalised in failure:
+        state = classify(payload, spec)
+        if state == "failure":
             raise CLIError(
                 f"Operation finished with status {status!r}.",
                 ExitCode.VALIDATION,
@@ -132,7 +207,19 @@ def wait_for_completion(
                 hint="Inspect `details` for the per-file error, or check the execution logs.",
                 extra={spec.handle_field: handle},
             )
-        if normalised in success:
+        if state == "unknown":
+            raise CLIError(
+                "The service answered with neither a status nor progress.",
+                ExitCode.SERVER_ERROR,
+                details=payload,
+                retryable=True,
+                hint=(
+                    "The response carries no usable state, so polling on would "
+                    "only repeat it. Retry with the handle below."
+                ),
+                extra={spec.handle_field: handle},
+            )
+        if state == "success":
             break
 
         remaining = deadline - now()
@@ -155,14 +242,18 @@ def wait_for_completion(
     if retrieve is not None:
         payload = retrieve(handle)
     if save is not None:
-        persist(save, payload)
+        written = persist(save, payload)
+        if on_saved is not None:
+            on_saved(written)
     return payload
 
 
 __all__ = [
     "PollSpec",
+    "classify",
     "extract_handle",
     "extract_status",
     "persist",
+    "preflight",
     "wait_for_completion",
 ]

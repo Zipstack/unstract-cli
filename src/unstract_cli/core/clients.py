@@ -147,10 +147,11 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
     happens to contain an error.
     """
     status = int(result.get("status_code") or 0)
-    if status and not 200 <= status < 300:
+    reported = result.get("error")
+    if (status and not 200 <= status < 300) or reported:
         raise error_from_status(
-            status,
-            str(result.get("error") or f"Request failed with status {status}"),
+            status or 500,
+            str(reported or f"Request failed with status {status}"),
             details=result,
             endpoint=endpoint,
         )

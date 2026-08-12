@@ -24,6 +24,8 @@ from typing import Any
 
 import tomli_w
 
+from unstract_cli.core.errors import remember_secret
+
 LLMWHISPERER = "llmwhisperer"
 DOCSTUDIO = "docstudio"
 PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO)
@@ -42,6 +44,7 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (DOCSTUDIO, "base_url"): ("UNSTRACT_BASE_URL",),
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
 }
+
 
 def settings_for(product: str) -> tuple[str, ...]:
     """The settings a product actually has.
@@ -237,6 +240,12 @@ class ResolvedConfig:
 
     def get(self, product: str, key: str, default: Any = None) -> Any:
         """Resolve one setting: **flag > env > profile > built-in default**."""
+        value = self._resolve(product, key, default)
+        if key == "api_key":
+            remember_secret(value)
+        return value
+
+    def _resolve(self, product: str, key: str, default: Any = None) -> Any:
         if (value := self.overrides.get(f"{product}.{key}")) is not None:
             return value
         if (value := self.overrides.get(key)) is not None:
@@ -294,10 +303,12 @@ class ResolvedConfig:
             )
         if not entry.get("api_name"):
             raise ConfigError(f"Deployment alias {alias!r} has no `api_name`.")
+        api_key = _deref(entry.get("api_key")) or self.get(DOCSTUDIO, "api_key")
+        remember_secret(api_key)
         return {
             "api_name": entry["api_name"],
             "org_id": _deref(entry.get("org_id")) or self.get(DOCSTUDIO, "org_id"),
-            "api_key": _deref(entry.get("api_key")) or self.get(DOCSTUDIO, "api_key"),
+            "api_key": api_key,
         }
 
     def deployment_aliases(self) -> tuple[str, ...]:

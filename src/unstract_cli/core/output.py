@@ -19,7 +19,7 @@ import textwrap
 from enum import StrEnum
 from typing import Any
 
-from unstract_cli.core.errors import CLIError, ExitCode, scrub
+from unstract_cli.core.errors import CLIError, ExitCode, known_secrets, scrub
 
 
 class OutputFormat(StrEnum):
@@ -185,10 +185,15 @@ def emit(
     raw_field: str | None = None,
     secrets: list[str] | None = None,
 ) -> None:
-    """Write one envelope to stdout -- and nothing else to stdout."""
+    """Write one envelope to stdout -- and nothing else to stdout.
+
+    Every credential resolved during the run is scrubbed whether or not the
+    caller passed one: an emitter that has to remember is an emitter that
+    eventually forgets.
+    """
     text = render(env, fmt, columns=columns, raw_field=raw_field)
-    if secrets:
-        text = scrub(text, secrets)
+    if to_hide := [*(secrets or []), *known_secrets()]:
+        text = scrub(text, to_hide)
     print(text)
 
 
@@ -224,8 +229,8 @@ def emit_error(
     """
     emit(envelope(error=error.to_dict(), meta=meta), fmt, secrets=secrets)
     summary = error.message
-    if secrets:
-        summary = scrub(summary, secrets)
+    if to_hide := [*(secrets or []), *known_secrets()]:
+        summary = scrub(summary, to_hide)
     print(f"error: {summary}", file=sys.stderr)
     return error.exit_code
 

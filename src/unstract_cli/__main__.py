@@ -54,6 +54,15 @@ def main(argv: list[str] | None = None) -> int:
                 fmt,
             )
         )
+    except OSError as exc:
+        # Not a crash worth a traceback: a full disk or an unwritable path is
+        # the caller's to fix, and they still need a parseable envelope.
+        return int(
+            emit_error(
+                CLIError(str(exc), ExitCode.GENERIC, hint="Check the path and disk."),
+                fmt,
+            )
+        )
     except click.Abort:
         return int(ExitCode.GENERIC)
     except click.exceptions.Exit as exc:  # --help and --version exit through here

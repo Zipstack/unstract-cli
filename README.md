@@ -37,6 +37,7 @@ Failures exit non-zero with a stable code:
 | 7 | timed out (the job handle is in the error payload — resume, do not resubmit) |
 | 8 | server error |
 | 9 | result already consumed (one-shot read; use `--save` next time) |
+| 10 | the result was read but could not be saved — it is in `error.details` |
 
 ## Configuration
 

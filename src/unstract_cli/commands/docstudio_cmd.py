@@ -16,8 +16,9 @@ from unstract.api_deployments.client import APIDeploymentsClient
 from unstract_cli.app import Context, deployment_group, pass_context
 from unstract_cli.commands.common import finish, raw_field, wait_options
 from unstract_cli.core.clients import deployment, raise_for_result, translated
+from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.params import requested, spec_options
-from unstract_cli.core.poll import PollSpec, wait_for_completion
+from unstract_cli.core.poll import PollSpec, classify, preflight, wait_for_completion
 
 PRODUCT = "docstudio"
 
@@ -70,6 +71,8 @@ def run(
     """
     client = deployment(ctx.config, target)
     sent = requested(params)
+    if save:
+        preflight(save)
     with translated(endpoint=client.api_url):
         # Queued execution, so the request returns a handle instead of holding
         # the connection open for the length of the job.
@@ -143,6 +146,18 @@ def status(ctx: Context, target: str, execution_id: str, **params: Any) -> None:
         result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
             raise_for_result(result, endpoint=client.api_url)
+    # A finished-and-failed execution is reported inside an HTTP 200, so the
+    # status code alone would call this a success.
+    if classify(result, RUN_POLL) == "failure":
+        raise CLIError(
+            f"Execution {execution_id} finished with status "
+            f"{result.get('execution_status')!r}.",
+            ExitCode.VALIDATION,
+            details=result,
+            endpoint=client.api_url,
+            hint="Inspect `details` for the per-file error, or check the execution logs.",
+            extra={"execution_id": execution_id},
+        )
     finish(ctx, result, raw_field=RAW_FIELD)
 
 

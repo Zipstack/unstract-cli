@@ -18,7 +18,8 @@ from unstract.llmwhisperer.client_v2 import (
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
 from unstract_cli.commands import docstudio_cmd, whisper_cmd
-from unstract_cli.core.errors import ExitCode
+from unstract_cli.config import LLMWHISPERER
+from unstract_cli.core.errors import CLIError, ExitCode
 
 
 def run(capsys, *args):
@@ -68,7 +69,13 @@ def whisper_client(monkeypatch):
 
     def install(**replies):
         client = FakeWhisper(**replies)
-        monkeypatch.setattr(whisper_cmd, "llmwhisperer", lambda _config: client)
+        # Resolving the credential is what registers it for scrubbing, so the
+        # fake factory has to do it too or the seam hides a production path.
+        monkeypatch.setattr(
+            whisper_cmd,
+            "llmwhisperer",
+            lambda config: (config.get(LLMWHISPERER, "api_key"), client)[1],
+        )
         return client
 
     return install
@@ -539,9 +546,7 @@ def test_a_waited_run_reads_its_result_with_the_flags_it_was_given(
     assert "tags" not in polled
 
 
-def test_a_waited_run_reports_which_execution_it_was(
-    capsys, deployment_client, tmp_path
-):
+def test_a_waited_run_reports_which_execution_it_was(capsys, deployment_client, tmp_path):
     """The waited payload names the execution nowhere, so without this a caller
     has no id to correlate the result against the service."""
     doc = tmp_path / "doc.pdf"
@@ -691,3 +696,164 @@ def _deployment_fake():
     )
     client.api_url = "https://api.example.com/deployment/api/org/api-name/"
     return client
+
+
+# --------------------------------------------------------------------------- #
+# The one-shot data path
+# --------------------------------------------------------------------------- #
+
+
+def test_a_waited_extract_keeps_a_result_that_is_not_wrapped(
+    capsys, whisper_client, tmp_path
+):
+    """A bare `.get("extraction")` returned None here and printed
+    `ok: true, data: null` for a document that had been processed and billed."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1", "status_code": 202},
+        whisper_status={"status": "processed"},
+        # No `extraction` key -- the shape the sibling command already tolerated.
+        whisper_retrieve={"status_code": 200, "result_text": "THE REAL TEXT"},
+    )
+
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["result_text"] == "THE REAL TEXT"
+
+
+def test_a_waited_extract_calls_an_empty_result_a_failure(
+    capsys, whisper_client, tmp_path
+):
+    """The read is acknowledged either way, so an empty result is a consumed
+    document with nothing to show for it."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1", "status_code": 202},
+        whisper_status={"status": "processed"},
+        whisper_retrieve={"extraction": {}},
+    )
+
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+
+    assert code == int(ExitCode.SERVER_ERROR)
+    assert envelope(out)["ok"] is False
+
+
+def test_a_waited_extract_reads_the_result_when_it_is_not_wrapped(
+    capsys, whisper_client, tmp_path
+):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1", "status_code": 202},
+        whisper_status={"status": "processed"},
+        whisper_retrieve={"extraction": {"result_text": "hello"}},
+    )
+
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["result_text"] == "hello"
+
+
+def test_retrieve_writes_the_result_before_it_prints(
+    capsys, whisper_client, tmp_path, monkeypatch
+):
+    """Ordering, not outcome: asserting after the command returns passes for
+    either order, which is how this went unnoticed."""
+    order: list[str] = []
+    target = tmp_path / "out" / "result.json"
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    real_persist = whisper_cmd.persist
+    monkeypatch.setattr(
+        whisper_cmd,
+        "persist",
+        lambda path, payload: (order.append("persist"), real_persist(path, payload))[1],
+    )
+    real_finish = whisper_cmd.finish
+    monkeypatch.setattr(
+        whisper_cmd,
+        "finish",
+        lambda *a, **kw: (order.append("finish"), real_finish(*a, **kw))[1],
+    )
+
+    run(capsys, "whisper", "retrieve", "h1", "--save", str(target))
+
+    assert order == ["persist", "finish"]
+
+
+def test_retrieve_refuses_an_unwritable_target_before_reading(
+    capsys, whisper_client, tmp_path
+):
+    """Nothing has been consumed yet at this point, so this failure is cheap --
+    the same failure after the read is not recoverable at all."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    client = whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    code, out, _ = run(
+        capsys, "whisper", "retrieve", "h1", "--save", str(blocker / "r.json")
+    )
+
+    assert code == int(ExitCode.USAGE)
+    assert client.calls == []
+
+
+def test_a_save_failure_after_the_read_still_emits_the_result(
+    capsys, whisper_client, tmp_path, monkeypatch
+):
+    target = tmp_path / "result.json"
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "IRREPLACEABLE"}})
+
+    def explode(path, payload):
+        # What `persist` itself raises when the write fails: the payload rides
+        # out on the error because there is no other copy left.
+        raise CLIError(
+            "The result could not be written.",
+            ExitCode.SAVE_FAILED,
+            details=payload,
+        )
+
+    monkeypatch.setattr(whisper_cmd, "persist", explode)
+
+    code, out, _ = run(capsys, "whisper", "retrieve", "h1", "--save", str(target))
+
+    assert code == int(ExitCode.SAVE_FAILED)
+    assert envelope(out)["error"]["details"]["result_text"] == "IRREPLACEABLE"
+
+
+def test_a_failed_execution_inside_a_200_is_not_a_success(capsys, deployment_client):
+    deployment_client(
+        check_execution_status={
+            "status_code": 200,
+            "pending": False,
+            "execution_status": "ERROR",
+            "error": "tool crashed",
+        }
+    )
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "status", "api", "e1")
+
+    assert code != int(ExitCode.SUCCESS)
+    assert envelope(out)["ok"] is False
+
+
+def test_the_key_never_reaches_stdout_or_stderr(capsys, whisper_client, monkeypatch):
+    """Scrubbing is not a keyword argument a call site can forget."""
+    key = "lw-live-ABCDEF0123456789"
+    monkeypatch.setenv("LLMWHISPERER_API_KEY", key)
+    whisper_client(
+        whisper_retrieve=LLMWhispererClientException(
+            {"message": f"invalid key {key}", "status_code": 401}, 401
+        )
+    )
+
+    code, out, err = run(capsys, "whisper", "retrieve", "h1")
+
+    assert code == int(ExitCode.AUTH)
+    assert key not in out
+    assert key not in err

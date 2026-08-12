@@ -13,6 +13,7 @@ from unstract_cli.core.poll import (
     extract_handle,
     extract_status,
     persist,
+    preflight,
     wait_for_completion,
 )
 
@@ -174,7 +175,7 @@ def test_retrieve_step_runs_after_terminal_success():
 
 def test_save_persists_the_retrieved_result_before_returning(tmp_path):
     target = tmp_path / "out" / "result.json"
-    seen: list[bool] = []
+    on_disk: list[bool] = []
 
     def retrieve(handle):
         return {"text": "extracted"}
@@ -185,13 +186,42 @@ def test_save_persists_the_retrieved_result_before_returning(tmp_path):
         poll=responses({"status": "processed"}),
         retrieve=retrieve,
         save=target,
+        # Observed from inside the engine, before the caller is handed anything:
+        # asserting after the return passes for either ordering.
+        on_saved=lambda path: on_disk.append(path.exists()),
         sleep=Clock().sleep,
     )
-    # The file exists by the time the caller is handed the result: a one-shot
-    # read must survive a crash between retrieval and acknowledgement.
-    seen.append(target.exists())
-    assert seen == [True]
+    assert on_disk == [True]
     assert json.loads(target.read_text()) == out
+
+
+def test_an_unwritable_save_target_is_refused_before_anything_is_read(tmp_path):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+
+    with pytest.raises(CLIError) as caught:
+        preflight(blocker / "result.json")
+
+    assert caught.value.exit_code is ExitCode.USAGE
+    assert "nothing is lost" in (caught.value.hint or "")
+
+
+def test_a_failed_save_carries_the_result_it_could_not_write(tmp_path):
+    """By this point the service has served the result and will not again, so
+    the payload has to leave through the error."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+
+    with pytest.raises(CLIError) as caught:
+        persist(blocker / "result.json", {"result_text": "IRREPLACEABLE"})
+
+    assert caught.value.exit_code is ExitCode.SAVE_FAILED
+    assert caught.value.details == {"result_text": "IRREPLACEABLE"}
+
+
+def test_a_save_leaves_no_temporary_file_behind(tmp_path):
+    target = persist(tmp_path / "out.json", {"a": 1})
+    assert [p.name for p in tmp_path.iterdir()] == [target.name]
 
 
 def test_persist_writes_text_payloads_unwrapped(tmp_path):

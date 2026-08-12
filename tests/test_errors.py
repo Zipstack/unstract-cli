@@ -21,7 +21,10 @@ from unstract_cli.core.errors import (
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
-        (200, ExitCode.SUCCESS),
+        # Only a failure ever reaches this map: a 2xx or an unfollowed 3xx here
+        # means something answered outside the contract, which is not success.
+        (200, ExitCode.GENERIC),
+        (302, ExitCode.GENERIC),
         (400, ExitCode.VALIDATION),
         (401, ExitCode.AUTH),
         (403, ExitCode.AUTH),
@@ -42,8 +45,9 @@ def test_status_to_exit_code(status, expected):
 
 def test_exit_codes_are_stable_integers():
     # A caller branches on these numbers, so they are an API, not an enum detail.
-    assert [int(c) for c in ExitCode] == list(range(10))
+    assert [int(c) for c in ExitCode] == list(range(11))
     assert int(ExitCode.ALREADY_CONSUMED) == 9
+    assert int(ExitCode.SAVE_FAILED) == 10
 
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503])

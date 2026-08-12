@@ -17,7 +17,7 @@ from unstract_cli.commands.common import finish, raw_field, wait_options
 from unstract_cli.core.clients import llmwhisperer, translated
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.params import requested, spec_options
-from unstract_cli.core.poll import PollSpec, persist, wait_for_completion
+from unstract_cli.core.poll import PollSpec, persist, preflight, wait_for_completion
 
 PRODUCT = "llmwhisperer"
 
@@ -69,6 +69,8 @@ def extract(
     """
     client = llmwhisperer(ctx.config)
     sent = requested(params)
+    if save:
+        preflight(save)
 
     if sent.get("use_webhook") and wait:
         raise CLIError(
@@ -98,7 +100,7 @@ def extract(
             initial=accepted,
             spec=EXTRACT_POLL,
             poll=client.whisper_status,
-            retrieve=lambda handle: client.whisper_retrieve(handle).get("extraction"),
+            retrieve=lambda handle: _extraction(client.whisper_retrieve(handle)),
             save=save,
             interval=interval,
             timeout=wait_timeout,
@@ -116,6 +118,27 @@ def extract(
         if accepted.get("whisper_hash")
         else None,
     )
+
+
+def _extraction(payload: Any) -> Any:
+    """The extracted result out of a retrieve response.
+
+    A retrieve is the acknowledging read, so an empty result here is a document
+    that was processed, billed and consumed for nothing -- reporting it as a
+    success would hide that.
+    """
+    result = payload.get("extraction", payload) if isinstance(payload, dict) else payload
+    if not result:
+        raise CLIError(
+            "The service returned no extraction for a completed job.",
+            ExitCode.SERVER_ERROR,
+            details=payload,
+            hint=(
+                "The read has been acknowledged, so it cannot be repeated. "
+                "`details` carries the response exactly as it arrived."
+            ),
+        )
+    return result
 
 
 @whisper_group.command("status")
@@ -146,9 +169,11 @@ def retrieve(ctx: Context, whisper_hash: str, save: str | None) -> None:
     recovered by asking again.
     """
     client = llmwhisperer(ctx.config)
+    if save:
+        preflight(save)
     with translated(endpoint="whisper-retrieve"):
         payload = client.whisper_retrieve(whisper_hash)
-    result = payload.get("extraction", payload)
+    result = _extraction(payload)
     if save:
         persist(save, result)
     finish(ctx, result, raw_field=RAW_FIELD)

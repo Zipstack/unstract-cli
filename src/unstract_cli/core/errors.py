@@ -24,6 +24,7 @@ class ExitCode(IntEnum):
     TIMEOUT = 7
     SERVER_ERROR = 8
     ALREADY_CONSUMED = 9
+    SAVE_FAILED = 10
 
 
 #: HTTP status -> exit code. 422 maps to VALIDATION, which is right for a real
@@ -55,6 +56,7 @@ _ERROR_CODES: dict[ExitCode, str] = {
     ExitCode.TIMEOUT: "timeout",
     ExitCode.SERVER_ERROR: "server_error",
     ExitCode.ALREADY_CONSUMED: "already_consumed",
+    ExitCode.SAVE_FAILED: "save_failed",
 }
 
 
@@ -64,9 +66,9 @@ def exit_code_for_status(status: int) -> ExitCode:
         return code
     if 500 <= status < 600:
         return ExitCode.SERVER_ERROR
-    if 400 <= status < 500:
-        return ExitCode.GENERIC
-    return ExitCode.SUCCESS
+    # Anything else -- a 3xx that was not followed, a status no spec declares --
+    # is still a failure. Returning SUCCESS here printed `ok: false` and exited 0.
+    return ExitCode.GENERIC
 
 
 def is_retryable(status: int) -> bool:
@@ -87,6 +89,26 @@ _SECRET_HEADERS = {"unstract-key", "authorization", "apikey"}
 _SECRET_HEADER_PREFIXES = ("x-",)
 _SECRET_KEY_HINTS = ("key", "token", "secret", "password", "credential", "auth")
 REDACTED = "***REDACTED***"
+
+#: Credentials resolved during this run. Scrubbing used to be a keyword
+#: argument every emitter had to remember to pass, and the error path never
+#: did; registering the value where it is resolved makes forgetting impossible.
+_KNOWN_SECRETS: set[str] = set()
+
+
+def remember_secret(value: Any) -> None:
+    """Record a resolved credential so no stream can print it later."""
+    if isinstance(value, str) and len(value) >= 8:
+        _KNOWN_SECRETS.add(value)
+
+
+def known_secrets() -> list[str]:
+    """Every credential resolved so far, longest first.
+
+    Longest first so a key that contains another as a prefix is replaced whole
+    rather than leaving its tail behind.
+    """
+    return sorted(_KNOWN_SECRETS, key=len, reverse=True)
 
 
 def redact_headers(headers: dict[str, Any]) -> dict[str, Any]:
@@ -153,6 +175,8 @@ class CLIError(Exception):
 
     def __post_init__(self) -> None:
         super().__init__(self.message)
+        if self.exit_code is ExitCode.SUCCESS:
+            raise ValueError("a CLIError cannot carry the success exit code")
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -164,7 +188,9 @@ class CLIError(Exception):
         if self.http_status is not None:
             payload["http_status"] = self.http_status
         if self.details is not None:
-            payload["details"] = self.details
+            # Structural, not opt-in: the details come from a server body that
+            # can echo the request, headers and key included.
+            payload["details"] = redact_value(self.details)
         if self.endpoint:
             payload["endpoint"] = self.endpoint
         if self.hint:
@@ -243,6 +269,8 @@ __all__ = [
     "REDACTED",
     "CLIError",
     "ExitCode",
+    "known_secrets",
+    "remember_secret",
     "error_from_status",
     "exit_code_for_status",
     "hint_for",

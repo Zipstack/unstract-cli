@@ -145,11 +145,16 @@ def test_help_comes_from_the_clients_docstring():
     assert "language" in derived["lang"].description.lower()
 
 
-def test_the_docstrings_own_default_sentence_is_dropped():
-    """The default is rendered from the signature; printing the docstring's copy
-    too would show it twice and disagree the moment the two drift."""
+def test_the_docstrings_own_restated_sentences_are_dropped():
+    """The default and the allowed values are rendered from the signature and the
+    spec; printing the docstring's copies too shows each twice and disagrees the
+    moment either drifts."""
     described = docstring_params(LLMWhispererClientV2.whisper)
     assert not described["lang"].endswith('Defaults to "eng".')
+    # A default that itself contains a period, which is where a sentence-shaped
+    # match stops early and leaves half of it behind.
+    assert not described["checkbox_confidence_threshold"].endswith("Defaults to 0.3.")
+    assert described["mode"] == "The processing mode."
     assert described["tag"] == "The tag for the document."
 
 

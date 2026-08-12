@@ -215,9 +215,14 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
 #: docstring, which is how both clients document their parameters.
 _ARG_LINE = re.compile(r"^\s*(\w+)\s*(\([^)]*\))?\s*:\s*(.*)$")
 
-#: Sentences a description restates from elsewhere. The value list is matched on
-#: its opening quote so prose that merely says "can be" is left alone.
-_RESTATED = re.compile(r'(?:\s*(?:Defaults to [^.]*\.|Can be "[^.]*\.))+\s*$')
+#: Sentences a description restates from elsewhere, stripped in this order:
+#: each is anchored at the end, and the default sentence follows the value list
+#: where a description carries both. The list is matched on its opening quote so
+#: prose that merely says "can be" is left alone.
+_RESTATED = (
+    re.compile(r"\s*Defaults to .*\.\s*$"),
+    re.compile(r'\s*Can be ".*\.\s*$'),
+)
 
 
 def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
@@ -250,11 +255,14 @@ def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
     # The default and the allowed values are both rendered from the spec and the
     # signature, so the docstring's own sentences for them would print a second
     # copy that disagrees the moment either drifts.
-    return {
-        name: _RESTATED.sub("", " ".join(text.split())).strip()
-        for name, text in out.items()
-        if text
-    }
+    return {name: _strip_restated(text) for name, text in out.items() if text}
+
+
+def _strip_restated(text: str) -> str:
+    text = " ".join(text.split())
+    for pattern in _RESTATED:
+        text = pattern.sub("", text)
+    return text.strip()
 
 
 def _resolve_ref(product: str, ref: str) -> dict[str, Any]:

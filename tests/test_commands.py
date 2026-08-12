@@ -92,7 +92,13 @@ def deployment_client(monkeypatch):
     def install(**replies):
         client = FakeWhisper(**replies)
         client.api_url = "https://api.example.com/deployment/api/org/api-name/"
-        monkeypatch.setattr(docstudio_cmd, "deployment", lambda _config, _t: client)
+        client.built_with = {}
+
+        def build(_config, _target, transport_timeout=None):
+            client.built_with["transport_timeout"] = transport_timeout
+            return client
+
+        monkeypatch.setattr(docstudio_cmd, "deployment", build)
         return client
 
     return install
@@ -418,6 +424,28 @@ def test_run_queues_the_execution_and_polls_it(capsys, deployment_client, tmp_pa
     assert envelope(out)["data"]["execution_status"] == "COMPLETED"
 
 
+@pytest.mark.parametrize(
+    ("flag", "expected"), [([], None), (["--transport-timeout", "12.5"], 12.5)]
+)
+def test_the_transport_timeout_flag_reaches_the_client(
+    capsys, deployment_client, tmp_path, flag, expected
+):
+    """Unset means a stalled connection is never given up on, which is what
+    the client has always done."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    client = deployment_client(
+        structure_file={"status_code": 200, "execution_status": "COMPLETED"}
+    )
+
+    code, _out, _err = run(
+        capsys, "-q", "docstudio", *flag, "deployment", "run", "my-api", str(doc)
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert client.built_with["transport_timeout"] == expected
+
+
 def test_run_passes_only_the_flags_that_were_given(capsys, deployment_client, tmp_path):
     doc = tmp_path / "doc.pdf"
     doc.write_bytes(b"%PDF-")
@@ -686,7 +714,7 @@ def test_a_deployment_org_can_come_from_a_flag(capsys, monkeypatch):
     monkeypatch.setattr(
         docstudio_cmd,
         "deployment",
-        lambda config, target: (
+        lambda config, target, transport_timeout=None: (
             seen.update(org=config.get("docstudio", "org_id")) or _deployment_fake()
         ),
     )

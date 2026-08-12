@@ -40,6 +40,8 @@ class Context:
     quiet: bool = False
     verbosity: int = 0
     profile: str | None = None
+    #: Socket timeout for the deployment client, which has none of its own.
+    transport_timeout: float | None = None
     #: Command-line overrides, keyed `product.setting` -- the top tier of
     #: flag > env > profile > default.
     overrides: dict[str, Any] = field(default_factory=dict)
@@ -206,9 +208,19 @@ def whisper_group(ctx: Context, **overrides: str | None) -> None:
 
 @cli.group("docstudio")
 @_connection_options(org_id=True)
+@click.option(
+    "--transport-timeout",
+    type=float,
+    default=None,
+    help="Seconds before a stalled connection is given up on. Unset means it "
+    "is not, which is what the client has always done.",
+)
 @pass_context
-def docstudio_group(ctx: Context, **overrides: str | None) -> None:
+def docstudio_group(
+    ctx: Context, transport_timeout: float | None, **overrides: str | None
+) -> None:
     """Run Document Studio API deployments."""
+    ctx.transport_timeout = transport_timeout
     ctx.override(DOCSTUDIO, overrides)
 
 

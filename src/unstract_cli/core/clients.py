@@ -52,7 +52,9 @@ def deployment_url(base_url: str, org_id: str, api_name: str) -> str:
     return base_url.rstrip("/") + path
 
 
-def deployment(config: ResolvedConfig, target: str) -> APIDeploymentsClient:
+def deployment(
+    config: ResolvedConfig, target: str, transport_timeout: float | None = None
+) -> APIDeploymentsClient:
     """Build a deployment client for an alias, or for a bare API name.
 
     An alias carries its own organisation and key; a bare name falls back to the
@@ -87,6 +89,7 @@ def deployment(config: ResolvedConfig, target: str) -> APIDeploymentsClient:
         api_url=deployment_url(config.require(DOCSTUDIO, "base_url"), org_id, api_name),
         api_key=api_key,
         logging_level="ERROR",
+        transport_timeout=transport_timeout,
     )
 
 

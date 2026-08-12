@@ -69,7 +69,7 @@ def run(
     TARGET is a deployment alias or an API name. With --wait (the default) this
     polls until the execution finishes and returns its result.
     """
-    client = deployment(ctx.config, target)
+    client = deployment(ctx.config, target, ctx.transport_timeout)
     sent = requested(params)
     if save:
         preflight(save)
@@ -140,7 +140,7 @@ def _status_poller(
 @pass_context
 def status(ctx: Context, target: str, execution_id: str, **params: Any) -> None:
     """Report the state of a running or finished execution."""
-    client = deployment(ctx.config, target)
+    client = deployment(ctx.config, target, ctx.transport_timeout)
     endpoint = f"{client.api_url}?execution_id={execution_id}"
     with translated(endpoint=client.api_url):
         result = client.check_execution_status(endpoint, **requested(params))

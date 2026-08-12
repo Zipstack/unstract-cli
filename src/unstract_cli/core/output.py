@@ -1,31 +1,82 @@
-"""Output rendering.
+"""Output rendering, and choosing which rendering to use.
 
 The contract a caller depends on:
 
-* **stdout carries one JSON envelope and nothing else** -- ``{ok, data, error,
-  meta}`` -- on success and on failure alike, so parsing never needs TTY
-  detection and a failed run still yields a valid object rather than an empty
-  stream.
+* ``-o json`` writes **one envelope to stdout and nothing else** -- ``{ok, data,
+  error, meta}`` -- on success and on failure alike, so a failed run still
+  yields a valid object rather than an empty stream.
+* What ``-o json`` produces depends on nothing but the command and its
+  arguments: not on a terminal, not on configuration, not on who is calling.
 * Human-facing notes, warnings and progress all go to stderr.
-* ``--output table|raw`` are opt-in human/pipe renderings of ``data``.
+* Without ``-o`` the output is ``table``, which is for people to read and is
+  free to change. Anything parsing this CLI passes ``-o json`` explicitly.
+
+The one thing an unflagged run reads from its environment is which *default* to
+use: a coding agent gets ``json``, because an agent that has to be told twice is
+an agent that parses a table. Detection is never allowed to reach past the
+default -- see ``resolve_format``.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import textwrap
+from collections.abc import Mapping
 from enum import StrEnum
+from fnmatch import fnmatch
 from typing import Any
 
 from unstract_cli.core.errors import CLIError, ExitCode, known_secrets, scrub
+
+#: Major version of the stdout envelope, published in every ``meta``. A consumer
+#: ignores fields it does not recognise and refuses a version it was not written
+#: against.
+CONTRACT_VERSION = 1
+
+#: Environment markers the coding agents set for the tools they drive. Patterns,
+#: so a family of variables can be named once.
+AGENT_ENV = ("CLAUDECODE", "CURSOR_AGENT", "CODEX_*", "AI_AGENT")
 
 
 class OutputFormat(StrEnum):
     JSON = "json"
     TABLE = "table"
     RAW = "raw"
+
+
+class AgentMode(StrEnum):
+    AUTO = "auto"
+    YES = "yes"
+    NO = "no"
+
+
+def agent_detected(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the environment looks like a coding agent's."""
+    names = os.environ if env is None else env
+    return any(
+        names[name] and fnmatch(name, pattern) for name in names for pattern in AGENT_ENV
+    )
+
+
+def resolve_format(
+    explicit: str | None,
+    agent: str = AgentMode.AUTO,
+    env: Mapping[str, str] | None = None,
+) -> OutputFormat:
+    """The format to render in.
+
+    An explicit ``-o`` wins outright, so detection can only ever pick the
+    default: two runs of ``-o json`` in different environments render the same
+    bytes, which is the property a script is relying on.
+    """
+    if explicit:
+        return OutputFormat(explicit)
+    if agent == AgentMode.YES or (agent == AgentMode.AUTO and agent_detected(env)):
+        return OutputFormat.JSON
+    return OutputFormat.TABLE
 
 
 def envelope(
@@ -35,7 +86,12 @@ def envelope(
     meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the stdout envelope. ``ok`` is derived, never passed in."""
-    return {"ok": error is None, "data": data, "error": error, "meta": meta or {}}
+    return {
+        "ok": error is None,
+        "data": data,
+        "error": error,
+        "meta": {**(meta or {}), "contract_version": CONTRACT_VERSION},
+    }
 
 
 def _flatten(value: Any) -> str:
@@ -249,7 +305,11 @@ def diagnostic(
 
 
 __all__ = [
+    "AGENT_ENV",
+    "CONTRACT_VERSION",
+    "AgentMode",
     "OutputFormat",
+    "agent_detected",
     "diagnostic",
     "emit",
     "emit_error",
@@ -257,4 +317,5 @@ __all__ = [
     "envelope",
     "render",
     "render_table",
+    "resolve_format",
 ]

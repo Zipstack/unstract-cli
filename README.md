@@ -10,18 +10,30 @@ unstract config init
 unstract config doctor
 ```
 
-## Output contract
+## Output
 
-stdout always carries exactly one JSON envelope, on success and on failure
-alike:
+`unstract` prints a table by default — in a terminal and in a pipe alike, so
+what you see while trying something is what a script sees running it.
+
+**Parsing anything? Pass `-o json`.** stdout then carries exactly one envelope,
+on success and on failure alike:
 
 ```json
-{"ok": true, "data": {...}, "error": null, "meta": {}}
+{"ok": true, "data": {...}, "error": null, "meta": {"contract_version": 1}}
 ```
 
-Parsing never needs to check whether a terminal is attached. Diagnostics,
-warnings and progress go to stderr. `--output table` and `--output raw` are
-opt-in renderings of `data` for humans and pipes.
+`-o json` output depends on nothing but the command and its arguments — not the
+terminal, not the config, not the environment. `-o raw` prints one field
+unwrapped, for piping a document's text somewhere else. Diagnostics, warnings
+and progress always go to stderr.
+
+Consuming the JSON: ignore fields you do not recognise, and refuse a
+`meta.contract_version` above the one you were written against. `unstract
+--discover full` publishes the whole contract alongside every command and flag.
+
+If a coding agent is driving (detected from the environment it sets), the
+*default* becomes json. `--agent yes|no` forces that either way, and an explicit
+`-o` always wins over both.
 
 Failures exit non-zero with a stable code:
 

@@ -64,7 +64,7 @@ That is the intent, so the check is that the change was the intended one:
 4. Diff the surface before and after:
 
    ```bash
-   python -m unstract_cli --discover full > after.json
+   python -m unstract_cli -o json --discover full > after.json
    ```
 
    Every added or removed flag should be one you can name a reason for.
@@ -110,14 +110,16 @@ Run against a document you can re-send; several of these submit real work.
 | 6 | `whisper usage` | quota returned |
 | 7 | `docstudio deployment run <alias-or-api-name> <pdf>` | polls to completion, returns structured JSON |
 | 8 | `docstudio deployment run <target> <pdf> --no-wait`, then `docstudio deployment status <target> <execution_id>` from the run envelope | the handle survives the round trip |
-| 9 | any command with `--output raw` | one field, not the envelope |
-| 10 | any command with a wrong key | exit 3, JSON envelope on stdout, no traceback |
-| 11 | any command with a path that does not exist | exit 2, JSON envelope on stdout |
+| 9 | any command with `-o raw` | one field, not the envelope |
+| 10 | any command with `-o json` and a wrong key | exit 3, JSON envelope on stdout, no traceback |
+| 11 | any command with `-o json` and a path that does not exist | exit 2, JSON envelope on stdout |
+| 12 | any command with no `-o` | a table, in a terminal and through a pipe alike |
 
 Two properties matter more than any single row, because they are what a caller
 depends on and what breaks quietly:
 
-- **stdout is one JSON envelope in every case above, including the failures.**
+- **With `-o json`, stdout is one envelope in every case above, including the
+  failures.**
   A traceback on stderr with empty stdout is a bug even when the exit code is
   right.
 - **A flag passed explicitly reaches the wire, including when its value is

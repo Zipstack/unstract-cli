@@ -7,7 +7,8 @@ question as JSON, at whichever depth the question needs:
 * ``groups`` -- what products are here at all
 * ``summary`` -- what commands each group has
 * ``full`` -- every flag with its type, default and allowed values, plus the
-  exit codes, which is enough to construct a call without a second round trip
+  exit codes and the output contract, which is enough to construct a call and
+  read its answer without a second round trip
 
 Every tier is read back from Click itself. Describing commands from anywhere
 else lets the description drift from what the parser accepts.
@@ -20,8 +21,33 @@ from typing import Any
 import click
 
 from unstract_cli.core.errors import _ERROR_CODES, ExitCode
+from unstract_cli.core.output import CONTRACT_VERSION
 
 TIERS = ("groups", "summary", "full")
+
+
+def contract() -> dict[str, Any]:
+    """How to consume this CLI's output, published rather than assumed.
+
+    Both halves of the compatibility bargain are written down here: what we
+    promise not to break, and what a consumer has to do for that promise to be
+    worth anything.
+    """
+    return {
+        "version": CONTRACT_VERSION,
+        "envelope": ["ok", "data", "error", "meta"],
+        "rules": [
+            "Pass `-o json`. The default format is for people and is free to "
+            "change; json is the parseable one and never varies with the "
+            "terminal, the config or the environment.",
+            "Ignore fields you do not recognise. New ones are added within a "
+            "major version.",
+            "Refuse a `meta.contract_version` whose value is greater than the "
+            "one you were written against: the shape has changed under you.",
+            "Branch on the exit code, not on the message text.",
+            "Read stdout for the envelope only. Diagnostics are on stderr.",
+        ],
+    }
 
 
 def exit_codes() -> list[dict[str, Any]]:
@@ -98,7 +124,8 @@ def discover(root: click.Group, tier: str) -> dict[str, Any]:
     }
     if tier == "full":
         payload["exit_codes"] = exit_codes()
+        payload["contract"] = contract()
     return payload
 
 
-__all__ = ["TIERS", "discover", "exit_codes"]
+__all__ = ["TIERS", "contract", "discover", "exit_codes"]

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+from fnmatch import fnmatch
+
 import pytest
 
 from unstract_cli import config as config_mod
+from unstract_cli.core.output import AGENT_ENV
 
 #: Every variable the loader consults. Cleared per test so a developer's real
 #: shell environment cannot change a result.
@@ -15,6 +19,14 @@ _ENV_VARS = sorted(
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch, tmp_path):
     for var in _ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    # These decide the default output format, and this suite is as likely to be
+    # run by an agent as by a person.
+    for var in [
+        name
+        for name in os.environ
+        if any(fnmatch(name, pattern) for pattern in AGENT_ENV)
+    ]:
         monkeypatch.delenv(var, raising=False)
     config_mod.set_config_path(None)
     # Both discovery fallbacks are redirected into the tmp dir: an upward search

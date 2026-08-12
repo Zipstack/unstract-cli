@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-import pytest
-
+from unstract_cli import app
 from unstract_cli.__main__ import main
 from unstract_cli.app import cli, command_tree
 from unstract_cli.core.errors import ExitCode
 
 
 def run(capsys, *args):
-    """Invoke the CLI as the console script does, returning (code, stdout json)."""
-    code = main(list(args))
+    """Invoke the CLI as the console script does, returning (code, stdout json).
+
+    `-o json` is passed the way any consumer has to pass it: the default format
+    is human-facing, and a test that relied on it would be pinning the wrong
+    thing.
+    """
+    code = main(["-o", "json", *args])
     captured = capsys.readouterr()
     payload = json.loads(captured.out) if captured.out.strip() else None
     return code, payload, captured.err
@@ -93,16 +98,68 @@ def test_doctor_reports_sources_without_leaking_values(capsys, monkeypatch):
     assert "super-secret-value" not in json.dumps(payload)
 
 
-def test_table_output_is_opt_in_and_json_is_the_default(capsys, monkeypatch):
-    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
-    # JSON even on a TTY: a caller never has to detect the terminal to parse.
-    assert run(capsys, "config", "doctor")[1]["ok"] is True
+def doctor(capsys, *args) -> str:
+    """`config doctor` -- a command with no network -- and its raw stdout."""
+    main([*args, "config", "doctor"])
+    return capsys.readouterr().out
 
-    main(["--output", "table", "config", "doctor"])
-    out = capsys.readouterr().out
-    with pytest.raises(json.JSONDecodeError):
+
+def is_table(out: str) -> bool:
+    try:
         json.loads(out)
-    assert "active_profile" in out
+    except json.JSONDecodeError:
+        return "active_profile" in out
+    return False
+
+
+class TestOutputFormatEndToEnd:
+    """One rule: `-o` decides, and where it is absent the environment picks the
+    default only. Everything here is a way of getting that wrong."""
+
+    def test_the_default_is_a_table_in_a_terminal_and_in_a_pipe(
+        self, capsys, monkeypatch
+    ):
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+        assert is_table(doctor(capsys))
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+        assert is_table(doctor(capsys))
+
+    def test_no_isatty_call_decides_a_format(self):
+        """A format that depends on a terminal makes a script's output depend on
+        how it was launched."""
+        source = Path(app.__file__).parent
+        offenders = [
+            path.name
+            for path in source.rglob("*.py")
+            if "isatty" in path.read_text(encoding="utf-8")
+        ]
+        assert offenders == []
+
+    def test_an_agent_environment_makes_json_the_default(self, capsys, monkeypatch):
+        monkeypatch.setenv("CLAUDECODE", "1")
+        assert json.loads(doctor(capsys))["ok"] is True
+
+    def test_an_explicit_format_wins_over_a_detected_agent(self, capsys, monkeypatch):
+        monkeypatch.setenv("CLAUDECODE", "1")
+        assert is_table(doctor(capsys, "-o", "table"))
+
+    def test_agent_no_forces_the_human_default(self, capsys, monkeypatch):
+        monkeypatch.setenv("CLAUDECODE", "1")
+        assert is_table(doctor(capsys, "--agent", "no"))
+
+    def test_json_is_byte_identical_however_it_was_asked_for(self, capsys, monkeypatch):
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+        on_a_tty = doctor(capsys, "-o", "json")
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+        monkeypatch.setenv("CLAUDECODE", "1")
+        piped_under_an_agent = doctor(capsys, "-o", "json")
+
+        assert on_a_tty == piped_under_an_agent
+
+    def test_every_envelope_carries_the_contract_version(self, capsys):
+        assert run(capsys, "config", "doctor")[1]["meta"]["contract_version"] == 1
+        assert run(capsys, "nope")[1]["meta"]["contract_version"] == 1
 
 
 def test_click_parameter_info_dict_keeps_the_keys_discovery_reads():

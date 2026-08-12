@@ -23,14 +23,20 @@ from unstract_cli.config import (
 )
 from unstract_cli.core.discover import TIERS, discover
 from unstract_cli.core.errors import CLIError, ExitCode
-from unstract_cli.core.output import OutputFormat, diagnostic, emit_result
+from unstract_cli.core.output import (
+    AgentMode,
+    OutputFormat,
+    diagnostic,
+    emit_result,
+    resolve_format,
+)
 
 
 @dataclass
 class Context:
     """Everything a command needs from the global options."""
 
-    output: OutputFormat = OutputFormat.JSON
+    output: OutputFormat = OutputFormat.TABLE
     quiet: bool = False
     verbosity: int = 0
     profile: str | None = None
@@ -105,9 +111,16 @@ pass_context = click.make_pass_decorator(Context, ensure=True)
 @click.option(
     "--output",
     "-o",
+    default=None,
     type=click.Choice([f.value for f in OutputFormat]),
-    default=OutputFormat.JSON.value,
-    help="Output format. JSON is the default everywhere, including a terminal.",
+    help="Output format. Defaults to table; pass json to parse the output.",
+)
+@click.option(
+    "--agent",
+    type=click.Choice([m.value for m in AgentMode]),
+    default=AgentMode.AUTO.value,
+    help="Whether a coding agent is driving this: sets the default format to "
+    "json. Only the default -- an explicit --output always wins.",
 )
 @click.option(
     "--quiet",
@@ -130,20 +143,21 @@ def cli(
     ctx: click.Context,
     config_file: str | None,
     profile: str | None,
-    output: str,
+    output: str | None,
+    agent: str,
     quiet: bool,
     verbose: int,
     discover_tier: str | None,
 ) -> None:
     """Unstract CLI: extract documents and run API deployments.
 
-    stdout always carries one JSON envelope -- {ok, data, error, meta} -- so
-    output parses without checking whether a terminal is attached. Diagnostics go
-    to stderr.
+    Output is a table by default. With `-o json` stdout carries one envelope --
+    {ok, data, error, meta} -- on success and on failure alike, and its content
+    depends on nothing but the command you ran. Diagnostics go to stderr.
     """
     set_config_path(config_file)
     ctx.obj = Context(
-        output=OutputFormat(output),
+        output=resolve_format(output, agent),
         quiet=quiet,
         verbosity=verbose,
         profile=profile,

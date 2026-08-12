@@ -6,12 +6,15 @@ import json
 
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import (
+    CONTRACT_VERSION,
+    AgentMode,
     OutputFormat,
     emit_error,
     emit_result,
     envelope,
     render,
     render_table,
+    resolve_format,
 )
 
 ENVELOPE_KEYS = {"ok", "data", "error", "meta"}
@@ -20,7 +23,12 @@ ENVELOPE_KEYS = {"ok", "data", "error", "meta"}
 def test_success_envelope_shape():
     env = envelope(data={"a": 1}, meta={"took": 2})
     assert set(env) == ENVELOPE_KEYS
-    assert env == {"ok": True, "data": {"a": 1}, "error": None, "meta": {"took": 2}}
+    assert env == {
+        "ok": True,
+        "data": {"a": 1},
+        "error": None,
+        "meta": {"took": 2, "contract_version": CONTRACT_VERSION},
+    }
 
 
 def test_error_envelope_shape():
@@ -40,7 +48,13 @@ def test_error_envelope_shape():
 
 def test_meta_defaults_to_an_object_not_null():
     # A caller reading meta.<x> should not have to null-check the container.
-    assert envelope(data=1)["meta"] == {}
+    assert envelope(data=1)["meta"] == {"contract_version": CONTRACT_VERSION}
+
+
+def test_every_envelope_is_versioned():
+    """A consumer cannot refuse a shape it was not written for without this."""
+    for env in (envelope(data=1, meta={"job": "x"}), envelope(error={"code": "x"})):
+        assert env["meta"]["contract_version"] == CONTRACT_VERSION
 
 
 def test_stdout_carries_the_envelope_on_success(capsys):
@@ -50,7 +64,7 @@ def test_stdout_carries_the_envelope_on_success(capsys):
         "ok": True,
         "data": {"text": "hello"},
         "error": None,
-        "meta": {},
+        "meta": {"contract_version": CONTRACT_VERSION},
     }
     assert out.err == ""
 
@@ -93,3 +107,34 @@ def test_table_wraps_long_cells_rather_than_truncating():
 
 def test_table_of_an_empty_list_says_so():
     assert render_table([]) == "(no results)"
+
+
+class TestFormatSelection:
+    """Which rendering a run gets, and what is allowed to influence it."""
+
+    AGENT = {"CLAUDECODE": "1"}
+
+    def test_the_default_is_a_table(self):
+        assert resolve_format(None, env={}) is OutputFormat.TABLE
+
+    def test_an_agent_environment_moves_the_default_to_json(self):
+        for var in ("CLAUDECODE", "CURSOR_AGENT", "CODEX_SANDBOX", "AI_AGENT"):
+            assert resolve_format(None, env={var: "1"}) is OutputFormat.JSON
+
+    def test_an_unset_marker_is_not_an_agent(self):
+        """An exported-but-empty variable is how a shell spells 'no'."""
+        assert resolve_format(None, env={"CLAUDECODE": ""}) is OutputFormat.TABLE
+
+    def test_an_explicit_format_beats_detection_in_both_directions(self):
+        assert resolve_format("table", env=self.AGENT) is OutputFormat.TABLE
+        assert resolve_format("json", env={}) is OutputFormat.JSON
+
+    def test_the_agent_flag_overrides_what_the_environment_says(self):
+        assert resolve_format(None, AgentMode.NO, self.AGENT) is OutputFormat.TABLE
+        assert resolve_format(None, AgentMode.YES, {}) is OutputFormat.JSON
+
+    def test_json_renders_the_same_bytes_wherever_it_is_asked_for(self):
+        env = envelope(data={"text": "hello"})
+        one = render(env, resolve_format("json", AgentMode.NO, {}))
+        two = render(env, resolve_format("json", AgentMode.YES, self.AGENT))
+        assert one == two

@@ -14,10 +14,11 @@ import pytest
 from unstract_cli.__main__ import main
 from unstract_cli.commands import config_cmd
 from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.output import CONTRACT_VERSION
 
 
 def run(capsys, *args):
-    code = main(list(args))
+    code = main(["-o", "json", *args])
     out = capsys.readouterr().out
     return code, json.loads(out)["data"] if out.strip() else None
 
@@ -63,6 +64,18 @@ def test_full_carries_the_exit_code_table(capsys):
     codes = {entry["name"]: entry["code"] for entry in data["exit_codes"]}
     assert codes["already_consumed"] == int(ExitCode.ALREADY_CONSUMED)
     assert codes["success"] == 0
+
+
+def test_full_publishes_how_to_consume_the_output(capsys):
+    """The compatibility bargain is only binding if the consumer can read it."""
+    _, data = run(capsys, "--discover", "full")
+    contract = data["contract"]
+    assert contract["version"] == CONTRACT_VERSION
+    assert contract["envelope"] == ["ok", "data", "error", "meta"]
+    rules = " ".join(contract["rules"]).lower()
+    assert "-o json" in rules
+    assert "ignore fields you do not recognise" in rules
+    assert "contract_version" in rules
 
 
 def test_discovery_needs_no_configuration(capsys, tmp_path, monkeypatch):

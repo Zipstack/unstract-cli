@@ -29,7 +29,7 @@ from unstract_cli.config import (
 )
 from unstract_cli.core.clients import llmwhisperer, translated
 from unstract_cli.core.errors import CLIError, ExitCode
-from unstract_cli.core.output import OutputFormat, emit_result
+from unstract_cli.core.output import OutputFormat, emit_result, resolve_format
 
 #: Keys whose value is never echoed back, even on explicit request: this output
 #: is as likely to land in a log or a transcript as on a screen.
@@ -42,7 +42,7 @@ def _is_secret(key: str) -> bool:
 
 def _fmt(obj: Any) -> OutputFormat:
     """Output format from the root context, defaulting when invoked standalone."""
-    return getattr(obj, "output", None) or OutputFormat.JSON
+    return getattr(obj, "output", None) or resolve_format(None)
 
 
 def _check_product(product: str) -> str:

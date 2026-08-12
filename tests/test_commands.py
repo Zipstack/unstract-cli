@@ -23,8 +23,12 @@ from unstract_cli.core.errors import CLIError, ExitCode
 
 
 def run(capsys, *args):
-    """Invoke the CLI as the console script does, returning (code, stdout, stderr)."""
-    code = main(list(args))
+    """Invoke the CLI as the console script does, returning (code, stdout, stderr).
+
+    `-o json` explicitly: these assert on the parseable output, which is what a
+    caller opts into rather than what an unflagged run happens to print.
+    """
+    code = main(["-o", "json", *args])
     captured = capsys.readouterr()
     return code, captured.out, captured.err
 

@@ -15,27 +15,35 @@ import click
 from unstract_cli.app import cli
 from unstract_cli.config import ConfigError
 from unstract_cli.core.errors import CLIError, ExitCode
-from unstract_cli.core.output import OutputFormat, emit_error
+from unstract_cli.core.output import AgentMode, OutputFormat, emit_error, resolve_format
 
 
-def _format_from_argv(argv: list[str]) -> OutputFormat:
-    """Best-effort read of --output before Click has parsed anything.
+def _option_from_argv(argv: list[str], *spellings: str) -> str | None:
+    """Best-effort read of one option before Click has parsed anything.
 
     A failure during parsing still has to be rendered, and the parsed context
     does not exist yet at that point.
     """
     for i, arg in enumerate(argv):
-        value = None
-        if arg.startswith("--output="):
-            value = arg.split("=", 1)[1]
-        elif arg in ("--output", "-o") and i + 1 < len(argv):
-            value = argv[i + 1]
-        if value:
-            try:
-                return OutputFormat(value)
-            except ValueError:
-                break
-    return OutputFormat.JSON
+        for spelling in spellings:
+            if arg.startswith(f"{spelling}="):
+                return arg.split("=", 1)[1]
+            if arg == spelling and i + 1 < len(argv):
+                return argv[i + 1]
+    return None
+
+
+def _format_from_argv(argv: list[str]) -> OutputFormat:
+    """Resolve the format the same way the parsed run would."""
+    try:
+        return resolve_format(
+            _option_from_argv(argv, "--output", "-o"),
+            _option_from_argv(argv, "--agent") or AgentMode.AUTO,
+        )
+    except ValueError:
+        # An unusable value here is Click's error to report, not ours to guess
+        # around; render the failure in the default and let it through.
+        return resolve_format(None)
 
 
 def main(argv: list[str] | None = None) -> int:

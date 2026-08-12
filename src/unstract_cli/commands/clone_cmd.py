@@ -25,14 +25,8 @@ from unstract.clone.report import CloneReport
 
 from unstract_cli.app import Context, cli, pass_context
 from unstract_cli.commands.common import finish
-from unstract_cli.core.errors import (
-    CLIError,
-    ExitCode,
-    known_secrets,
-    remember_secret,
-    scrub,
-)
-from unstract_cli.core.output import OutputFormat
+from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
+from unstract_cli.core.output import OutputFormat, emit_text
 
 
 @cli.command("clone")
@@ -170,6 +164,22 @@ def _configure_logging(ctx: Context) -> None:
     )
 
 
+def _skipped(report: CloneReport) -> dict[str, Any]:
+    """What the run did not copy, summarised at the top of the payload.
+
+    Skipping an oversize or unsupported file is reported rather than fatal, so
+    the run still exits 0; a consumer reading only the exit code would otherwise
+    have to walk the whole report to discover documents that never arrived.
+    """
+    by_phase = {phase.name: phase.skipped for phase in report.phases if phase.skipped}
+    return {
+        "total": sum(by_phase.values()),
+        "by_phase": by_phase,
+        "oversize_files": len(report.oversize_files),
+        "unsupported_files": len(report.unsupported_files),
+    }
+
+
 def _finish(ctx: Context, report: CloneReport) -> None:
     """Emit the report, then fail if the clone did not fully succeed."""
     failure = None
@@ -178,19 +188,20 @@ def _finish(ctx: Context, report: CloneReport) -> None:
     elif failed := [phase.name for phase in report.phases if phase.failed]:
         failure = f"Clone completed with failures in: {', '.join(sorted(failed))}"
 
+    payload = {**report.as_dict(), "skipped": _skipped(report)}
     # A person running this reads the report itself; every other format gets the
     # single envelope, which carries the same content as data.
     rendered = ctx.output is OutputFormat.TABLE
     if rendered:
-        click.echo(scrub(report.render(), [*ctx.secrets(), *known_secrets()]))
+        emit_text(report.render(), secrets=ctx.secrets())
     elif not failure:
-        finish(ctx, report.as_dict())
+        finish(ctx, payload)
 
     if failure:
         raise CLIError(
             failure,
             ExitCode.GENERIC,
-            details=None if rendered else report.as_dict(),
+            details=None if rendered else payload,
             hint="The report lists what was copied and what was not. Re-running "
             "adopts what already exists on the target rather than duplicating it.",
         )

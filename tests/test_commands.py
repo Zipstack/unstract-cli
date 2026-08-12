@@ -271,6 +271,22 @@ def test_a_transport_failure_mid_poll_carries_the_handle(
     assert envelope(out)["error"]["whisper_hash"] == "h1"
 
 
+def test_a_failed_retrieve_carries_the_handle(capsys, whisper_client, tmp_path):
+    """Retrieve is the acknowledging read: a failure here can lose the text and
+    the handle at once, and the handle is the only way back to either."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1"},
+        whisper_status={"status": "processed"},
+        whisper_retrieve=ConnectionError("connection dropped"),
+    )
+
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    assert code == int(ExitCode.SERVER_ERROR)
+    assert envelope(out)["error"]["whisper_hash"] == "h1"
+
+
 # --------------------------------------------------------------------------- #
 # Retrieval is one-shot
 # --------------------------------------------------------------------------- #
@@ -919,7 +935,11 @@ def test_clone_maps_its_flags_and_reports_a_partial_failure(capsys, monkeypatch)
         return CloneReport(
             source=Endpoint(source.base_url, source.organization_id),
             target=Endpoint(target.base_url, target.organization_id),
-            phases=[PhaseResult(name="adapters", created=1, failed=2)],
+            phases=[
+                PhaseResult(name="adapters", created=1, failed=2),
+                PhaseResult(name="files", created=1, skipped=3),
+            ],
+            oversize_files=[{"name": "big.pdf"}, {"name": "bigger.pdf"}],
         )
 
     monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
@@ -945,6 +965,8 @@ def test_clone_maps_its_flags_and_reports_a_partial_failure(capsys, monkeypatch)
         "2MB",
         "--api-prefix",
         "api/v2",
+        "--on-name-conflict",
+        "abort",
     )
 
     assert captured["source"].platform_key == "src-key-0123456789"
@@ -954,11 +976,63 @@ def test_clone_maps_its_flags_and_reports_a_partial_failure(capsys, monkeypatch)
     assert captured["options"].exclude == ("files", "groups")
     assert captured["options"].file_strategy == "skip"
     assert captured["options"].max_file_size == 2 * 1024 * 1024
+    # adopt and abort decide what is written into a live target organisation.
+    assert captured["options"].on_name_conflict == "abort"
 
     # A phase that failed is not a successful migration, whatever else worked.
     assert code == int(ExitCode.GENERIC)
     body = envelope(out)
     assert body["ok"] is False
     assert "adapters" in body["error"]["message"]
+    # Documents that never arrived are counted where a consumer reads first.
+    assert body["error"]["details"]["skipped"] == {
+        "total": 3,
+        "by_phase": {"files": 3},
+        "oversize_files": 2,
+        "unsupported_files": 0,
+    }
     for key in ("src-key-0123456789", "tgt-key-0123456789"):
         assert key not in out and key not in err
+
+
+def test_a_key_quoted_in_a_clone_report_does_not_survive_the_table(capsys, monkeypatch):
+    """The table is the output a person gets, and the report renders itself.
+
+    A platform key quoted back by a failing service lands in a terminal buffer
+    and in whatever scrapes one, so the rendered report is scrubbed on the same
+    path as every envelope rather than by hand.
+    """
+    key = "src-key-0123456789"
+
+    def fake_clone(source, target, options):
+        return CloneReport(
+            source=Endpoint(source.base_url, source.organization_id),
+            target=Endpoint(target.base_url, target.organization_id),
+            phases=[PhaseResult(name="adapters", created=1)],
+            warnings=[f"target refused the request for {key}"],
+        )
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", key)
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    code = main(
+        [
+            "-o",
+            "table",
+            "clone",
+            "--source-url",
+            "https://dev.example.com",
+            "--source-org",
+            "org_dev",
+            "--target-url",
+            "https://qa.example.com",
+            "--target-org",
+            "org_qa",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "adapters" in captured.out
+    assert key not in captured.out and key not in captured.err

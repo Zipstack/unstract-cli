@@ -247,7 +247,16 @@ def emit(
     caller passed one: an emitter that has to remember is an emitter that
     eventually forgets.
     """
-    text = render(env, fmt, columns=columns, raw_field=raw_field)
+    emit_text(render(env, fmt, columns=columns, raw_field=raw_field), secrets=secrets)
+
+
+def emit_text(text: str, *, secrets: list[str] | None = None) -> None:
+    """Write already-rendered text to stdout, scrubbed the way an envelope is.
+
+    A command that renders its own table is still writing to the stream no
+    credential may reach, and scrubbing it by hand is the arrangement that
+    eventually forgets.
+    """
     if to_hide := [*(secrets or []), *known_secrets()]:
         text = scrub(text, to_hide)
     print(text)
@@ -314,6 +323,7 @@ __all__ = [
     "emit",
     "emit_error",
     "emit_result",
+    "emit_text",
     "envelope",
     "render",
     "render_table",

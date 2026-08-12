@@ -289,6 +289,13 @@ def config_doctor(obj: Any, probe: bool) -> None:
     except ConfigError as exc:
         aliases = []
         problems.append(str(exc))
+    for alias in aliases:
+        try:
+            # Resolved the way a run resolves it: that an alias is *listed* says
+            # nothing about whether the settings behind it arrive.
+            resolved.deployment(alias)
+        except ConfigError as exc:
+            problems.append(f"deployment alias {alias}: {exc}")
 
     report: dict[str, Any] = {
         "active_profile": resolved.active_profile,

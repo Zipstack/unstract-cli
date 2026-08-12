@@ -108,11 +108,23 @@ def discover(root: click.Group, tier: str) -> dict[str, Any]:
         raise ValueError(f"Unknown discovery tier {tier!r}. One of: {', '.join(TIERS)}")
 
     if tier == "groups":
+        top = sorted(root.commands.items())
+
+        def summary(name: str, command: click.Command) -> dict[str, str]:
+            return {"name": name, "help": (command.help or "").strip().split("\n")[0]}
+
         return {
             "tier": tier,
             "groups": [
-                {"name": name, "help": (sub.help or "").strip().split("\n")[0]}
-                for name, sub in sorted(root.commands.items())
+                summary(name, sub) for name, sub in top if isinstance(sub, click.Group)
+            ],
+            # A command that has no sub-commands is listed apart from the groups:
+            # a consumer drilling into each group for its commands finds nothing
+            # under a leaf, and would drop it.
+            "commands": [
+                summary(name, sub)
+                for name, sub in top
+                if not isinstance(sub, click.Group)
             ],
         }
 

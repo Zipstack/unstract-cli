@@ -215,12 +215,13 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
 _ARG_LINE = re.compile(r"^\s*(\w+)\s*(\([^)]*\))?\s*:\s*(.*)$")
 
 #: Sentences a description restates from elsewhere, stripped in the order a
-#: description carries them. The value list is matched on its opening quote,
-#: leaving prose that says "can be" alone, and ends at the first full stop that
-#: closes a quoted value -- a description whose value list is its *first*
-#: sentence keeps everything that follows.
+#: description carries them. Each pattern ends at its own sentence rather than at
+#: the end of the text, so a description that carries prose after the restated
+#: sentence keeps it: the default ends at the full stop that starts the next
+#: sentence, the value list at the full stop closing a quoted value. The value
+#: list is matched on its opening quote, leaving prose that says "can be" alone.
 _RESTATED = (
-    re.compile(r"\s*Defaults to .*\.\s*$"),
+    re.compile(r"\s*Defaults to .*?\.(?=\s+[A-Z]|\s*$)"),
     re.compile(r'\s*Can be ".*?"\s*\.'),
 )
 

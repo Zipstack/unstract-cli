@@ -83,7 +83,9 @@ its own checks failed, so a setup script can branch on it.
 
 `clone` is the exception: it talks to two deployments at once, which no single
 profile describes, so it takes both endpoints as flags and both admin Platform
-keys from `UNSTRACT_SRC_PLATFORM_KEY` / `UNSTRACT_TGT_PLATFORM_KEY`.
+keys from `UNSTRACT_SRC_PLATFORM_KEY` / `UNSTRACT_TGT_PLATFORM_KEY`. It exits 0
+when nothing failed, which is not the same as everything having moved: oversize
+and unsupported documents are skipped by design, and `data.skipped` counts them.
 
 ## Development
 

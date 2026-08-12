@@ -18,23 +18,16 @@ from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 from unstract_cli.core.params import derive_params, operation_params
 
 #: (product, operationId, client method) per command that derives its flags,
-#: with the spec parameters that method cannot accept. `url_in_post` is a
-#: transport detail the client decides for itself; the rest are API parameters
-#: the published client predates.
+#: with the spec parameters that method cannot accept. Each one is a parameter
+#: the client owns rather than one it lacks: `url_in_post` says the URL is in
+#: the body, which the client decides; `files` is built from the paths given;
+#: `execution_id` is read out of the endpoint URL the server handed back.
 COMMANDS = [
     (
         "llmwhisperer",
         "extract",
         LLMWhispererClientV2.whisper,
-        {
-            "allow_rotated_text",
-            "checkbox_confidence_threshold",
-            "derotate_threshold",
-            "ignore_vertical_text",
-            "min_table_width",
-            "url_in_post",
-            "watermark_angle_threshold",
-        },
+        {"url_in_post"},
     ),
     ("llmwhisperer", "highlights", LLMWhispererClientV2.get_highlight_data, set()),
     ("docstudio", "execute", APIDeploymentsClient.structure_file, {"files"}),
@@ -42,12 +35,7 @@ COMMANDS = [
         "docstudio",
         "status",
         APIDeploymentsClient.check_execution_status,
-        {
-            "execution_id",
-            "include_metadata",
-            "include_metrics",
-            "include_extracted_text",
-        },
+        {"execution_id"},
     ),
 ]
 

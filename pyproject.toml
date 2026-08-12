@@ -16,8 +16,8 @@ dependencies = [
     # these clients are generated from, and reads their docstrings for help
     # text, so a client that moves underneath it changes the CLI's surface.
     # Both pins move to released versions before this ships.
-    "unstract-client @ git+https://github.com/Zipstack/unstract-python-client@c291e36",
-    "llmwhisperer-client @ git+https://github.com/Zipstack/llm-whisperer-python-client@bb586c4",
+    "unstract-client @ git+https://github.com/Zipstack/unstract-python-client@ed89066",
+    "llmwhisperer-client @ git+https://github.com/Zipstack/llm-whisperer-python-client@02485e1",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +28,9 @@ dev = [
 
 [project.scripts]
 unstract = "unstract_cli.__main__:main"
+# `unstract-client` installs a script named `unstract` too, so whichever package
+# is installed last wins. This name always reaches this CLI.
+unstract-cli = "unstract_cli.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

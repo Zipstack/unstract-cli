@@ -89,7 +89,9 @@ def test_only_parameters_the_client_accepts_become_flags():
         )
     )
     assert derived < spec
-    assert "checkbox_confidence_threshold" in spec - derived
+    # In URL mode the URL travels in the body, and saying so is the client's
+    # decision, not a caller's.
+    assert spec - derived == {"url_in_post"}
 
 
 def test_the_clients_default_wins_over_the_specs():

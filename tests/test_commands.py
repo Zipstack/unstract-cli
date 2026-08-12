@@ -466,3 +466,85 @@ def test_deployment_status_reports_a_running_execution(capsys, deployment_client
     assert code == int(ExitCode.SUCCESS)
     assert envelope(out)["data"]["execution_status"] == "EXECUTING"
     assert "execution_id=e1" in client.calls[0][1][0]
+
+
+# --------------------------------------------------------------------------- #
+# The flag tier of flag > env > profile > default
+# --------------------------------------------------------------------------- #
+
+
+def test_a_connection_flag_beats_the_environment(capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("LLMWHISPERER_BASE_URL", "https://from-env.test")
+    monkeypatch.setenv("LLMWHISPERER_API_KEY", "env-key")
+    seen = {}
+    monkeypatch.setattr(
+        whisper_cmd,
+        "llmwhisperer",
+        lambda config: (
+            seen.update(
+                base_url=config.get("llmwhisperer", "base_url"),
+                api_key=config.get("llmwhisperer", "api_key"),
+            )
+            or FakeWhisper(get_usage_info={})
+        ),
+    )
+
+    code, _, err = run(
+        capsys,
+        "whisper",
+        "--base-url",
+        "https://from-flag.test",
+        "--api-key",
+        "flag-key",
+        "usage",
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seen == {"base_url": "https://from-flag.test", "api_key": "flag-key"}
+    # A key on the command line lands in shell history and the process list.
+    assert "shell history" in err
+
+
+def test_the_environment_still_wins_over_a_profile(capsys, monkeypatch, write_config):
+    write_config(
+        """
+        default_profile = "p"
+        [profiles.p.llmwhisperer]
+        base_url = "https://from-profile.test"
+        """
+    )
+    monkeypatch.setenv("LLMWHISPERER_BASE_URL", "https://from-env.test")
+    seen = {}
+    monkeypatch.setattr(
+        whisper_cmd,
+        "llmwhisperer",
+        lambda config: (
+            seen.update(base_url=config.get("llmwhisperer", "base_url"))
+            or FakeWhisper(get_usage_info={})
+        ),
+    )
+
+    run(capsys, "whisper", "usage")
+    assert seen == {"base_url": "https://from-env.test"}
+
+
+def test_a_deployment_org_can_come_from_a_flag(capsys, monkeypatch):
+    monkeypatch.setenv("UNSTRACT_DEPLOYMENT_KEY", "key")
+    seen = {}
+    monkeypatch.setattr(
+        docstudio_cmd,
+        "deployment",
+        lambda config, target: (
+            seen.update(org=config.get("docstudio", "org_id")) or _deployment_fake()
+        ),
+    )
+    run(capsys, "docstudio", "--org-id", "org_A", "deployment", "status", "api", "e1")
+    assert seen == {"org": "org_A"}
+
+
+def _deployment_fake():
+    client = FakeWhisper(
+        check_execution_status={"status_code": 200, "execution_status": "COMPLETED"}
+    )
+    client.api_url = "https://api.example.com/deployment/api/org/api-name/"
+    return client

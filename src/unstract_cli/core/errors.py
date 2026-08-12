@@ -35,6 +35,9 @@ _STATUS_MAP: dict[int, ExitCode] = {
     401: ExitCode.AUTH,
     403: ExitCode.AUTH,
     404: ExitCode.NOT_FOUND,
+    # Only the deployment status endpoint answers 406. A whisper result read
+    # twice comes back as a 400 whose body says so, and translating on that
+    # prose would break the moment the wording changes.
     406: ExitCode.ALREADY_CONSUMED,
     408: ExitCode.TIMEOUT,
     409: ExitCode.VALIDATION,
@@ -218,9 +221,9 @@ def hint_for(status: int) -> str | None:
             )
         case 406:
             return (
-                "This result was already retrieved. Results can be read exactly "
-                "once; re-running the request cannot recover them. Use --save next "
-                "time to persist on first read."
+                "This execution result was already retrieved. A deployment serves "
+                "its result exactly once; re-running the status call cannot "
+                "recover it. Use --save next time to persist on first read."
             )
         case 409:
             return "The resource is in use, or conflicts with an existing one."

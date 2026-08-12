@@ -6,13 +6,21 @@ context, so no command re-implements profile selection or output formatting.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import click
 
 from unstract_cli.commands.config_cmd import config_group
-from unstract_cli.config import ConfigError, ResolvedConfig, load_config, set_config_path
+from unstract_cli.config import (
+    DOCSTUDIO,
+    LLMWHISPERER,
+    ConfigError,
+    ResolvedConfig,
+    load_config,
+    set_config_path,
+)
 from unstract_cli.core.discover import TIERS, discover
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import OutputFormat, diagnostic, emit_result
@@ -26,6 +34,9 @@ class Context:
     quiet: bool = False
     verbosity: int = 0
     profile: str | None = None
+    #: Command-line overrides, keyed `product.setting` -- the top tier of
+    #: flag > env > profile > default.
+    overrides: dict[str, Any] = field(default_factory=dict)
     _config: ResolvedConfig | None = field(default=None, repr=False)
 
     @property
@@ -38,13 +49,32 @@ class Context:
                 raise CLIError(str(exc), ExitCode.USAGE) from exc
             for warning in cfg.warnings:
                 diagnostic(warning, quiet=self.quiet, verbosity=self.verbosity)
-            self._config = ResolvedConfig(file=cfg, profile_name=self.profile)
+            self._config = ResolvedConfig(
+                file=cfg, profile_name=self.profile, overrides=self.overrides
+            )
         return self._config
+
+    def override(self, product: str, values: dict[str, Any]) -> None:
+        """Record the connection flags given for one product.
+
+        Called from the product group, before any command runs, so the flag tier
+        is populated by the time a command resolves anything.
+        """
+        for key, value in values.items():
+            if value is None:
+                continue
+            if key == "api_key":
+                diagnostic(
+                    "warning: a key passed on the command line lands in shell "
+                    "history and in the process list. Prefer the environment "
+                    "variable or `env:` indirection in a profile.",
+                    quiet=self.quiet,
+                    verbosity=self.verbosity,
+                )
+            self.overrides[f"{product}.{key}"] = value
 
     def secrets(self) -> list[str]:
         """Resolved credentials, for scrubbing anything on its way to a stream."""
-        from unstract_cli.config import DOCSTUDIO, LLMWHISPERER
-
         out: list[str] = []
         for product in (LLMWHISPERER, DOCSTUDIO):
             try:
@@ -129,14 +159,43 @@ def cli(
         ctx.exit(int(ExitCode.SUCCESS))
 
 
+def _connection_options(*, org_id: bool = False) -> Callable[[Any], Any]:
+    """The per-product connection settings, as flags.
+
+    They sit on the product group rather than on each command: they say where to
+    connect, which is the same question for every command underneath.
+    """
+    options = [
+        click.option("--base-url", default=None, help="Service URL to use."),
+        click.option("--api-key", default=None, help="API key to use."),
+    ]
+    if org_id:
+        options.append(
+            click.option("--org-id", default=None, help="Organisation to run against.")
+        )
+
+    def decorate(func: Any) -> Any:
+        for option in reversed(options):
+            func = option(func)
+        return func
+
+    return decorate
+
+
 @cli.group("whisper")
-def whisper_group() -> None:
+@_connection_options()
+@pass_context
+def whisper_group(ctx: Context, **overrides: str | None) -> None:
     """Extract text and layout from documents with LLMWhisperer."""
+    ctx.override(LLMWHISPERER, overrides)
 
 
 @cli.group("docstudio")
-def docstudio_group() -> None:
+@_connection_options(org_id=True)
+@pass_context
+def docstudio_group(ctx: Context, **overrides: str | None) -> None:
     """Run Document Studio API deployments."""
+    ctx.override(DOCSTUDIO, overrides)
 
 
 @docstudio_group.group("deployment")

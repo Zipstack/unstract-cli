@@ -1,0 +1,53 @@
+{
+  "llmwhisperer:extract": [
+    "--add-line-nos",
+    "--allow-rotated-text",
+    "--checkbox-confidence-threshold",
+    "--derotate-threshold",
+    "--file-name",
+    "--gaussian-blur-radius",
+    "--horizontal-stretch-factor",
+    "--ignore-vertical-text",
+    "--include-line-confidence",
+    "--lang",
+    "--line-splitter-strategy",
+    "--line-splitter-tolerance",
+    "--mark-horizontal-lines",
+    "--mark-vertical-lines",
+    "--median-filter-size",
+    "--min-table-width",
+    "--mode",
+    "--output-mode",
+    "--page-separator",
+    "--pages-to-extract",
+    "--tag",
+    "--url",
+    "--use-webhook",
+    "--watermark-angle-threshold",
+    "--webhook-metadata",
+    "--word-confidence-threshold"
+  ],
+  "llmwhisperer:highlights": [
+    "--extract-all-lines",
+    "--lines",
+    "--whisper-hash"
+  ],
+  "docstudio:execute": [
+    "--custom-data",
+    "--hitl-packet-id",
+    "--hitl-queue-name",
+    "--include-extracted-text",
+    "--include-metadata",
+    "--include-metrics",
+    "--llm-profile-id",
+    "--presigned-urls",
+    "--tags",
+    "--timeout",
+    "--use-file-history"
+  ],
+  "docstudio:status": [
+    "--include-extracted-text",
+    "--include-metadata",
+    "--include-metrics"
+  ]
+}

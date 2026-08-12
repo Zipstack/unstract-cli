@@ -10,6 +10,9 @@ the gap is written down, so widening it is a decision someone makes on purpose.
 from __future__ import annotations
 
 import inspect
+import json
+import os
+from pathlib import Path
 
 import pytest
 from unstract.api_deployments.client import APIDeploymentsClient
@@ -68,3 +71,35 @@ def test_every_derived_flag_is_an_argument_the_client_accepts(product, operation
     accepted = set(inspect.signature(method).parameters)
     for param in derive_params(product, operation, client_method=method):
         assert param.name in accepted
+
+
+#: The flags the specs derive today. Every other check in this file reads the
+#: spec on both sides of its comparison, so a spec that loses a parameter loses
+#: the flag and the expectation together; this file is the side that does not
+#: move on its own.
+SNAPSHOT = Path(__file__).parent / "derived_flags.json"
+
+#: Refreshing the snapshot is a decision, not a side effect of running the suite.
+REFRESH = "UNSTRACT_CLI_REFRESH_FLAG_SNAPSHOT"
+
+
+def _derived_flags() -> dict[str, list[str]]:
+    return {
+        f"{product}:{operation}": sorted(
+            param.flag
+            for param in derive_params(product, operation, client_method=method)
+        )
+        for product, operation, method, _ in COMMANDS
+    }
+
+
+def test_the_derived_flags_are_the_ones_last_reviewed():
+    current = _derived_flags()
+    if os.environ.get(REFRESH):
+        SNAPSHOT.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+    expected = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+    assert current == expected, (
+        "The flags derived from the vendored specs have changed. A flag that "
+        "disappears here disappears from the CLI. Review the difference, then "
+        f"refresh the snapshot with {REFRESH}=1."
+    )

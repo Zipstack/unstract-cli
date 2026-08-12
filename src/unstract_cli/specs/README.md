@@ -14,3 +14,7 @@ Refresh one by copying it from the client commit pinned in `pyproject.toml`.
 Refreshing it against a different commit is what `tests/test_contract.py`
 guards: a spec parameter the pinned client has no argument for cannot become a
 flag, and that test names the ones that already cannot.
+
+A refresh that changes which flags a command offers fails against
+`tests/derived_flags.json`. Read the difference before refreshing that file --
+a flag missing from it is a flag the CLI has stopped offering.

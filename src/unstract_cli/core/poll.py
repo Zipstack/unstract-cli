@@ -148,8 +148,8 @@ def classify(payload: Any, spec: PollSpec) -> str:
     if status in {state.lower() for state in spec.terminal_success}:
         return "success"
     if not status or _dig(payload, "error"):
-        # An empty status, or a body carrying an error, is not progress. Polling
-        # on regardless is what turned a server fault into "still running".
+        # Not progress: polling on regardless reports a server fault as "still
+        # running" until the deadline.
         return "unknown"
     return "pending"
 

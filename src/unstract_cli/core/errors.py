@@ -70,8 +70,8 @@ def exit_code_for_status(status: int) -> ExitCode:
         return code
     if 500 <= status < 600:
         return ExitCode.SERVER_ERROR
-    # Anything else -- a 3xx that was not followed, a status no spec declares --
-    # is still a failure. Returning SUCCESS here printed `ok: false` and exited 0.
+    # A 3xx that was not followed, or a status no spec declares, is still a
+    # failure: never fall through to SUCCESS.
     return ExitCode.GENERIC
 
 
@@ -94,9 +94,8 @@ _SECRET_HEADER_PREFIXES = ("x-",)
 _SECRET_KEY_HINTS = ("key", "token", "secret", "password", "credential", "auth")
 REDACTED = "***REDACTED***"
 
-#: Credentials resolved during this run. Scrubbing used to be a keyword
-#: argument every emitter had to remember to pass, and the error path never
-#: did; registering the value where it is resolved makes forgetting impossible.
+#: Credentials resolved during this run. Registered where they are resolved, so
+#: no emitter has to remember to opt into scrubbing.
 _KNOWN_SECRETS: set[str] = set()
 
 

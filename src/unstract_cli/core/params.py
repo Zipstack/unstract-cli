@@ -174,10 +174,9 @@ def client_params(method: Callable[..., Any]) -> dict[str, inspect.Parameter]:
     }
 
 
-#: Python annotation -> OpenAPI type. The clients are generated from the same
-#: specs, but a source-derived spec can only report what the endpoint reads off
-#: the wire -- `extract_all_lines` is `"false"`, a string, there and a `bool` in
-#: the signature. The signature is what the call actually takes.
+#: Python annotation -> OpenAPI type. A source-derived spec reports what the
+#: endpoint reads off the wire, which can differ from what the call takes:
+#: `extract_all_lines` is a string there and a `bool` in the signature.
 _ANNOTATIONS: dict[Any, str] = {
     bool: "boolean",
     int: "integer",
@@ -215,10 +214,9 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
 #: docstring, which is how both clients document their parameters.
 _ARG_LINE = re.compile(r"^\s*(\w+)\s*(\([^)]*\))?\s*:\s*(.*)$")
 
-#: Sentences a description restates from elsewhere, stripped in this order:
-#: each is anchored at the end, and the default sentence follows the value list
-#: where a description carries both. The list is matched on its opening quote so
-#: prose that merely says "can be" is left alone.
+#: Sentences a description restates from elsewhere. Each is anchored at the end,
+#: so they are stripped in the order a description carries them. The value list
+#: is matched on its opening quote, leaving prose that says "can be" alone.
 _RESTATED = (
     re.compile(r"\s*Defaults to .*\.\s*$"),
     re.compile(r'\s*Can be ".*\.\s*$'),
@@ -244,7 +242,6 @@ def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
     for line in args.splitlines():
         if not line.strip():
             continue
-        # A new top-level section (Returns:, Raises:) ends the parameter list.
         if line[:1] not in " \t" or re.match(r"^\s{0,4}(Returns|Raises|Yields):", line):
             break
         if (match := _ARG_LINE.match(line)) and (match.group(2) or current is None):
@@ -252,9 +249,9 @@ def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
             out[current] = match.group(3).strip()
         elif current:
             out[current] = f"{out[current]} {line.strip()}".strip()
-    # The default and the allowed values are both rendered from the spec and the
-    # signature, so the docstring's own sentences for them would print a second
-    # copy that disagrees the moment either drifts.
+    # The default and the allowed values are rendered from the signature and the
+    # spec, so the docstring's own sentences for them are a second copy that
+    # disagrees the moment either drifts.
     return {name: _strip_restated(text) for name, text in out.items() if text}
 
 

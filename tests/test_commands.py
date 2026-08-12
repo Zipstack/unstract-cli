@@ -313,6 +313,47 @@ def test_highlights_scales_line_metadata_when_a_page_size_is_given(
     assert data["rects"]["1"] == [1, 0, 64, 600, 80]
 
 
+def test_highlights_reads_the_named_metadata_object(capsys, whisper_client):
+    """The service returns the list inside an object; the client's geometry takes
+    the bare list."""
+    whisper_client(get_highlight_data={"1": {"raw": [1, 100, 20, 1000], "page": 1}})
+    _, out, _ = run(
+        capsys,
+        "whisper",
+        "highlights",
+        "h1",
+        "--lines",
+        "1-5",
+        "--target-width",
+        "600",
+        "--target-height",
+        "800",
+    )
+    assert envelope(out)["data"]["rects"]["1"] == [1, 0, 64, 600, 80]
+
+
+def test_a_line_without_geometry_gets_no_box(capsys, whisper_client):
+    """The service reports a line it has no geometry for as all zeros, and the
+    page height is a divisor in the scaling."""
+    whisper_client(
+        get_highlight_data={"1": {"raw": [0, 0, 0, 0]}, "2": {"raw": [1, 100, 20, 1000]}}
+    )
+    code, out, _ = run(
+        capsys,
+        "whisper",
+        "highlights",
+        "h1",
+        "--lines",
+        "1-5",
+        "--target-width",
+        "600",
+        "--target-height",
+        "800",
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert set(envelope(out)["data"]["rects"]) == {"2"}
+
+
 def test_highlights_returns_the_metadata_alone_without_a_page_size(
     capsys, whisper_client
 ):

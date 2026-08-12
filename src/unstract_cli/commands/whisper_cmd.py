@@ -200,6 +200,26 @@ def highlights(
     finish(ctx, data)
 
 
+def _line_metadata(value: Any) -> list[int] | None:
+    """The `[page, base_y, height, page_height]` list the geometry needs.
+
+    The service returns it as a named object carrying the list under `raw`, and
+    the client's geometry takes the bare list, so both shapes are read.
+    """
+    if isinstance(value, dict):
+        value = value.get("raw")
+    if (
+        isinstance(value, list)
+        and len(value) >= 4
+        and all(isinstance(item, (int, float)) for item in value)
+        # The page height is a divisor in the scaling, and the service reports a
+        # line it has no geometry for as all zeros.
+        and value[3]
+    ):
+        return value
+    return None
+
+
 def _bounding_boxes(
     client: LLMWhispererClientV2,
     data: Any,
@@ -209,12 +229,11 @@ def _bounding_boxes(
     """(page, x1, y1, x2, y2) per line, for the lines that carry metadata."""
     if not isinstance(data, dict):
         return {}
+    lines = {line: _line_metadata(value) for line, value in data.items()}
     return {
         str(line): list(client.get_highlight_rect(metadata, target_width, target_height))
-        for line, metadata in data.items()
-        if isinstance(metadata, list)
-        and len(metadata) >= 4
-        and all(isinstance(v, (int, float)) for v in metadata)
+        for line, metadata in lines.items()
+        if metadata is not None
     }
 
 

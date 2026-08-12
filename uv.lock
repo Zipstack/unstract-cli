@@ -349,14 +349,14 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "tomli-w", specifier = ">=1.0" },
-    { name = "unstract-client", git = "https://github.com/Zipstack/unstract-python-client?rev=27dd806" },
+    { name = "unstract-client", git = "https://github.com/Zipstack/unstract-python-client?rev=114aef8" },
 ]
 provides-extras = ["dev"]
 
 [[package]]
 name = "unstract-client"
 version = "1.5.3"
-source = { git = "https://github.com/Zipstack/unstract-python-client?rev=27dd806#27dd8067bbac53b8a42c48f4178592fc7f369e7e" }
+source = { git = "https://github.com/Zipstack/unstract-python-client?rev=114aef8#114aef84446fe6c5400258269cb1da0c8e2ab135" }
 dependencies = [
     { name = "attrs" },
     { name = "click" },

@@ -16,7 +16,7 @@ dependencies = [
     # these clients are generated from, and reads their docstrings for help
     # text, so a client that moves underneath it changes the CLI's surface.
     # Both pins move to released versions before this ships.
-    "unstract-client @ git+https://github.com/Zipstack/unstract-python-client@27dd806",
+    "unstract-client @ git+https://github.com/Zipstack/unstract-python-client@114aef8",
     "llmwhisperer-client @ git+https://github.com/Zipstack/llm-whisperer-python-client@7f64caf",
 ]
 

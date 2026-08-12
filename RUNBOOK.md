@@ -101,7 +101,7 @@ Run against a document you can re-send; several of these submit real work.
 
 | # | Command | Pass |
 |---|---|---|
-| 1 | `config doctor --probe` | every setting reports where it resolved from; the LLMWhisperer probe answers live |
+| 1 | `config doctor --probe` | every setting reports where it resolved from; the LLMWhisperer probe answers live; exit 0 when nothing failed, and exit 1 with the same report under `error.details` when something did |
 | 2 | `whisper extract <pdf>` | polls to completion, returns text |
 | 3 | `whisper extract <pdf> --no-wait` then `whisper status <hash>` then `whisper retrieve <hash>` | the handle survives the round trip |
 | 4 | `whisper retrieve <hash>` a second time | refused, exit 9, and the error names the one-shot read |

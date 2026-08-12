@@ -168,12 +168,26 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
     """
     status = int(result.get("status_code") or 0)
     reported = result.get("error")
-    if (status and not 200 <= status < 300) or reported:
+    if status and not 200 <= status < 300:
         raise error_from_status(
-            status or 500,
+            status,
             str(reported or f"Request failed with status {status}"),
             details=result,
             endpoint=endpoint,
+        )
+    if reported:
+        # Success at the HTTP layer, failure in the body -- the most interesting
+        # failure this API has, and the one a status-code mapping has nothing to
+        # say about. Not retryable: re-running starts a second billed execution
+        # rather than retrying the first.
+        raise CLIError(
+            str(reported),
+            ExitCode.VALIDATION,
+            http_status=status or None,
+            details=result,
+            endpoint=endpoint,
+            hint="The request was accepted and the work was not done; `details` "
+            "carries the service's own report.",
         )
 
 

@@ -264,8 +264,14 @@ def config_doctor(obj: Any, probe: bool) -> None:
 
     Resolution is answered offline. --probe adds the second question -- does the
     resolved key work -- which needs the network, so it is opt-in.
+
+    Exits 0 only when nothing it checked failed. A setting that is simply not
+    configured is a report, not a failure; a setting that points somewhere and
+    does not arrive -- an unset `env:` variable, an unknown profile, a probe the
+    service rejected -- exits non-zero, because a setup script branches on that.
     """
     resolved = _resolved(obj)
+    problems: list[str] = []
     products: dict[str, Any] = {}
     for product in PRODUCTS:
         entry: dict[str, Any] = {}
@@ -274,12 +280,15 @@ def config_doctor(obj: Any, probe: bool) -> None:
                 entry[key] = resolved.resolution_source(product, key)
             except ConfigError as exc:
                 entry[key] = {"resolved": False, "source": "unset", "detail": str(exc)}
+            if detail := entry[key].get("detail"):
+                problems.append(f"{product}.{key}: {detail}")
         products[product] = entry
 
     try:
         aliases = list(resolved.deployment_aliases())
-    except ConfigError:
+    except ConfigError as exc:
         aliases = []
+        problems.append(str(exc))
 
     report: dict[str, Any] = {
         "active_profile": resolved.active_profile,
@@ -290,6 +299,24 @@ def config_doctor(obj: Any, probe: bool) -> None:
     }
     if probe:
         report["probe"] = _probe(resolved)
+        problems += [
+            f"probe {name}: {result.get('detail')}"
+            for name, result in report["probe"].items()
+            if result["ok"] is False
+        ]
+
+    if problems:
+        report["problems"] = problems
+        more = "" if len(problems) == 1 else f" (+{len(problems) - 1} more)"
+        raise CLIError(
+            f"{len(problems)} configuration check(s) failed: {problems[0]}{more}",
+            ExitCode.GENERIC,
+            details=report,
+            hint=(
+                "`details` carries the whole report, including where each setting "
+                "resolved from."
+            ),
+        )
     emit_result(report, _fmt(obj))
 
 

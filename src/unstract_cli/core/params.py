@@ -214,12 +214,14 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
 #: docstring, which is how both clients document their parameters.
 _ARG_LINE = re.compile(r"^\s*(\w+)\s*(\([^)]*\))?\s*:\s*(.*)$")
 
-#: Sentences a description restates from elsewhere. Each is anchored at the end,
-#: so they are stripped in the order a description carries them. The value list
-#: is matched on its opening quote, leaving prose that says "can be" alone.
+#: Sentences a description restates from elsewhere, stripped in the order a
+#: description carries them. The value list is matched on its opening quote,
+#: leaving prose that says "can be" alone, and ends at the first full stop that
+#: closes a quoted value -- a description whose value list is its *first*
+#: sentence keeps everything that follows.
 _RESTATED = (
     re.compile(r"\s*Defaults to .*\.\s*$"),
-    re.compile(r'\s*Can be ".*\.\s*$'),
+    re.compile(r'\s*Can be ".*?"\s*\.'),
 )
 
 

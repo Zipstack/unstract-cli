@@ -78,7 +78,8 @@ api_name = "invoice-parser"
 Credentials use `env:VAR_NAME` indirection, so the file records where a secret
 lives rather than the secret itself. `unstract config doctor` reports where each
 setting resolved from — including whether an `env:` reference is actually set in
-the current process — without echoing any value.
+the current process — without echoing any value. It exits non-zero when one of
+its own checks failed, so a setup script can branch on it.
 
 `clone` is the exception: it talks to two deployments at once, which no single
 profile describes, so it takes both endpoints as flags and both admin Platform

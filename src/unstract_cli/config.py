@@ -303,13 +303,30 @@ class ResolvedConfig:
             )
         if not entry.get("api_name"):
             raise ConfigError(f"Deployment alias {alias!r} has no `api_name`.")
-        api_key = _deref(entry.get("api_key")) or self.get(DOCSTUDIO, "api_key")
+        api_key = self._alias_setting(alias, entry, "api_key")
         remember_secret(api_key)
         return {
             "api_name": entry["api_name"],
-            "org_id": _deref(entry.get("org_id")) or self.get(DOCSTUDIO, "org_id"),
+            "org_id": self._alias_setting(alias, entry, "org_id"),
             "api_key": api_key,
         }
+
+    def _alias_setting(self, alias: str, entry: dict[str, Any], key: str) -> Any:
+        """One alias setting, falling back to the profile only where the alias is silent.
+
+        An ``env:`` reference that does not resolve is not silence. Falling back
+        there runs the deployment against the profile's organisation, with the
+        profile's key, and reports success.
+        """
+        raw = entry.get(key)
+        if isinstance(raw, str) and raw.startswith("env:"):
+            if value := _deref(raw):
+                return value
+            raise ConfigError(
+                f"Deployment alias {alias!r} sets {key} to {raw!r}, and "
+                f"${raw[4:].strip()} is not set in this process's environment."
+            )
+        return raw or self.get(DOCSTUDIO, key)
 
     def deployment_aliases(self) -> tuple[str, ...]:
         """Names of the deployment aliases defined in the active profile."""

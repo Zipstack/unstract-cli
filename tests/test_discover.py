@@ -137,9 +137,13 @@ def test_probe_verifies_the_whisperer_key(capsys, probe_client):
 
 
 def test_a_rejected_key_reports_why(capsys, probe_client):
+    """A probe that failed exits non-zero: --probe is run from setup scripts,
+    and a script branches on the exit code, not on the payload."""
     probe_client(CLIError("bad key", ExitCode.AUTH))
-    _, data = run(capsys, "config", "doctor", "--probe")
-    entry = data["probe"]["llmwhisperer"]
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    report = json.loads(capsys.readouterr().out)["error"]["details"]
+    assert code == int(ExitCode.GENERIC)
+    entry = report["probe"]["llmwhisperer"]
     assert entry == {
         "checked": True,
         "ok": False,

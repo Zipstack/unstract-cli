@@ -15,7 +15,7 @@ from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 from unstract_cli.app import Context, pass_context, whisper_group
 from unstract_cli.commands.common import finish, raw_field, wait_options
 from unstract_cli.core.clients import llmwhisperer, translated, translating
-from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
 from unstract_cli.core.params import requested, spec_options
 from unstract_cli.core.poll import (
     PollSpec,
@@ -317,6 +317,7 @@ def webhook_group() -> None:
 @pass_context
 def webhook_create(ctx: Context, name: str, url: str, auth_token: str) -> None:
     """Register a webhook."""
+    remember_secret(auth_token)
     client = llmwhisperer(ctx.config)
     with translated(endpoint="whisper-manage-callback"):
         finish(ctx, client.register_webhook(url, auth_token, name))
@@ -329,6 +330,7 @@ def webhook_create(ctx: Context, name: str, url: str, auth_token: str) -> None:
 @pass_context
 def webhook_update(ctx: Context, name: str, url: str, auth_token: str) -> None:
     """Replace a webhook's URL and token."""
+    remember_secret(auth_token)
     client = llmwhisperer(ctx.config)
     with translated(endpoint="whisper-manage-callback"):
         finish(ctx, client.update_webhook_details(name, url, auth_token))
@@ -338,10 +340,18 @@ def webhook_update(ctx: Context, name: str, url: str, auth_token: str) -> None:
 @click.argument("name")
 @pass_context
 def webhook_get(ctx: Context, name: str) -> None:
-    """Show one webhook's configuration."""
+    """Show one webhook's configuration.
+
+    The token is reported as redacted, including for a webhook registered
+    elsewhere: it authenticates deliveries wherever it was set, and this output
+    is as likely to land in a log as on a screen.
+    """
     client = llmwhisperer(ctx.config)
     with translated(endpoint="whisper-manage-callback"):
-        finish(ctx, client.get_webhook_details(name))
+        details = client.get_webhook_details(name)
+    if isinstance(details, dict):
+        remember_secret(details.get("auth_token"))
+    finish(ctx, details)
 
 
 @webhook_group.command("delete")

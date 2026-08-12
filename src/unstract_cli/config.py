@@ -43,6 +43,16 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
 }
 
+def settings_for(product: str) -> tuple[str, ...]:
+    """The settings a product actually has.
+
+    Products differ: `org_id` is a URL path segment for one and meaningless for
+    the other, and reporting a setting a user has no way to supply reads as a
+    misconfiguration they cannot fix.
+    """
+    return tuple(sorted(key for prod, key in ENV_VARS if prod == product))
+
+
 #: Filename a project can commit to point the CLI at its own settings.
 PROJECT_CONFIG_NAME = ".unstract.toml"
 
@@ -375,5 +385,6 @@ __all__ = [
     "load_config",
     "save_config",
     "set_config_path",
+    "settings_for",
     "starter_profiles",
 ]

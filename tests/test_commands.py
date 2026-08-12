@@ -468,6 +468,114 @@ def test_deployment_status_reports_a_running_execution(capsys, deployment_client
     assert "execution_id=e1" in client.calls[0][1][0]
 
 
+@pytest.mark.parametrize(
+    ("flag", "name", "value"),
+    [
+        ("--include-metadata", "include_metadata", True),
+        ("--no-include-metadata", "include_metadata", False),
+        ("--include-metrics", "include_metrics", True),
+        ("--no-include-metrics", "include_metrics", False),
+        ("--include-extracted-text", "include_extracted_text", True),
+        ("--no-include-extracted-text", "include_extracted_text", False),
+    ],
+)
+def test_a_status_flag_reaches_the_client(capsys, deployment_client, flag, name, value):
+    """A derived flag that is collected and never forwarded is indistinguishable
+    from one that works: the command still succeeds and the payload still parses."""
+    client = deployment_client(
+        check_execution_status={"status_code": 200, "execution_status": "COMPLETED"}
+    )
+    run(capsys, "docstudio", "deployment", "status", flag, "my-api", "e1")
+    assert client.kwargs_for("check_execution_status")[name] is value
+
+
+def test_status_sends_only_the_flags_that_were_given(capsys, deployment_client):
+    client = deployment_client(
+        check_execution_status={"status_code": 200, "execution_status": "COMPLETED"}
+    )
+    run(capsys, "docstudio", "deployment", "status", "my-api", "e1")
+    assert client.kwargs_for("check_execution_status") == {}
+
+
+def test_a_waited_run_reads_its_result_with_the_flags_it_was_given(
+    capsys, deployment_client, tmp_path
+):
+    """Otherwise --wait silently returns less than the same flags return without
+    it: the run is asked for metrics and the read that fetches them is not."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    client = deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": True,
+            "execution_status": "PENDING",
+            "status_check_api_endpoint": "/status?execution_id=e1",
+        },
+        check_execution_status={
+            "status_code": 200,
+            "pending": False,
+            "execution_status": "COMPLETED",
+        },
+    )
+
+    run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0",
+        "--include-metrics",
+        "--no-include-metadata",
+    )
+
+    polled = client.kwargs_for("check_execution_status")
+    assert polled["include_metrics"] is True
+    assert polled["include_metadata"] is False
+    # `tags` is a run-time parameter the status endpoint does not accept.
+    assert "tags" not in polled
+
+
+def test_a_run_only_parameter_is_not_forwarded_to_the_status_read(
+    capsys, deployment_client, tmp_path
+):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    client = deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": True,
+            "execution_status": "PENDING",
+            "status_check_api_endpoint": "/status?execution_id=e1",
+        },
+        check_execution_status={
+            "status_code": 200,
+            "pending": False,
+            "execution_status": "COMPLETED",
+        },
+    )
+
+    run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0",
+        "--tags",
+        "a,b",
+    )
+
+    assert client.kwargs_for("structure_file")["tags"] == "a,b"
+    assert client.kwargs_for("check_execution_status") == {}
+
+
 # --------------------------------------------------------------------------- #
 # The flag tier of flag > env > profile > default
 # --------------------------------------------------------------------------- #

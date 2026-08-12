@@ -136,5 +136,8 @@ def test_the_deployment_probe_says_it_verified_nothing(capsys, probe_client, mon
     monkeypatch.setenv("UNSTRACT_DEPLOYMENT_KEY", "key")
     _, data = run(capsys, "config", "doctor", "--probe")
     entry = data["probe"]["docstudio"]
-    assert entry["checked"] is False and entry["ok"] is True
-    assert "not verified live" in entry["detail"]
+    # `ok` is null rather than true: a true beside `checked: false` is read as a
+    # live check that passed, which is the one thing this probe cannot claim.
+    assert entry["checked"] is False and entry["ok"] is None
+    assert entry["resolved"] is True
+    assert "NOT verified" in entry["detail"]

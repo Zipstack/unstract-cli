@@ -24,6 +24,7 @@ from unstract_cli.config import (
     config_path,
     load_config,
     save_config,
+    settings_for,
     starter_profiles,
 )
 from unstract_cli.core.clients import llmwhisperer, translated
@@ -231,10 +232,14 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     )
     out[DOCSTUDIO] = {
         "checked": False,
-        "ok": resolves,
+        # Null, not True: nothing was called, so there is no verdict to report.
+        # A `true` beside `checked: false` reads as a live check that passed.
+        "ok": None,
+        "resolved": resolves,
         "detail": (
-            "Credentials resolve (org and key present); not verified live -- the "
-            "deployment API has no side-effect-free endpoint to call."
+            "Credentials resolve (org and key present) but were NOT verified -- "
+            "the deployment API has no side-effect-free endpoint to call, so a "
+            "wrong key is only discovered by running a deployment."
             if resolves
             else "Organisation or key is missing; nothing was called."
         ),
@@ -264,7 +269,7 @@ def config_doctor(obj: Any, probe: bool) -> None:
     products: dict[str, Any] = {}
     for product in PRODUCTS:
         entry: dict[str, Any] = {}
-        for key in ("base_url", "api_key", "org_id"):
+        for key in settings_for(product):
             try:
                 entry[key] = resolved.resolution_source(product, key)
             except ConfigError as exc:

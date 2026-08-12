@@ -32,6 +32,11 @@ RUN_POLL = PollSpec(
 #: `--output raw` prints one field rather than the whole payload.
 RAW_FIELD = "extraction_result"
 
+#: Parameters the run POST and the status GET share. What a caller asked to be
+#: included in the result has to be asked for again when the result is read, or a
+#: waited run returns less than the same flags returned without --wait.
+_SHARED_WITH_STATUS = ("include_metadata", "include_metrics", "include_extracted_text")
+
 
 @raw_field(RAW_FIELD)
 @deployment_group.command("run")
@@ -63,10 +68,11 @@ def run(
     polls until the execution finishes and returns its result.
     """
     client = deployment(ctx.config, target)
+    sent = requested(params)
     with translated(endpoint=client.api_url):
         # Queued execution, so the request returns a handle instead of holding
         # the connection open for the length of the job.
-        started = client.structure_file(list(files), timeout=0, **requested(params))
+        started = client.structure_file(list(files), timeout=0, **sent)
         raise_for_result(started, endpoint=client.api_url)
 
         if not wait:
@@ -76,7 +82,9 @@ def run(
         result = wait_for_completion(
             initial=started,
             spec=RUN_POLL,
-            poll=_status_poller(client),
+            poll=_status_poller(
+                client, {k: v for k, v in sent.items() if k in _SHARED_WITH_STATUS}
+            ),
             save=save,
             interval=interval,
             timeout=wait_timeout,
@@ -87,11 +95,13 @@ def run(
     finish(ctx, result, raw_field=RAW_FIELD)
 
 
-def _status_poller(client: APIDeploymentsClient) -> Callable[[str], dict[str, Any]]:
+def _status_poller(
+    client: APIDeploymentsClient, params: dict[str, Any]
+) -> Callable[[str], dict[str, Any]]:
     """Poll one execution, failing on a status code the poll loop cannot use."""
 
     def poll(endpoint: str) -> dict[str, Any]:
-        result = client.check_execution_status(endpoint)
+        result = client.check_execution_status(endpoint, **params)
         # A retryable status is left to the client's own retry policy, which has
         # already run; the client reports those as still pending.
         if not result.get("pending"):
@@ -117,7 +127,7 @@ def status(ctx: Context, target: str, execution_id: str, **params: Any) -> None:
     client = deployment(ctx.config, target)
     endpoint = f"{client.api_url}?execution_id={execution_id}"
     with translated(endpoint=client.api_url):
-        result = client.check_execution_status(endpoint)
+        result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
             raise_for_result(result, endpoint=client.api_url)
     finish(ctx, result, raw_field=RAW_FIELD)

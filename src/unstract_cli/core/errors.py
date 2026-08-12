@@ -209,6 +209,11 @@ def undeclared_status_error(
 def hint_for(status: int) -> str | None:
     """A short, actionable next step for a common failure."""
     match status:
+        case 400:
+            return (
+                "The service rejected the request. Check the ids and parameter "
+                "values passed; `details` carries the service's own response."
+            )
         case 401 | 403:
             return (
                 "Check the API key for this product. Keys are per-product: "
@@ -223,7 +228,7 @@ def hint_for(status: int) -> str | None:
             return (
                 "This execution result was already retrieved. A deployment serves "
                 "its result exactly once; re-running the status call cannot "
-                "recover it. Use --save next time to persist on first read."
+                "recover it. Pass --save to `deployment run` to keep the next one."
             )
         case 409:
             return "The resource is in use, or conflicts with an existing one."

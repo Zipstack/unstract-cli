@@ -157,8 +157,8 @@ def operation_params(product: str, operation_id: str) -> list[Param]:
     return params
 
 
-def client_params(method: Callable[..., Any]) -> dict[str, Any]:
-    """Parameter name -> default for a client method, ``None`` where there is none.
+def client_params(method: Callable[..., Any]) -> dict[str, inspect.Parameter]:
+    """The parameters a client method accepts, by name.
 
     The published clients are frozen, so a spec parameter the client's signature
     does not name cannot be reached at all: passing it raises ``TypeError``
@@ -166,10 +166,47 @@ def client_params(method: Callable[..., Any]) -> dict[str, Any]:
     surface equal to what actually works.
     """
     return {
-        name: (None if p.default is inspect.Parameter.empty else p.default)
+        name: p
         for name, p in inspect.signature(method).parameters.items()
         if name not in ("self", "cls")
     }
+
+
+#: Python annotation -> OpenAPI type. The clients are generated from the same
+#: specs, but a source-derived spec can only report what the endpoint reads off
+#: the wire -- `extract_all_lines` is `"false"`, a string, there and a `bool` in
+#: the signature. The signature is what the call actually takes.
+_ANNOTATIONS: dict[Any, str] = {
+    bool: "boolean",
+    int: "integer",
+    float: "number",
+    str: "string",
+}
+
+
+def _is_unset(value: Any) -> bool:
+    """Whether a default is a generated client's "absent" sentinel.
+
+    Matched by name rather than by import: each client ships its own ``Unset``
+    inside its generated tree, and that path is regenerated wholesale.
+    """
+    return type(value).__name__ == "Unset"
+
+
+def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
+    """Reconcile a spec parameter with the client signature that will carry it."""
+    updates: dict[str, Any] = {}
+    if (mapped := _ANNOTATIONS.get(signature.annotation)) is not None:
+        updates["type"] = mapped
+    if signature.default is inspect.Parameter.empty:
+        # No default in the signature means the call cannot omit it.
+        updates["required"] = True
+    elif not _is_unset(signature.default):
+        # What omitting the flag gets you: the client sends its own value. An
+        # `Unset` default sends nothing, so there the spec's default is the
+        # honest answer, because the server applies it.
+        updates["default"] = signature.default
+    return replace(param, **updates)
 
 
 #: `name (type, optional): description` -- the Args entry of a Google-style
@@ -208,7 +245,7 @@ def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
     # "Defaults to X." sentence would print it a second time, and disagree with
     # it whenever the two drift.
     return {
-        name: re.sub(r"\s*Defaults to [^.]*\.\s*$", "", " ".join(text.split()))
+        name: re.sub(r"\s*Defaults to .*\.\s*$", "", " ".join(text.split()))
         for name, text in out.items()
         if text
     }
@@ -231,7 +268,7 @@ def _help_text(param: Param, choices: tuple[str, ...]) -> str:
     parts = [param.description] if param.description else []
     if choices:
         parts.append(f"One of: {', '.join(choices)}.")
-    if param.default is not None and not param.required:
+    if param.default not in (None, "") and not param.required:
         rendered = (
             str(param.default).lower()
             if isinstance(param.default, bool)
@@ -296,8 +333,7 @@ def derive_params(
         if accepted is not None:
             if param.name not in accepted:
                 continue
-            if (default := accepted[param.name]) is not None:
-                param = replace(param, default=default)
+            param = _from_signature(param, accepted[param.name])
         if not param.description and (text := described.get(param.name)):
             param = replace(param, description=text)
         out.append(param)
@@ -310,21 +346,33 @@ def spec_options(
     *,
     client_method: Callable[..., Any] | None = None,
     exclude: tuple[str, ...] = (),
-) -> Callable[[click.Command], click.Command]:
+) -> Callable[[Any], Any]:
     """Decorator: hang one operation's parameters off a command as options.
 
     ``exclude`` drops parameters the command supplies itself -- the document to
     extract is an argument, not a flag, and the CLI owns the polling that
     ``use_webhook`` would bypass.
+
+    Applies either above or below ``@group.command()``: above it decorates a
+    built command, below it a bare function that Click has yet to build.
     """
     spec_overlay = overlay_for(product, operation_id)
 
-    def decorate(command: click.Command) -> click.Command:
-        for param in derive_params(
-            product, operation_id, client_method=client_method, exclude=exclude
-        ):
-            command.params.append(click_option(param, spec_overlay))
-        return command
+    def decorate(target: Any) -> Any:
+        options = [
+            click_option(param, spec_overlay)
+            for param in derive_params(
+                product, operation_id, client_method=client_method, exclude=exclude
+            )
+        ]
+        if isinstance(target, click.Command):
+            target.params.extend(options)
+        else:
+            # Click reads this list back in reverse, so the help lists the
+            # parameters in the order the spec declares them.
+            pending = getattr(target, "__click_params__", [])
+            target.__click_params__ = list(reversed(options)) + pending
+        return target
 
     return decorate
 
@@ -337,7 +385,7 @@ def requested(values: dict[str, Any], *, drop: tuple[str, ...] = ()) -> dict[str
     ``False`` and ``""`` are values the caller chose and must survive.
     """
     return {
-        name: value
+        name: list(value) if isinstance(value, tuple) else value
         for name, value in values.items()
         if name not in drop and value is not None and value != ()
     }

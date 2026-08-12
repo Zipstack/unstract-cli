@@ -43,6 +43,22 @@ def test_unknown_command_is_a_usage_error_with_an_envelope(capsys):
     assert err.startswith("error:")
 
 
+def test_an_interrupt_exits_one_thirty_with_an_envelope(capsys, monkeypatch):
+    """Ctrl-C is not a failure of the command. Reporting it as a generic error
+    tells a supervisor to retry what the user deliberately stopped."""
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("unstract_cli.commands.config_cmd.load_config", interrupted)
+
+    code, payload, _ = run(capsys, "config", "doctor")
+
+    assert code == int(ExitCode.INTERRUPTED) == 130
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "interrupted"
+
+
 def test_unknown_config_target_exits_two(capsys):
     code, payload, _ = run(capsys, "config", "get", "nosuchproduct", "base_url")
     assert code == int(ExitCode.USAGE)

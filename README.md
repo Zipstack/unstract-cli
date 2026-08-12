@@ -50,6 +50,7 @@ Failures exit non-zero with a stable code:
 | 8 | server error |
 | 9 | result already consumed (one-shot read; use `--save` next time) |
 | 10 | the result was read but could not be saved — it is in `error.details` |
+| 130 | interrupted (128 + SIGINT) — the user stopped it, not a failure |
 
 ## Configuration
 

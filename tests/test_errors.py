@@ -45,9 +45,12 @@ def test_status_to_exit_code(status, expected):
 
 def test_exit_codes_are_stable_integers():
     # A caller branches on these numbers, so they are an API, not an enum detail.
-    assert [int(c) for c in ExitCode] == list(range(11))
+    assert [int(c) for c in ExitCode] == [*range(11), 130]
     assert int(ExitCode.ALREADY_CONSUMED) == 9
     assert int(ExitCode.SAVE_FAILED) == 10
+    # 128 + SIGINT, which every shell and job runner already reads as
+    # "stopped", rather than the next number in this CLI's own sequence.
+    assert int(ExitCode.INTERRUPTED) == 130
 
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503])

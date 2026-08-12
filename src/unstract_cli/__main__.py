@@ -71,8 +71,15 @@ def main(argv: list[str] | None = None) -> int:
                 fmt,
             )
         )
-    except click.Abort:
-        return int(ExitCode.GENERIC)
+    except (click.Abort, KeyboardInterrupt):
+        # Click turns an interrupt into Abort, and nothing here prompts, so
+        # Abort means only that. Reporting it as a generic failure tells a
+        # supervisor to retry what the user deliberately stopped.
+        return int(
+            emit_error(
+                CLIError("Interrupted.", ExitCode.INTERRUPTED, retryable=True), fmt
+            )
+        )
     except click.exceptions.Exit as exc:  # --help and --version exit through here
         return int(exc.exit_code)
     return int(ExitCode.SUCCESS)

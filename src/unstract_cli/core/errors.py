@@ -25,6 +25,9 @@ class ExitCode(IntEnum):
     SERVER_ERROR = 8
     ALREADY_CONSUMED = 9
     SAVE_FAILED = 10
+    #: 128 + SIGINT, the value a shell and every job runner already read as
+    #: "the user stopped it" rather than as a failure of the command.
+    INTERRUPTED = 130
 
 
 #: HTTP status -> exit code. 422 maps to VALIDATION, which is right for a real
@@ -57,6 +60,7 @@ _ERROR_CODES: dict[ExitCode, str] = {
     ExitCode.SERVER_ERROR: "server_error",
     ExitCode.ALREADY_CONSUMED: "already_consumed",
     ExitCode.SAVE_FAILED: "save_failed",
+    ExitCode.INTERRUPTED: "interrupted",
 }
 
 

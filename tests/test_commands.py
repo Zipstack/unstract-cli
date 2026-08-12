@@ -539,6 +539,41 @@ def test_a_waited_run_reads_its_result_with_the_flags_it_was_given(
     assert "tags" not in polled
 
 
+def test_a_waited_run_reports_which_execution_it_was(
+    capsys, deployment_client, tmp_path
+):
+    """The waited payload names the execution nowhere, so without this a caller
+    has no id to correlate the result against the service."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": True,
+            "execution_status": "PENDING",
+            "status_check_api_endpoint": "/status?execution_id=e1",
+        },
+        check_execution_status={
+            "status_code": 200,
+            "pending": False,
+            "execution_status": "COMPLETED",
+        },
+    )
+
+    _, out, _ = run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0",
+    )
+    assert envelope(out)["meta"]["execution_id"] == "e1"
+
+
 def test_a_run_only_parameter_is_not_forwarded_to_the_status_read(
     capsys, deployment_client, tmp_path
 ):

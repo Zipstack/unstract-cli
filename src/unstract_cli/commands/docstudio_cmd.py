@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import click
 from unstract.api_deployments.client import APIDeploymentsClient
@@ -92,7 +93,19 @@ def run(
                 click.echo(f"status: {status}", err=True) if not ctx.quiet else None
             ),
         )
-    finish(ctx, result, raw_field=RAW_FIELD)
+    # The waited result identifies the execution nowhere at the top level, so a
+    # caller has nothing to correlate against the service. --no-wait returns the
+    # handle as data; waiting returns it as meta.
+    finish(ctx, result, raw_field=RAW_FIELD, meta=_handle_meta(started))
+
+
+def _handle_meta(started: dict[str, Any]) -> dict[str, Any]:
+    """The execution's identity, from wherever the run response carries it."""
+    if execution_id := started.get("execution_id"):
+        return {"execution_id": execution_id}
+    endpoint = str(started.get("status_check_api_endpoint") or "")
+    found = parse_qs(urlparse(endpoint).query).get("execution_id")
+    return {"execution_id": found[0]} if found else {}
 
 
 def _status_poller(

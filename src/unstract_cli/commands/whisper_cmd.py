@@ -106,7 +106,16 @@ def extract(
                 click.echo(f"status: {status}", err=True) if not ctx.quiet else None
             ),
         )
-    finish(ctx, result, raw_field=RAW_FIELD)
+    # Waiting returns the text, which identifies the job nowhere; the hash is
+    # what a later status, retrieve or highlights call needs.
+    finish(
+        ctx,
+        result,
+        raw_field=RAW_FIELD,
+        meta={"whisper_hash": accepted.get("whisper_hash")}
+        if accepted.get("whisper_hash")
+        else None,
+    )
 
 
 @whisper_group.command("status")

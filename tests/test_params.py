@@ -12,6 +12,7 @@ import pytest
 from unstract.api_deployments.client import APIDeploymentsClient
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
+from unstract_cli.core import params as params_module
 from unstract_cli.core.params import (
     Param,
     click_option,
@@ -150,6 +151,23 @@ def test_the_docstrings_own_default_sentence_is_dropped():
     described = docstring_params(LLMWhispererClientV2.whisper)
     assert not described["lang"].endswith('Defaults to "eng".')
     assert described["tag"] == "The tag for the document."
+
+
+def test_the_spec_wins_over_the_docstring_and_the_overlay_wins_over_both(monkeypatch):
+    """Three sources can describe one flag, and only the most specific should
+    show. Today no spec parameter carries a description, so the precedence is
+    unexercised until one does -- which is when it would silently invert."""
+    described = Param("lang", "string", description="From the spec.")
+    monkeypatch.setattr(params_module, "operation_params", lambda *_: [described])
+
+    derived = derive_params(
+        "llmwhisperer", "extract", client_method=LLMWhispererClientV2.whisper
+    )
+    assert derived[0].description == "From the spec."
+    assert click_option(derived[0], {}).help.startswith("From the spec.")
+    assert click_option(derived[0], {"lang": {"help": "From the overlay."}}).help == (
+        "From the overlay."
+    )
 
 
 def test_a_multi_line_description_is_joined():

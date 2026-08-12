@@ -15,6 +15,8 @@ from typing import Any
 import click
 
 from unstract_cli.config import (
+    DOCSTUDIO,
+    LLMWHISPERER,
     PRODUCTS,
     ConfigError,
     ConfigFile,
@@ -24,6 +26,7 @@ from unstract_cli.config import (
     save_config,
     starter_profiles,
 )
+from unstract_cli.core.clients import llmwhisperer, translated
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import OutputFormat, emit_result
 
@@ -194,15 +197,68 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
     )
 
 
+def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
+    """Check each product's credentials against the service, where that is possible.
+
+    LLMWhisperer has a read-only usage endpoint, so its key can be verified for
+    real. A deployment has no side-effect-free endpoint -- the only thing to call
+    is an execution -- so its entry reports that the settings resolve and says
+    plainly that nothing was verified. Claiming otherwise would be worse than
+    not checking.
+    """
+    out: dict[str, Any] = {}
+    try:
+        with translated(endpoint="get-usage-info"):
+            llmwhisperer(resolved).get_usage_info()
+    except CLIError as exc:
+        out[LLMWHISPERER] = {
+            "checked": True,
+            "ok": False,
+            "detail": exc.message,
+            "exit_code": int(exc.exit_code),
+        }
+    except ConfigError as exc:
+        out[LLMWHISPERER] = {"checked": False, "ok": False, "detail": str(exc)}
+    else:
+        out[LLMWHISPERER] = {
+            "checked": True,
+            "ok": True,
+            "detail": "The key was accepted by the usage endpoint.",
+        }
+
+    resolves = all(
+        resolved.get(DOCSTUDIO, key) for key in ("org_id", "api_key", "base_url")
+    )
+    out[DOCSTUDIO] = {
+        "checked": False,
+        "ok": resolves,
+        "detail": (
+            "Credentials resolve (org and key present); not verified live -- the "
+            "deployment API has no side-effect-free endpoint to call."
+            if resolves
+            else "Organisation or key is missing; nothing was called."
+        ),
+    }
+    return out
+
+
 @config_group.command("doctor", help="Diagnose how each setting resolves.")
+@click.option(
+    "--probe/--no-probe",
+    default=False,
+    help="Also check the resolved credentials against the service.",
+)
 @click.pass_obj
-def config_doctor(obj: Any) -> None:
+def config_doctor(obj: Any, probe: bool) -> None:
     """Report where each setting resolves from, without echoing any secret.
 
     Answers the question that costs the most time: the CLI reports a key as "not
     configured", but you set it -- where is it looking? For `env:` references it
     says whether the variable is present in THIS process, a shell `export` in a
     login profile the CLI never inherited being the classic trap.
+
+    Resolution is answered offline. --probe adds the second question -- does the
+    resolved key work -- which needs the network, so it is opt-in.
     """
     resolved = _resolved(obj)
     products: dict[str, Any] = {}
@@ -220,16 +276,16 @@ def config_doctor(obj: Any) -> None:
     except ConfigError:
         aliases = []
 
-    emit_result(
-        {
-            "active_profile": resolved.active_profile,
-            "config_path": str(resolved.file.path),
-            "config_exists": resolved.file.exists,
-            "products": products,
-            "deployment_aliases": aliases,
-        },
-        _fmt(obj),
-    )
+    report: dict[str, Any] = {
+        "active_profile": resolved.active_profile,
+        "config_path": str(resolved.file.path),
+        "config_exists": resolved.file.exists,
+        "products": products,
+        "deployment_aliases": aliases,
+    }
+    if probe:
+        report["probe"] = _probe(resolved)
+    emit_result(report, _fmt(obj))
 
 
 def _resolved(obj: Any) -> ResolvedConfig:

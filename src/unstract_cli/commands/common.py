@@ -63,6 +63,20 @@ def wait_options(*, default: bool = True) -> Callable[[F], F]:
     return decorate
 
 
+def raw_field(field: str) -> Callable[[click.Command], click.Command]:
+    """Declare which field `--output raw` prints for this command.
+
+    Recorded on the command so `--discover full` can report it: a caller asking
+    for raw output has to know what it is going to get.
+    """
+
+    def decorate(command: click.Command) -> click.Command:
+        command.raw_field = field
+        return command
+
+    return decorate
+
+
 def finish(
     ctx: Context,
     data: Any,
@@ -80,4 +94,10 @@ def finish(
     )
 
 
-__all__ = ["DEFAULT_INTERVAL", "DEFAULT_TIMEOUT", "finish", "wait_options"]
+__all__ = [
+    "DEFAULT_INTERVAL",
+    "DEFAULT_TIMEOUT",
+    "finish",
+    "raw_field",
+    "wait_options",
+]

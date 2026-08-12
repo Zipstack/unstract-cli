@@ -13,7 +13,7 @@ import click
 from unstract.api_deployments.client import APIDeploymentsClient
 
 from unstract_cli.app import Context, deployment_group, pass_context
-from unstract_cli.commands.common import finish, wait_options
+from unstract_cli.commands.common import finish, raw_field, wait_options
 from unstract_cli.core.clients import deployment, raise_for_result, translated
 from unstract_cli.core.params import requested, spec_options
 from unstract_cli.core.poll import PollSpec, wait_for_completion
@@ -33,6 +33,7 @@ RUN_POLL = PollSpec(
 RAW_FIELD = "extraction_result"
 
 
+@raw_field(RAW_FIELD)
 @deployment_group.command("run")
 @click.argument("target")
 @click.argument("files", nargs=-1, required=True, type=click.Path(exists=True))
@@ -100,6 +101,7 @@ def _status_poller(client: APIDeploymentsClient) -> Callable[[str], dict[str, An
     return poll
 
 
+@raw_field(RAW_FIELD)
 @deployment_group.command("status")
 @click.argument("target")
 @click.argument("execution_id")

@@ -13,8 +13,9 @@ import click
 
 from unstract_cli.commands.config_cmd import config_group
 from unstract_cli.config import ConfigError, ResolvedConfig, load_config, set_config_path
+from unstract_cli.core.discover import TIERS, discover
 from unstract_cli.core.errors import CLIError, ExitCode
-from unstract_cli.core.output import OutputFormat, diagnostic
+from unstract_cli.core.output import OutputFormat, diagnostic, emit_result
 
 
 @dataclass
@@ -57,7 +58,12 @@ class Context:
 pass_context = click.make_pass_decorator(Context, ensure=True)
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+# `invoke_without_command` so `--discover` is answerable on its own: it is
+# how a caller learns which commands exist, so it cannot require one.
+@click.group(
+    invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 @click.option(
     "--config",
     "config_file",
@@ -81,6 +87,13 @@ pass_context = click.make_pass_decorator(Context, ensure=True)
     help="Suppress diagnostics on stderr. stdout is unaffected.",
 )
 @click.option("--verbose", "-v", count=True, help="Increase diagnostic detail.")
+@click.option(
+    "--discover",
+    "discover_tier",
+    type=click.Choice(TIERS),
+    default=None,
+    help="Describe this CLI as JSON instead of running a command.",
+)
 @click.version_option(package_name="unstract-cli")
 @click.pass_context
 def cli(
@@ -90,6 +103,7 @@ def cli(
     output: str,
     quiet: bool,
     verbose: int,
+    discover_tier: str | None,
 ) -> None:
     """Unstract CLI: extract documents and run API deployments.
 
@@ -104,6 +118,15 @@ def cli(
         verbosity=verbose,
         profile=profile,
     )
+    if discover_tier:
+        # Answered without a subcommand and without touching configuration:
+        # discovery is how a caller finds out what to run, so it must work
+        # before anything is set up.
+        emit_result(discover(cli, discover_tier), ctx.obj.output)
+        ctx.exit(int(ExitCode.SUCCESS))
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+        ctx.exit(int(ExitCode.SUCCESS))
 
 
 @cli.group("whisper")

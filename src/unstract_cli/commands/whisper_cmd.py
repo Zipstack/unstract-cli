@@ -13,7 +13,7 @@ import click
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
 from unstract_cli.app import Context, pass_context, whisper_group
-from unstract_cli.commands.common import finish, wait_options
+from unstract_cli.commands.common import finish, raw_field, wait_options
 from unstract_cli.core.clients import llmwhisperer, translated
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.params import requested, spec_options
@@ -40,6 +40,7 @@ def _is_url(source: str) -> bool:
     return source.startswith(("http://", "https://"))
 
 
+@raw_field(RAW_FIELD)
 @whisper_group.command("extract")
 @click.argument("source")
 @wait_options()
@@ -118,6 +119,7 @@ def status(ctx: Context, whisper_hash: str) -> None:
         finish(ctx, client.whisper_status(whisper_hash))
 
 
+@raw_field(RAW_FIELD)
 @whisper_group.command("retrieve")
 @click.argument("whisper_hash")
 @click.option(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from unstract.clone.report import CloneReport, Endpoint, PhaseResult
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
     LLMWhispererClientV2,
@@ -17,7 +18,7 @@ from unstract.llmwhisperer.client_v2 import (
 
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
-from unstract_cli.commands import docstudio_cmd, whisper_cmd
+from unstract_cli.commands import clone_cmd, docstudio_cmd, whisper_cmd
 from unstract_cli.config import LLMWHISPERER
 from unstract_cli.core.errors import CLIError, ExitCode
 
@@ -889,3 +890,57 @@ def test_the_key_never_reaches_stdout_or_stderr(capsys, whisper_client, monkeypa
     assert code == int(ExitCode.AUTH)
     assert key not in out
     assert key not in err
+
+
+def test_clone_maps_its_flags_and_reports_a_partial_failure(capsys, monkeypatch):
+    """Migration flags decide what is copied where, with two admin keys in play."""
+    captured: dict = {}
+
+    def fake_clone(source, target, options):
+        captured.update(source=source, target=target, options=options)
+        return CloneReport(
+            source=Endpoint(source.base_url, source.organization_id),
+            target=Endpoint(target.base_url, target.organization_id),
+            phases=[PhaseResult(name="adapters", created=1, failed=2)],
+        )
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    code, out, err = run(
+        capsys,
+        "clone",
+        "--source-url",
+        "https://dev.example.com",
+        "--source-org",
+        "org_dev",
+        "--target-url",
+        "https://qa.example.com",
+        "--target-org",
+        "org_qa",
+        "--dry-run",
+        "--exclude",
+        "files, groups",
+        "--skip-files",
+        "--max-file-size",
+        "2MB",
+        "--api-prefix",
+        "api/v2",
+    )
+
+    assert captured["source"].platform_key == "src-key-0123456789"
+    assert captured["target"].organization_id == "org_qa"
+    assert captured["target"].api_path_prefix == "api/v2"
+    assert captured["options"].dry_run is True
+    assert captured["options"].exclude == ("files", "groups")
+    assert captured["options"].file_strategy == "skip"
+    assert captured["options"].max_file_size == 2 * 1024 * 1024
+
+    # A phase that failed is not a successful migration, whatever else worked.
+    assert code == int(ExitCode.GENERIC)
+    body = envelope(out)
+    assert body["ok"] is False
+    assert "adapters" in body["error"]["message"]
+    for key in ("src-key-0123456789", "tgt-key-0123456789"):
+        assert key not in out and key not in err

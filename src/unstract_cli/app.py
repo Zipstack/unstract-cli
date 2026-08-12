@@ -233,7 +233,7 @@ cli.add_command(config_group)
 
 # Imported for their side effect of registering commands, and imported last
 # because those modules hang their commands off the groups declared just above.
-from unstract_cli.commands import docstudio_cmd, whisper_cmd  # noqa: E402,F401
+from unstract_cli.commands import clone_cmd, docstudio_cmd, whisper_cmd  # noqa: E402,F401
 
 
 def command_tree() -> dict[str, Any]:

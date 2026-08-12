@@ -24,16 +24,15 @@ pipx install "git+https://github.com/Zipstack/unstract-cli@<tag-or-sha>"
 clients are pinned to exact commits, and a shared environment would let another
 package's resolver move them.
 
-### Name collision
-
-`unstract-client` also installs a console script called `unstract`. In an
-environment holding both, whichever was installed last owns the name. Two ways
-out, in order of preference:
+### Other names for the same CLI
 
 - `unstract-cli` — a second console script this package always owns.
 - `python -m unstract_cli` — works from a source checkout with no install at all.
 
-Check which one you actually have before filing a bug about a missing command:
+`unstract-client` released before this CLI installed a console script called
+`unstract` too. An environment that still holds one of those versions gives the
+name to whichever package was installed last, so check what answers before
+filing a bug about a missing command:
 
 ```bash
 command -v unstract && unstract --version
@@ -114,6 +113,7 @@ Run against a document you can re-send; several of these submit real work.
 | 10 | any command with `-o json` and a wrong key | exit 3, JSON envelope on stdout, no traceback |
 | 11 | any command with `-o json` and a path that does not exist | exit 2, JSON envelope on stdout |
 | 12 | any command with no `-o` | a table, in a terminal and through a pipe alike |
+| 13 | `clone --source-url ... --target-url ... --dry-run` | the plan is reported and nothing is written to the target |
 
 Two properties matter more than any single row, because they are what a caller
 depends on and what breaks quietly:

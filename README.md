@@ -2,7 +2,7 @@
 
 `unstract` — one CLI for the Unstract suite: extract a document with
 LLMWhisperer, run it through a Document Studio API deployment, get structured
-JSON back.
+JSON back. It also clones one organization's resources into another.
 
 ```bash
 pipx install git+https://github.com/Zipstack/unstract-cli
@@ -79,6 +79,10 @@ Credentials use `env:VAR_NAME` indirection, so the file records where a secret
 lives rather than the secret itself. `unstract config doctor` reports where each
 setting resolved from — including whether an `env:` reference is actually set in
 the current process — without echoing any value.
+
+`clone` is the exception: it talks to two deployments at once, which no single
+profile describes, so it takes both endpoints as flags and both admin Platform
+keys from `UNSTRACT_SRC_PLATFORM_KEY` / `UNSTRACT_TGT_PLATFORM_KEY`.
 
 ## Development
 

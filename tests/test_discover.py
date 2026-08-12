@@ -27,7 +27,12 @@ def test_groups_names_the_products_and_stops_there(capsys):
     """The cheap question stays cheap: no command list, no flags."""
     code, data = run(capsys, "--discover", "groups")
     assert code == int(ExitCode.SUCCESS)
-    assert {g["name"] for g in data["groups"]} == {"config", "docstudio", "whisper"}
+    assert {g["name"] for g in data["groups"]} == {
+        "clone",
+        "config",
+        "docstudio",
+        "whisper",
+    }
     assert all(g["help"] for g in data["groups"])
     assert "commands" not in data
 

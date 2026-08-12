@@ -14,10 +14,17 @@ from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
 from unstract_cli.app import Context, pass_context, whisper_group
 from unstract_cli.commands.common import finish, raw_field, wait_options
-from unstract_cli.core.clients import llmwhisperer, translated
+from unstract_cli.core.clients import llmwhisperer, translated, translating
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.params import requested, spec_options
-from unstract_cli.core.poll import PollSpec, persist, preflight, wait_for_completion
+from unstract_cli.core.poll import (
+    PollSpec,
+    classify,
+    extract_status,
+    persist,
+    preflight,
+    wait_for_completion,
+)
 
 PRODUCT = "llmwhisperer"
 
@@ -99,8 +106,11 @@ def extract(
         result = wait_for_completion(
             initial=accepted,
             spec=EXTRACT_POLL,
-            poll=client.whisper_status,
-            retrieve=lambda handle: _extraction(client.whisper_retrieve(handle)),
+            poll=translating(client.whisper_status, "whisper-status"),
+            retrieve=translating(
+                lambda handle: _extraction(client.whisper_retrieve(handle)),
+                "whisper-retrieve",
+            ),
             save=save,
             interval=interval,
             timeout=wait_timeout,
@@ -148,7 +158,22 @@ def status(ctx: Context, whisper_hash: str) -> None:
     """Report the state of a submitted extraction."""
     client = llmwhisperer(ctx.config)
     with translated(endpoint="whisper-status"):
-        finish(ctx, client.whisper_status(whisper_hash))
+        result = client.whisper_status(whisper_hash)
+    # A failed extraction is reported inside an HTTP 200, so the status code
+    # alone would call this a success.
+    if classify(result, EXTRACT_POLL) == "failure":
+        raise CLIError(
+            f"Extraction finished with status {extract_status(result)!r}.",
+            ExitCode.VALIDATION,
+            details=result,
+            endpoint="whisper-status",
+            hint=(
+                "`details` carries the service's own message. An `unknown` status "
+                "means the service no longer holds this hash."
+            ),
+            extra={"whisper_hash": whisper_hash},
+        )
+    finish(ctx, result)
 
 
 @raw_field(RAW_FIELD)

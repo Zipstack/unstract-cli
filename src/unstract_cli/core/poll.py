@@ -183,14 +183,28 @@ def wait_for_completion(
     last_status: str | None = None
     payload: Any = initial
 
-    while True:
+    def naming_the_job(call: Callable[[str], Any]) -> Any:
+        """Run one step of the loop, ensuring any failure names the job.
+
+        The handle is the difference between resuming and paying to process the
+        document a second time, so it is attached here rather than left to
+        whatever the caller wrapped the loop in.
+        """
         try:
-            payload = poll(handle)
+            return call(handle)
         except CLIError as exc:
-            # The handle is the difference between resuming and paying to
-            # process the document a second time.
             exc.extra.setdefault(spec.handle_field, handle)
             raise
+        except Exception as exc:
+            raise CLIError(
+                str(exc) or type(exc).__name__,
+                ExitCode.SERVER_ERROR,
+                retryable=True,
+                extra={spec.handle_field: handle},
+            ) from exc
+
+    while True:
+        payload = naming_the_job(poll)
         status = extract_status(payload, spec.status_field)
 
         if status != last_status:
@@ -240,7 +254,7 @@ def wait_for_completion(
         sleep(min(interval, remaining))
 
     if retrieve is not None:
-        payload = retrieve(handle)
+        payload = naming_the_job(retrieve)
     if save is not None:
         written = persist(save, payload)
         if on_saved is not None:

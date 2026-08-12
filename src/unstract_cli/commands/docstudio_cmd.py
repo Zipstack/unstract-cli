@@ -15,7 +15,12 @@ from unstract.api_deployments.client import APIDeploymentsClient
 
 from unstract_cli.app import Context, deployment_group, pass_context
 from unstract_cli.commands.common import finish, raw_field, wait_options
-from unstract_cli.core.clients import deployment, raise_for_result, translated
+from unstract_cli.core.clients import (
+    deployment,
+    raise_for_result,
+    translated,
+    translating,
+)
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.params import requested, spec_options
 from unstract_cli.core.poll import PollSpec, classify, preflight, wait_for_completion
@@ -124,7 +129,7 @@ def _status_poller(
             raise_for_result(result, endpoint=client.api_url)
         return result
 
-    return poll
+    return translating(poll, client.api_url)
 
 
 @raw_field(RAW_FIELD)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from requests.exceptions import ConnectionError
 from unstract.clone.report import CloneReport, Endpoint, PhaseResult
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
@@ -250,6 +251,23 @@ def test_a_failed_extraction_carries_the_handle(capsys, whisper_client, tmp_path
 
     code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
     assert code == int(ExitCode.VALIDATION)
+    assert envelope(out)["error"]["whisper_hash"] == "h1"
+
+
+def test_a_transport_failure_mid_poll_carries_the_handle(
+    capsys, whisper_client, tmp_path
+):
+    """The document is submitted and billed by this point. Without the handle the
+    only way on is to send it again and pay for it twice."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1"},
+        whisper_status=ConnectionError("connection dropped"),
+    )
+
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    assert code == int(ExitCode.SERVER_ERROR)
     assert envelope(out)["error"]["whisper_hash"] == "h1"
 
 

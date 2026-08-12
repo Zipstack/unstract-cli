@@ -12,7 +12,7 @@ shapes converge here rather than in each command.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -142,6 +142,23 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
         ) from exc
 
 
+def translating(
+    call: Callable[..., Any], endpoint: str | None = None
+) -> Callable[..., Any]:
+    """Wrap one call so its failures are CLIErrors where they happen.
+
+    A ``with translated(...)`` around a loop converts nothing until the loop is
+    left, by which point what the loop knew -- the job handle above all -- is out
+    of scope.
+    """
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        with translated(endpoint=endpoint):
+            return call(*args, **kwargs)
+
+    return wrapped
+
+
 def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> None:
     """Fail on a deployment response that reports an error status.
 
@@ -166,4 +183,5 @@ __all__ = [
     "llmwhisperer",
     "raise_for_result",
     "translated",
+    "translating",
 ]

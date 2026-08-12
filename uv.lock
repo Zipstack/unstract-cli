@@ -173,7 +173,7 @@ wheels = [
 [[package]]
 name = "llmwhisperer-client"
 version = "2.7.0"
-source = { git = "https://github.com/Zipstack/llm-whisperer-python-client?rev=ef5e5af#ef5e5af854f2e986456d977698ef913f2eb8ca8c" }
+source = { git = "https://github.com/Zipstack/llm-whisperer-python-client?rev=7f64caf#7f64caf5893370e0d472c50df3df39ef198fb37b" }
 dependencies = [
     { name = "attrs" },
     { name = "httpx" },
@@ -345,18 +345,18 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1,<9" },
-    { name = "llmwhisperer-client", git = "https://github.com/Zipstack/llm-whisperer-python-client?rev=ef5e5af" },
+    { name = "llmwhisperer-client", git = "https://github.com/Zipstack/llm-whisperer-python-client?rev=7f64caf" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "tomli-w", specifier = ">=1.0" },
-    { name = "unstract-client", git = "https://github.com/Zipstack/unstract-python-client?rev=54f09f4" },
+    { name = "unstract-client", git = "https://github.com/Zipstack/unstract-python-client?rev=27dd806" },
 ]
 provides-extras = ["dev"]
 
 [[package]]
 name = "unstract-client"
 version = "1.5.3"
-source = { git = "https://github.com/Zipstack/unstract-python-client?rev=54f09f4#54f09f4ed0aa728d297b7d5f003f3dd48e1ce6a3" }
+source = { git = "https://github.com/Zipstack/unstract-python-client?rev=27dd806#27dd8067bbac53b8a42c48f4178592fc7f369e7e" }
 dependencies = [
     { name = "attrs" },
     { name = "click" },

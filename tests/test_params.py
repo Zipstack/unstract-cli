@@ -202,10 +202,14 @@ def test_no_option_carries_a_value_by_default():
         assert click_option(param, {}).default is None
 
 
-def test_choices_come_from_the_overlay():
-    """The specs declare no enums, so allowed values can only come from the
-    overlay -- and a wrong value must fail before the request, not after."""
-    option = click_option(Param("mode"), {"mode": {"choices": ["form", "table"]}})
+def test_choices_come_from_the_spec_unless_the_overlay_narrows_them():
+    """A wrong value must fail before the request, not after -- and the list it
+    is checked against is the service's own, not a copy that can fall behind."""
+    spec_declared = _by_name(operation_params("llmwhisperer", "extract"))["mode"]
+    assert "excel" in spec_declared.choices
+    assert click_option(spec_declared, {}).type.choices == spec_declared.choices
+
+    option = click_option(spec_declared, {"mode": {"choices": ["form", "table"]}})
     assert isinstance(option.type, click.Choice)
     assert option.type.choices == ("form", "table")
 

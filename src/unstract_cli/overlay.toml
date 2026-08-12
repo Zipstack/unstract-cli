@@ -1,12 +1,7 @@
 # Per-flag overrides for spec-derived options: [<product>.<operationId>.<param>].
 #
-# Only what the spec cannot express belongs here. Names, types and defaults are
-# read from the spec, and help text falls back to the published client's own
-# docstring, so an entry is needed only to constrain values, add a short flag,
-# hide a parameter the CLI owns, or reword help the client states poorly.
-
-[llmwhisperer.extract.mode]
-choices = ["form", "high_quality", "low_cost", "native_text", "table"]
-
-[llmwhisperer.extract.output_mode]
-choices = ["layout_preserving", "text"]
+# Only what the spec cannot express belongs here. Names, types, defaults and
+# allowed values are read from the spec, and help text falls back to the
+# published client's own docstring, so an entry is needed only to add a short
+# flag, narrow a value list on purpose, hide a parameter the CLI owns, or reword
+# help the client states poorly.

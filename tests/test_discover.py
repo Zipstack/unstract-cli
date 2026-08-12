@@ -47,10 +47,13 @@ def test_full_carries_enough_to_build_a_call(capsys):
 
     assert params["source"]["kind"] == "argument" and params["source"]["required"]
     assert params["mode"]["choices"] == [
+        "document_insights",
+        "excel",
         "form",
         "high_quality",
         "low_cost",
         "native_text",
+        "pdf_to_images",
         "table",
     ]
     assert params["wait"]["flags"] == ["--wait", "--no-wait"]

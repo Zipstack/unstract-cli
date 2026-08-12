@@ -18,10 +18,13 @@ from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 from unstract_cli.core.params import derive_params, operation_params
 
 #: (product, operationId, client method) per command that derives its flags,
-#: with the spec parameters that method cannot accept. Each one is a parameter
-#: the client owns rather than one it lacks: `url_in_post` says the URL is in
-#: the body, which the client decides; `files` is built from the paths given;
+#: with the spec parameters that method cannot accept. Most are a parameter the
+#: client owns rather than one it lacks: `url_in_post` says the URL is in the
+#: body, which the client decides; `files` is built from the paths given;
 #: `execution_id` is read out of the endpoint URL the server handed back.
+#: `highlights.mode` is the exception -- the endpoint reads it for quota
+#: accounting and the published client has no argument for it, so the CLI cannot
+#: offer it without the call failing.
 COMMANDS = [
     (
         "llmwhisperer",
@@ -29,7 +32,7 @@ COMMANDS = [
         LLMWhispererClientV2.whisper,
         {"url_in_post"},
     ),
-    ("llmwhisperer", "highlights", LLMWhispererClientV2.get_highlight_data, set()),
+    ("llmwhisperer", "highlights", LLMWhispererClientV2.get_highlight_data, {"mode"}),
     ("docstudio", "execute", APIDeploymentsClient.structure_file, {"files"}),
     (
         "docstudio",

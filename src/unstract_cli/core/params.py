@@ -77,6 +77,7 @@ class Param:
     array: bool = False
     nullable: bool = False
     required: bool = False
+    choices: tuple[str, ...] = ()
 
     @property
     def flag(self) -> str:
@@ -114,6 +115,7 @@ def _from_schema(
         array=array,
         nullable=nullable,
         required=required,
+        choices=tuple(schema.get("enum") or ()),
     )
 
 
@@ -213,6 +215,10 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
 #: docstring, which is how both clients document their parameters.
 _ARG_LINE = re.compile(r"^\s*(\w+)\s*(\([^)]*\))?\s*:\s*(.*)$")
 
+#: Sentences a description restates from elsewhere. The value list is matched on
+#: its opening quote so prose that merely says "can be" is left alone.
+_RESTATED = re.compile(r'(?:\s*(?:Defaults to [^.]*\.|Can be "[^.]*\.))+\s*$')
+
 
 def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
     """Parameter descriptions from a client method's own docstring.
@@ -241,11 +247,11 @@ def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
             out[current] = match.group(3).strip()
         elif current:
             out[current] = f"{out[current]} {line.strip()}".strip()
-    # The default is rendered from the signature, so the docstring's own
-    # "Defaults to X." sentence would print it a second time, and disagree with
-    # it whenever the two drift.
+    # The default and the allowed values are both rendered from the spec and the
+    # signature, so the docstring's own sentences for them would print a second
+    # copy that disagrees the moment either drifts.
     return {
-        name: re.sub(r"\s*Defaults to .*\.\s*$", "", " ".join(text.split()))
+        name: _RESTATED.sub("", " ".join(text.split())).strip()
         for name, text in out.items()
         if text
     }
@@ -281,7 +287,9 @@ def _help_text(param: Param, choices: tuple[str, ...]) -> str:
 def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
     """Build one Click option from a spec parameter and its overlay entry."""
     entry = spec_overlay.get(param.name, {})
-    choices = tuple(entry.get("choices", ()))
+    # Falling back to the spec's own enum, so a hand-written list is needed only
+    # to narrow one on purpose -- a copy of it goes stale as the service grows.
+    choices = tuple(entry.get("choices", ())) or param.choices
     help_text = entry.get("help") or _help_text(param, choices)
     short = entry.get("short")
 

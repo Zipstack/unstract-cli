@@ -151,11 +151,11 @@ def cli(
     verbose: int,
     discover_tier: str | None,
 ) -> None:
-    """Unstract CLI: extract documents and run API deployments.
+    """The official CLI for Unstract.
 
-    Output is a table by default. With `-o json` stdout carries one envelope --
-    {ok, data, error, meta} -- on success and on failure alike, and its content
-    depends on nothing but the command you ran. Diagnostics go to stderr.
+    Extract documents with LLMWhisperer and run API deployments. `--discover
+    groups` maps every command as JSON; pass `-o json` when scripting or parsing
+    the output.
     """
     set_config_path(config_file)
     ctx.obj = Context(

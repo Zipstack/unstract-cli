@@ -16,6 +16,7 @@ import click
 
 from unstract_cli.config import (
     DOCSTUDIO,
+    KEY_SOURCES,
     LLMWHISPERER,
     PRODUCTS,
     ConfigError,
@@ -88,7 +89,7 @@ def config_init(obj: Any, force: bool) -> None:
             "replaced_existing": replaced,
             "note": (
                 "Credentials use env: indirection, so this file holds no secrets. "
-                "Set the referenced environment variables to authenticate."
+                "Set the referenced environment variables to authenticate. " + KEY_SOURCES
             ),
         },
         _fmt(obj),
@@ -304,6 +305,15 @@ def config_doctor(obj: Any, probe: bool) -> None:
         "products": products,
         "deployment_aliases": aliases,
     }
+    if any(
+        not entry["api_key"]["resolved"]
+        for entry in products.values()
+        if "api_key" in entry
+    ):
+        # Not a problem -- an unconfigured setting is reported, not failed -- but
+        # the next question after "no key" is always where one comes from. The
+        # field name avoids the word the payload scrubber redacts on.
+        report["getting_started"] = KEY_SOURCES
     if probe:
         report["probe"] = _probe(resolved)
         problems += [

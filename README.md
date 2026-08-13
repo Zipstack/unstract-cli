@@ -75,11 +75,22 @@ api_key = "env:UNSTRACT_DEPLOYMENT_KEY"
 api_name = "invoice-parser"
 ```
 
+Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is shown
+on the API deployment's own page in the Unstract UI. `config init` also writes an
+`onprem-example` profile as a shape to copy for a self-hosted install — its host
+is a placeholder, and only the *active* profile is ever resolved.
+
 Credentials use `env:VAR_NAME` indirection, so the file records where a secret
 lives rather than the secret itself. `unstract config doctor` reports where each
 setting resolved from — including whether an `env:` reference is actually set in
 the current process — without echoing any value. It exits non-zero when one of
 its own checks failed, so a setup script can branch on it.
+
+A project-local `.unstract.toml` **found by upward search** may not supply
+`api_key` or `base_url`. Those are ignored, with a warning; everything else in it
+— profile selection, `org_id`, deployment aliases — applies as usual. A checkout
+you did not write is not trusted to name the host your key is sent to. Name the
+file explicitly (`--config` or `$UNSTRACT_CONFIG`) and it is honoured in full.
 
 `clone` is the exception: it talks to two deployments at once, which no single
 profile describes, so it takes both endpoints as flags and both admin Platform

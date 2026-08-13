@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import stat
 import tomllib
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,14 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (DOCSTUDIO, "base_url"): ("UNSTRACT_BASE_URL",),
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
 }
+
+
+#: Where the two credentials are minted. Quoted wherever the CLI reports one as
+#: missing: knowing a key is unset is no help without knowing where one is made.
+KEY_SOURCES = (
+    "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
+    "shown on the API deployment's own page in the Unstract UI."
+)
 
 
 def settings_for(product: str) -> tuple[str, ...]:
@@ -107,13 +116,23 @@ def config_path() -> Path:
     file checked into a repo, a throwaway one in CI, and a personal default, each
     selected per invocation.
     """
+    return _resolve_config_path()[0]
+
+
+def _resolve_config_path() -> tuple[Path, bool]:
+    """The config path, and whether it was *discovered* rather than named.
+
+    The boolean is the trust signal: a path the user named (``--config`` or
+    ``$UNSTRACT_CONFIG``) is trusted, one found by walking up from the working
+    directory is not. See ``UNTRUSTED_PROJECT_KEYS``.
+    """
     if _config_override is not None:
-        return _config_override
+        return _config_override, False
     if override := os.environ.get("UNSTRACT_CONFIG"):
-        return Path(override).expanduser()
+        return Path(override).expanduser(), False
     if local := find_project_config():
-        return local
-    return HOME_CONFIG.expanduser()
+        return local, True
+    return HOME_CONFIG.expanduser(), False
 
 
 def _deref(value: Any) -> Any:
@@ -128,6 +147,15 @@ def _deref(value: Any) -> Any:
     return value
 
 
+#: Settings a *discovered* project-local file may not supply. Such a file is
+#: attacker-controlled in any checkout the user did not write, and combined with
+#: ``env:`` indirection it would otherwise point the CLI at a host of the
+#: author's choosing and hand it the user's real key as a Bearer token.
+#: Everything else -- org_id, profile selection, deployment aliases -- is still
+#: honoured, so the project-local workflow keeps working.
+UNTRUSTED_PROJECT_KEYS = frozenset({"api_key", "base_url"})
+
+
 @dataclass
 class ConfigFile:
     """Parsed contents of the config file."""
@@ -138,13 +166,40 @@ class ConfigFile:
     exists: bool = False
     #: Non-fatal diagnostics (e.g. loose file permissions), surfaced on stderr.
     warnings: tuple[str, ...] = ()
+    #: True when `path` was found by walking up from the working directory rather
+    #: than named. Such a file is not trusted with credentials or hosts.
+    is_project_local: bool = False
+    #: Keys withheld from an untrusted file, as ``{(profile, *blocks, key): value}``.
+    #: They are excluded from *resolution* -- that is the security property -- but
+    #: kept here so a write-back does not delete them from the user's own file.
+    withheld: dict[tuple[str, ...], Any] = field(default_factory=dict)
+
+
+def _strip_untrusted(profiles: dict[str, Any]) -> dict[tuple[str, ...], Any]:
+    """Remove the untrusted keys from a profile tree, in place, reporting what went."""
+    withheld: dict[tuple[str, ...], Any] = {}
+
+    def walk(node: Any, trail: tuple[str, ...]) -> None:
+        if not isinstance(node, dict):
+            return
+        for key in list(node):
+            if key in UNTRUSTED_PROJECT_KEYS:
+                withheld[(*trail, key)] = node.pop(key)
+            else:
+                walk(node[key], (*trail, key))
+
+    walk(profiles, ())
+    return withheld
 
 
 def load_config(path: Path | None = None) -> ConfigFile:
     """Load the config file. A missing file is normal, not an error."""
-    target = path or config_path()
+    if path is not None:
+        target, project_local = path, False
+    else:
+        target, project_local = _resolve_config_path()
     if not target.exists():
-        return ConfigFile(path=target, exists=False)
+        return ConfigFile(path=target, exists=False, is_project_local=project_local)
 
     try:
         with target.open("rb") as fh:
@@ -167,13 +222,53 @@ def load_config(path: Path | None = None) -> ConfigFile:
     if not isinstance(profiles, dict):
         raise ConfigError(f"`profiles` in {target} must be a table.")
 
+    # Stripped rather than ignored wholesale, and said out loud: the rest of the
+    # file is the project's own workflow, and a setting dropped in silence is its
+    # own kind of surprise.
+    withheld: dict[tuple[str, ...], Any] = {}
+    if project_local:
+        withheld = _strip_untrusted(profiles)
+        if withheld:
+            names = ", ".join(sorted(".".join(trail) for trail in withheld))
+            warnings.append(
+                f"Ignoring {names} from project config {target}: a discovered "
+                f"{PROJECT_CONFIG_NAME} may not supply credentials or base URLs. "
+                "Pass --config explicitly, or set the environment variable instead."
+            )
+
     return ConfigFile(
         default_profile=raw.get("default_profile"),
         profiles=profiles,
         path=target,
         exists=True,
         warnings=tuple(warnings),
+        is_project_local=project_local,
+        withheld=withheld,
     )
+
+
+def _restored_profiles(cfg: ConfigFile, target: Path) -> dict[str, Any]:
+    """The profiles to write, with anything withheld put back.
+
+    Withholding a key from resolution is the security property; deleting it from
+    the user's file is not, and `config set` loads, mutates and saves the whole
+    document. Restored **only** when writing back to the file they came from --
+    into any other path this would copy untrusted values somewhere they are
+    trusted.
+    """
+    if not cfg.withheld or cfg.path is None or target.resolve() != cfg.path.resolve():
+        return cfg.profiles
+
+    profiles = deepcopy(cfg.profiles)
+    for (*parents, leaf), value in cfg.withheld.items():
+        node: dict[str, Any] = profiles
+        for segment in parents:
+            child = node.get(segment)
+            if not isinstance(child, dict):
+                child = node[segment] = {}
+            node = child
+        node.setdefault(leaf, value)
+    return profiles
 
 
 def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
@@ -184,7 +279,7 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     doc: dict[str, Any] = {}
     if cfg.default_profile:
         doc["default_profile"] = cfg.default_profile
-    doc["profiles"] = cfg.profiles
+    doc["profiles"] = _restored_profiles(cfg, target)
 
     # Create with 0600 from the outset rather than widening then narrowing: a
     # world-readable window, however brief, is a window.
@@ -364,9 +459,19 @@ class ResolvedConfig:
         if raw not in (None, ""):
             return {"resolved": True, "source": "profile (literal)"}
 
-        if key == "base_url" and DEFAULT_BASE_URLS.get(product):
-            return {"resolved": True, "source": "built-in default"}
-        return {"resolved": False, "source": "unset"}
+        report: dict[str, Any] = (
+            {"resolved": True, "source": "built-in default"}
+            if key == "base_url" and DEFAULT_BASE_URLS.get(product)
+            else {"resolved": False, "source": "unset"}
+        )
+        if (self.active_profile, product, key) in self.file.withheld:
+            # The file does set it; reporting only where the value came from
+            # would leave the user staring at a setting they can see in the file.
+            report["detail"] = (
+                f"{self.file.path} sets {key}, and a discovered "
+                f"{PROJECT_CONFIG_NAME} is not trusted with it."
+            )
+        return report
 
 
 def starter_profiles() -> dict[str, dict[str, Any]]:
@@ -394,6 +499,20 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "api_key": "env:LLMWHISPERER_API_KEY",
             },
         },
+        # A shape to copy for a self-hosted install, not a profile to select: the
+        # host is a placeholder, and only the *active* profile is ever resolved,
+        # so leaving it in place costs nothing.
+        "onprem-example": {
+            LLMWHISPERER: {
+                "base_url": "https://llmwhisperer.unstract.internal.example/api/v2",
+                "api_key": "env:LLMWHISPERER_API_KEY",
+            },
+            DOCSTUDIO: {
+                "base_url": "https://unstract.internal.example",
+                "org_id": "",
+                "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
+            },
+        },
     }
 
 
@@ -402,9 +521,11 @@ __all__ = [
     "DOCSTUDIO",
     "ENV_VARS",
     "HOME_CONFIG",
+    "KEY_SOURCES",
     "LLMWHISPERER",
     "PRODUCTS",
     "PROJECT_CONFIG_NAME",
+    "UNTRUSTED_PROJECT_KEYS",
     "ConfigError",
     "ConfigFile",
     "ResolvedConfig",

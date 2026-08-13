@@ -199,6 +199,80 @@ def test_loose_permissions_warn_rather_than_fail(write_config):
     assert any("readable by other users" in w for w in load_config().warnings)
 
 
+#: What a repository could commit: a host of its own choosing, and a key.
+PROJECT_TOML = """
+default_profile = "p"
+
+[profiles.p.llmwhisperer]
+base_url = "https://elsewhere.example/api/v2"
+api_key = "project-literal-key"
+
+[profiles.p.docstudio]
+org_id = "org_from_project"
+
+[profiles.p.deployments.invoices]
+api_name = "invoice-parser"
+api_key = "alias-literal-key"
+"""
+
+
+def _plant_project_config(tmp_path, monkeypatch):
+    work = tmp_path / "checkout"
+    work.mkdir()
+    path = work / ".unstract.toml"
+    path.write_text(PROJECT_TOML, encoding="utf-8")
+    monkeypatch.chdir(work)
+    return path
+
+
+def test_a_discovered_project_config_supplies_no_key_and_no_host(tmp_path, monkeypatch):
+    path = _plant_project_config(tmp_path, monkeypatch)
+    cfg = resolved()
+
+    assert cfg.get(LLMWHISPERER, "base_url") == DEFAULT_BASE_URLS[LLMWHISPERER]
+    assert cfg.get(LLMWHISPERER, "api_key") is None
+    assert cfg.deployment("invoices")["api_key"] is None
+    # Everything the file is legitimately for still applies.
+    assert cfg.get(DOCSTUDIO, "org_id") == "org_from_project"
+    assert cfg.deployment("invoices")["api_name"] == "invoice-parser"
+    assert any(str(path) in w and "Ignoring" in w for w in cfg.file.warnings)
+    assert cfg.resolution_source(LLMWHISPERER, "api_key")["detail"]
+
+
+def test_the_same_file_named_explicitly_is_honoured(tmp_path, monkeypatch):
+    path = _plant_project_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(path))
+    cfg = resolved()
+
+    assert cfg.get(LLMWHISPERER, "base_url") == "https://elsewhere.example/api/v2"
+    assert cfg.get(LLMWHISPERER, "api_key") == "project-literal-key"
+    assert not any("Ignoring" in w for w in cfg.file.warnings)
+
+
+def test_writing_back_a_project_config_keeps_the_keys_it_withheld(tmp_path, monkeypatch):
+    path = _plant_project_config(tmp_path, monkeypatch)
+    cfg = load_config()
+    cfg.profiles["p"]["docstudio"]["org_id"] = "org_edited"
+    save_config(cfg)
+
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(path))
+    reloaded = load_config()
+    assert reloaded.profiles["p"]["docstudio"]["org_id"] == "org_edited"
+    assert reloaded.profiles["p"]["llmwhisperer"]["api_key"] == "project-literal-key"
+    assert reloaded.profiles["p"]["deployments"]["invoices"]["api_key"] == (
+        "alias-literal-key"
+    )
+
+
+def test_withheld_keys_are_not_carried_into_a_file_the_user_names(tmp_path, monkeypatch):
+    _plant_project_config(tmp_path, monkeypatch)
+    elsewhere = tmp_path / "named.toml"
+    save_config(load_config(), elsewhere)
+
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(elsewhere))
+    assert "api_key" not in load_config().profiles["p"]["llmwhisperer"]
+
+
 def test_starter_profiles_hold_no_literal_secrets():
     for blocks in starter_profiles().values():
         for settings in blocks.values():

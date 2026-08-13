@@ -12,7 +12,9 @@ from __future__ import annotations
 import inspect
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import pytest
 from unstract.api_deployments.client import APIDeploymentsClient
@@ -83,14 +85,35 @@ SNAPSHOT = Path(__file__).parent / "derived_flags.json"
 REFRESH = "UNSTRACT_CLI_REFRESH_FLAG_SNAPSHOT"
 
 
-def _derived_flags() -> dict[str, list[str]]:
+def _derived_flags() -> dict[str, dict[str, Any]]:
+    """Every flag the specs derive, with the whole of what each one accepts.
+
+    Names alone would let a spec narrow an enum, or change a type or a default,
+    without moving the snapshot -- and the CLI would start rejecting a value it
+    used to take, with nothing here to say so.
+    """
     return {
-        f"{product}:{operation}": sorted(
-            param.flag
-            for param in derive_params(product, operation, client_method=method)
-        )
+        f"{product}:{operation}": {
+            # Choices as a list: JSON has no tuple, and the snapshot is compared
+            # against what a JSON reader gives back.
+            param.flag: {**asdict(param), "choices": list(param.choices)}
+            for param in sorted(
+                derive_params(product, operation, client_method=method),
+                key=lambda param: param.flag,
+            )
+        }
         for product, operation, method, _ in COMMANDS
     }
+
+
+def _changed(current: dict[str, Any], expected: dict[str, Any]) -> list[str]:
+    """The flags that moved, named. Comparing whole payloads reports neither."""
+    return sorted(
+        f"{operation} {flag}"
+        for operation in current.keys() | expected.keys()
+        for flag in current.get(operation, {}).keys() | expected.get(operation, {}).keys()
+        if current.get(operation, {}).get(flag) != expected.get(operation, {}).get(flag)
+    )
 
 
 def test_the_derived_flags_are_the_ones_last_reviewed():
@@ -99,7 +122,9 @@ def test_the_derived_flags_are_the_ones_last_reviewed():
         SNAPSHOT.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
     expected = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
     assert current == expected, (
-        "The flags derived from the vendored specs have changed. A flag that "
-        "disappears here disappears from the CLI. Review the difference, then "
+        "What the vendored specs derive has changed: "
+        f"{', '.join(_changed(current, expected))}. A flag that disappears here "
+        "disappears from the CLI, and a choice or a type that narrows here "
+        "rejects a value the CLI used to take. Review the difference, then "
         f"refresh the snapshot with {REFRESH}=1."
     )

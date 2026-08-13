@@ -1,53 +1,458 @@
 {
-  "llmwhisperer:extract": [
-    "--add-line-nos",
-    "--allow-rotated-text",
-    "--checkbox-confidence-threshold",
-    "--derotate-threshold",
-    "--file-name",
-    "--gaussian-blur-radius",
-    "--horizontal-stretch-factor",
-    "--ignore-vertical-text",
-    "--include-line-confidence",
-    "--lang",
-    "--line-splitter-strategy",
-    "--line-splitter-tolerance",
-    "--mark-horizontal-lines",
-    "--mark-vertical-lines",
-    "--median-filter-size",
-    "--min-table-width",
-    "--mode",
-    "--output-mode",
-    "--page-separator",
-    "--pages-to-extract",
-    "--tag",
-    "--url",
-    "--use-webhook",
-    "--watermark-angle-threshold",
-    "--webhook-metadata",
-    "--word-confidence-threshold"
-  ],
-  "llmwhisperer:highlights": [
-    "--extract-all-lines",
-    "--lines",
-    "--whisper-hash"
-  ],
-  "docstudio:execute": [
-    "--custom-data",
-    "--hitl-packet-id",
-    "--hitl-queue-name",
-    "--include-extracted-text",
-    "--include-metadata",
-    "--include-metrics",
-    "--llm-profile-id",
-    "--presigned-urls",
-    "--tags",
-    "--timeout",
-    "--use-file-history"
-  ],
-  "docstudio:status": [
-    "--include-extracted-text",
-    "--include-metadata",
-    "--include-metrics"
-  ]
+  "llmwhisperer:extract": {
+    "--add-line-nos": {
+      "name": "add_line_nos",
+      "type": "boolean",
+      "default": false,
+      "description": "Adds line numbers to the extracted text and saves line metadata, which can be queried later using the highlights API.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--allow-rotated-text": {
+      "name": "allow_rotated_text",
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to keep words whose own orientation is rotated. With this off, a word angled further than watermark_angle_threshold is treated as a watermark and excluded.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--checkbox-confidence-threshold": {
+      "name": "checkbox_confidence_threshold",
+      "type": "number",
+      "default": 0.3,
+      "description": "The minimum confidence a detected checkbox mark must have to be reported as marked. Accepts a value in the range [0.0, 1.0].",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--derotate-threshold": {
+      "name": "derotate_threshold",
+      "type": "number",
+      "default": 10.0,
+      "description": "The page rotation in degrees beyond which the page is straightened and re-read.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--file-name": {
+      "name": "file_name",
+      "type": "string",
+      "default": null,
+      "description": "The name of the file to store in reports.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--gaussian-blur-radius": {
+      "name": "gaussian_blur_radius",
+      "type": "integer",
+      "default": 0,
+      "description": "The radius of the Gaussian blur.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--horizontal-stretch-factor": {
+      "name": "horizontal_stretch_factor",
+      "type": "number",
+      "default": 1.0,
+      "description": "The horizontal stretch factor.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--ignore-vertical-text": {
+      "name": "ignore_vertical_text",
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to drop vertically oriented text instead of extracting it.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--include-line-confidence": {
+      "name": "include_line_confidence",
+      "type": "boolean",
+      "default": false,
+      "description": "Adds line confidence to the line metadata returned by the highlights API. Requires add_line_nos to be enabled.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--lang": {
+      "name": "lang",
+      "type": "string",
+      "default": "eng",
+      "description": "The language of the document.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--line-splitter-strategy": {
+      "name": "line_splitter_strategy",
+      "type": "string",
+      "default": null,
+      "description": "The line splitter strategy.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": [
+        "left-priority",
+        "mid-priority",
+        "right-priority"
+      ]
+    },
+    "--line-splitter-tolerance": {
+      "name": "line_splitter_tolerance",
+      "type": "number",
+      "default": 0.4,
+      "description": "The line splitter tolerance.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--mark-horizontal-lines": {
+      "name": "mark_horizontal_lines",
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to mark horizontal lines.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--mark-vertical-lines": {
+      "name": "mark_vertical_lines",
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to mark vertical lines.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--median-filter-size": {
+      "name": "median_filter_size",
+      "type": "integer",
+      "default": 0,
+      "description": "The size of the median filter.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--min-table-width": {
+      "name": "min_table_width",
+      "type": "number",
+      "default": 0.0,
+      "description": "The minimum width a table must span, as a fraction of the page width, to be extracted as a table.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--mode": {
+      "name": "mode",
+      "type": "string",
+      "default": "form",
+      "description": "The processing mode.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": [
+        "document_insights",
+        "excel",
+        "form",
+        "high_quality",
+        "low_cost",
+        "native_text",
+        "pdf_to_images",
+        "table"
+      ]
+    },
+    "--output-mode": {
+      "name": "output_mode",
+      "type": "string",
+      "default": "layout_preserving",
+      "description": "The output mode.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": [
+        "dump-text",
+        "layout_preserving",
+        "line-printer",
+        "text"
+      ]
+    },
+    "--page-separator": {
+      "name": "page_separator",
+      "type": "string",
+      "default": null,
+      "description": "The page separator.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--pages-to-extract": {
+      "name": "pages_to_extract",
+      "type": "string",
+      "default": "",
+      "description": "The pages to extract.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--tag": {
+      "name": "tag",
+      "type": "string",
+      "default": "default",
+      "description": "The tag for the document.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--url": {
+      "name": "url",
+      "type": "string",
+      "default": "",
+      "description": "Fetch the document from this URL instead of sending a body.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--use-webhook": {
+      "name": "use_webhook",
+      "type": "string",
+      "default": "",
+      "description": "Webhook name to call. If not provided, then no webhook will be called.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--watermark-angle-threshold": {
+      "name": "watermark_angle_threshold",
+      "type": "number",
+      "default": 25.0,
+      "description": "The angle in degrees beyond which a rotated word counts as a watermark. Only applies when allow_rotated_text is off.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--webhook-metadata": {
+      "name": "webhook_metadata",
+      "type": "string",
+      "default": "",
+      "description": "The webhook metadata. This data will be passed to the webhook if webhooks are used",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--word-confidence-threshold": {
+      "name": "word_confidence_threshold",
+      "type": "number",
+      "default": 0.3,
+      "description": "The minimum OCR confidence score a word must have to be included in the extracted text. Accepts a value in the range [0.0, 1.0], where higher values are stricter. Any word whose confidence value falls below the configured threshold is ignored and excluded from the final output. This parameter works only with \"form\", \"high_quality\" and \"table\" modes.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    }
+  },
+  "llmwhisperer:highlights": {
+    "--extract-all-lines": {
+      "name": "extract_all_lines",
+      "type": "boolean",
+      "default": false,
+      "description": "",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--lines": {
+      "name": "lines",
+      "type": "string",
+      "default": null,
+      "description": "Line numbers or ranges, e.g. `1-5,9`. Not required when `extract_all_lines=true`.",
+      "array": false,
+      "nullable": false,
+      "required": true,
+      "choices": []
+    },
+    "--whisper-hash": {
+      "name": "whisper_hash",
+      "type": "string",
+      "default": null,
+      "description": "The hash of the whisper operation.",
+      "array": false,
+      "nullable": false,
+      "required": true,
+      "choices": []
+    }
+  },
+  "docstudio:execute": {
+    "--custom-data": {
+      "name": "custom_data",
+      "type": "string",
+      "default": null,
+      "description": "Arbitrary data echoed back with the result.",
+      "array": false,
+      "nullable": true,
+      "required": false,
+      "choices": []
+    },
+    "--hitl-packet-id": {
+      "name": "hitl_packet_id",
+      "type": "string",
+      "default": null,
+      "description": "Human-in-the-loop packet to attach the file to.",
+      "array": false,
+      "nullable": true,
+      "required": false,
+      "choices": []
+    },
+    "--hitl-queue-name": {
+      "name": "hitl_queue_name",
+      "type": "string",
+      "default": null,
+      "description": "Human-in-the-loop queue to route the file to.",
+      "array": false,
+      "nullable": true,
+      "required": false,
+      "choices": []
+    },
+    "--include-extracted-text": {
+      "name": "include_extracted_text",
+      "type": "boolean",
+      "default": false,
+      "description": "Include the extracted text.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--include-metadata": {
+      "name": "include_metadata",
+      "type": "boolean",
+      "default": false,
+      "description": "Include metadata in the result.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--include-metrics": {
+      "name": "include_metrics",
+      "type": "boolean",
+      "default": false,
+      "description": "Include metrics in the result.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--llm-profile-id": {
+      "name": "llm_profile_id",
+      "type": "string",
+      "default": null,
+      "description": "LLM profile to override the deployment's.",
+      "array": false,
+      "nullable": true,
+      "required": false,
+      "choices": []
+    },
+    "--presigned-urls": {
+      "name": "presigned_urls",
+      "type": "string",
+      "default": null,
+      "description": "URLs to fetch the inputs from.",
+      "array": true,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--tags": {
+      "name": "tags",
+      "type": "string",
+      "default": "",
+      "description": "Comma-separated list of tag names (EX:'tag1,tag2-name,tag3_name')",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--timeout": {
+      "name": "timeout",
+      "type": "integer",
+      "default": -1,
+      "description": "Execution mode \u2014 ``0`` or below runs asynchronously.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--use-file-history": {
+      "name": "use_file_history",
+      "type": "boolean",
+      "default": false,
+      "description": "Reuse a previous result for the same file.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    }
+  },
+  "docstudio:status": {
+    "--include-extracted-text": {
+      "name": "include_extracted_text",
+      "type": "boolean",
+      "default": false,
+      "description": "Include the extracted text.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--include-metadata": {
+      "name": "include_metadata",
+      "type": "boolean",
+      "default": false,
+      "description": "Include metadata in the result.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    },
+    "--include-metrics": {
+      "name": "include_metrics",
+      "type": "boolean",
+      "default": false,
+      "description": "Include metrics in the result.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": []
+    }
+  }
 }

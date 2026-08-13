@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,7 @@ from unstract_cli.config import (
     DEFAULT_BASE_URLS,
     DOCSTUDIO,
     LLMWHISPERER,
+    PROJECT_CONFIG_NAME,
     ConfigError,
     ConfigFile,
     ResolvedConfig,
@@ -271,6 +273,31 @@ def test_withheld_keys_are_not_carried_into_a_file_the_user_names(tmp_path, monk
 
     monkeypatch.setenv("UNSTRACT_CONFIG", str(elsewhere))
     assert "api_key" not in load_config().profiles["p"]["llmwhisperer"]
+
+
+def test_naming_the_discovered_file_does_not_make_it_trusted(tmp_path, monkeypatch):
+    path = _plant_project_config(tmp_path, monkeypatch)
+    work = path.parent
+    (work / "sub").mkdir()
+    (tmp_path / "link").symlink_to(work)
+
+    # The outcome first: the flag is only the mechanism, withholding is the point.
+    cfg = ResolvedConfig(file=load_config(path))
+    assert cfg.get(LLMWHISPERER, "api_key") is None
+    assert cfg.get(LLMWHISPERER, "base_url") == DEFAULT_BASE_URLS[LLMWHISPERER]
+
+    # However the same file is spelled, it is the same file.
+    for spelling in (
+        Path(PROJECT_CONFIG_NAME),
+        path,
+        work / "sub" / ".." / PROJECT_CONFIG_NAME,
+        tmp_path / "link" / PROJECT_CONFIG_NAME,
+    ):
+        assert load_config(spelling).is_project_local is True, spelling
+
+    other = tmp_path / "elsewhere.toml"
+    other.write_text(PROJECT_TOML, encoding="utf-8")
+    assert load_config(other).is_project_local is False
 
 
 def test_a_symlinked_project_candidate_is_not_discovered(tmp_path, monkeypatch):

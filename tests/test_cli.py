@@ -178,6 +178,23 @@ class TestOutputFormatEndToEnd:
         assert run(capsys, "nope")[1]["meta"]["contract_version"] == 1
 
 
+def test_the_config_group_says_what_it_withheld(capsys, tmp_path, monkeypatch):
+    """`config list` is one of the commands run *to understand* the config.
+
+    It loads the file itself rather than through the root context, so it has to
+    report the file's warnings on its own or stay silent about its own subject.
+    """
+    work = tmp_path / "checkout"
+    work.mkdir()
+    (work / ".unstract.toml").write_text(
+        '[profiles.p.llmwhisperer]\napi_key = "planted"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(work)
+
+    _, _, err = run(capsys, "config", "list")
+    assert err.count("Ignoring p.llmwhisperer.api_key") == 1
+
+
 def test_click_parameter_info_dict_keeps_the_keys_discovery_reads():
     # Discovery derives flags from Click's own introspection; a Click bump that
     # reshaped this dict would silently degrade it.

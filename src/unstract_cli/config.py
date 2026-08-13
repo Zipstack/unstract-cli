@@ -15,6 +15,7 @@ environment variables; that is the expected mode in CI and agent sandboxes.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import tomllib
@@ -94,12 +95,16 @@ def find_project_config(start: Path | None = None) -> Path | None:
     project picks up that project's config with no flag. The search stops at the
     filesystem root, and at ``$HOME`` so a stray file in a parent directory
     cannot silently capture every invocation.
+
+    A symlinked candidate is skipped rather than followed: the file it points at
+    is chosen by whoever wrote the link, and this path is written to as well as
+    read from -- `config set` and `config init --force` would rewrite the target.
     """
     current = (start or Path.cwd()).resolve()
     home = Path.home().resolve()
     for directory in (current, *current.parents):
         candidate = directory / PROJECT_CONFIG_NAME
-        if candidate.is_file():
+        if candidate.is_file() and not candidate.is_symlink():
             return candidate
         if directory == home:
             break
@@ -192,10 +197,22 @@ def _strip_untrusted(profiles: dict[str, Any]) -> dict[tuple[str, ...], Any]:
     return withheld
 
 
+def _is_discovered(path: Path) -> bool:
+    """Whether this path is the file an upward search would have found.
+
+    Trust follows the file, not the call: naming the project-local file that
+    discovery would have picked anyway does not make its contents any more the
+    user's own. ``--config`` and ``$UNSTRACT_CONFIG`` are a deliberate choice and
+    are resolved before this, so they stay trusted.
+    """
+    candidate = find_project_config()
+    return candidate is not None and candidate.resolve() == path.resolve()
+
+
 def load_config(path: Path | None = None) -> ConfigFile:
     """Load the config file. A missing file is normal, not an error."""
     if path is not None:
-        target, project_local = path, False
+        target, project_local = path, _is_discovered(path)
     else:
         target, project_local = _resolve_config_path()
     if not target.exists():
@@ -282,8 +299,20 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     doc["profiles"] = _restored_profiles(cfg, target)
 
     # Create with 0600 from the outset rather than widening then narrowing: a
-    # world-readable window, however brief, is a window.
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # world-readable window, however brief, is a window. O_NOFOLLOW because this
+    # write truncates: a symlink here means some other file is what actually gets
+    # overwritten, and the config path is not always one the user chose.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(target, flags, 0o600)
+    except OSError as exc:
+        if exc.errno not in (errno.ELOOP, errno.EMLINK):
+            raise
+        raise ConfigError(
+            f"Refusing to write config through the symlink at {target}: it would "
+            f"overwrite {os.readlink(target)} instead. Pass --config with the path "
+            "of the real file."
+        ) from exc
     with os.fdopen(fd, "wb") as fh:
         tomli_w.dump(doc, fh)
     os.chmod(target, 0o600)
@@ -464,14 +493,24 @@ class ResolvedConfig:
             if key == "base_url" and DEFAULT_BASE_URLS.get(product)
             else {"resolved": False, "source": "unset"}
         )
-        if (self.active_profile, product, key) in self.file.withheld:
-            # The file does set it; reporting only where the value came from
-            # would leave the user staring at a setting they can see in the file.
-            report["detail"] = (
-                f"{self.file.path} sets {key}, and a discovered "
-                f"{PROJECT_CONFIG_NAME} is not trusted with it."
-            )
+        if detail := self.withheld_detail(product, key):
+            report["detail"] = detail
         return report
+
+    def withheld_detail(self, *trail: str) -> str | None:
+        """Why a setting the config file plainly holds did not arrive, if that is why.
+
+        Reporting only where a value came *from* would leave the user staring at
+        a setting they can see in the file. Takes a trail rather than a
+        product/key pair so a deployment alias's own key -- nested a level deeper
+        -- is answerable too.
+        """
+        if (self.active_profile, *trail) not in self.file.withheld:
+            return None
+        return (
+            f"{self.file.path} sets {trail[-1]}, and a discovered "
+            f"{PROJECT_CONFIG_NAME} is not trusted with it."
+        )
 
 
 def starter_profiles() -> dict[str, dict[str, Any]]:

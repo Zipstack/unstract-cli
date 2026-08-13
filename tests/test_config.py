@@ -273,6 +273,36 @@ def test_withheld_keys_are_not_carried_into_a_file_the_user_names(tmp_path, monk
     assert "api_key" not in load_config().profiles["p"]["llmwhisperer"]
 
 
+def test_a_symlinked_project_candidate_is_not_discovered(tmp_path, monkeypatch):
+    work = tmp_path / "checkout"
+    work.mkdir()
+    victim = tmp_path / "victim.toml"
+    victim.write_text("keep = true\n", encoding="utf-8")
+    (work / ".unstract.toml").symlink_to(victim)
+    monkeypatch.chdir(work)
+
+    assert find_project_config(work) is None
+    assert config_path() != work / ".unstract.toml"
+
+
+def test_a_write_through_a_symlink_fails_without_touching_its_target(tmp_path):
+    victim = tmp_path / "victim.toml"
+    victim.write_text("keep = true\n", encoding="utf-8")
+    link = tmp_path / "config.toml"
+    link.symlink_to(victim)
+
+    with pytest.raises(ConfigError, match="symlink"):
+        save_config(ConfigFile(profiles=starter_profiles()), link)
+    assert victim.read_text(encoding="utf-8") == "keep = true\n"
+
+
+def test_a_withheld_alias_key_is_reported_against_the_alias(tmp_path, monkeypatch):
+    _plant_project_config(tmp_path, monkeypatch)
+    cfg = resolved()
+    assert cfg.withheld_detail("deployments", "invoices", "api_key")
+    assert cfg.withheld_detail("deployments", "invoices", "org_id") is None
+
+
 def test_starter_profiles_hold_no_literal_secrets():
     for blocks in starter_profiles().values():
         for settings in blocks.values():

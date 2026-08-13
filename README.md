@@ -92,6 +92,11 @@ A project-local `.unstract.toml` **found by upward search** may not supply
 you did not write is not trusted to name the host your key is sent to. Name the
 file explicitly (`--config` or `$UNSTRACT_CONFIG`) and it is honoured in full.
 
+What that protects is the key and the host, not the routing: `org_id`,
+`api_name` and profile selection stay repo-controllable by design, so a
+project file can still decide *which* deployment a command runs against on a
+host you trust. Read one before you run inside a checkout you did not write.
+
 `clone` is the exception: it talks to two deployments at once, which no single
 profile describes, so it takes both endpoints as flags and both admin Platform
 keys from `UNSTRACT_SRC_PLATFORM_KEY` / `UNSTRACT_TGT_PLATFORM_KEY`. It exits 0

@@ -30,7 +30,12 @@ from unstract_cli.config import (
 )
 from unstract_cli.core.clients import llmwhisperer, translated
 from unstract_cli.core.errors import CLIError, ExitCode
-from unstract_cli.core.output import OutputFormat, emit_result, resolve_format
+from unstract_cli.core.output import (
+    OutputFormat,
+    diagnostic,
+    emit_result,
+    resolve_format,
+)
 
 #: Keys whose value is never echoed back, even on explicit request: this output
 #: is as likely to land in a log or a transcript as on a screen.
@@ -99,7 +104,7 @@ def config_init(obj: Any, force: bool) -> None:
 @config_group.command("list", help="List profiles defined in the config file.")
 @click.pass_obj
 def config_list(obj: Any) -> None:
-    cfg = load_config()
+    cfg = _loaded(obj)
     emit_result(
         {
             "path": str(cfg.path),
@@ -172,7 +177,7 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
     shell history.
     """
     _check_product(product)
-    cfg = load_config()
+    cfg = _loaded(obj)
     name = profile or getattr(obj, "profile", None) or cfg.default_profile or "cloud-us"
 
     cfg.profiles.setdefault(name, {}).setdefault(product, {})[key] = value
@@ -291,6 +296,10 @@ def config_doctor(obj: Any, probe: bool) -> None:
         aliases = []
         problems.append(str(exc))
     for alias in aliases:
+        # An alias carries a key of its own, so it is a second place a project
+        # file can name one -- and it falls back to the profile's key silently.
+        if detail := resolved.withheld_detail("deployments", alias, "api_key"):
+            problems.append(f"deployment alias {alias}: {detail}")
         try:
             # Resolved the way a run resolves it: that an alias is *listed* says
             # nothing about whether the settings behind it arrive.
@@ -337,11 +346,30 @@ def config_doctor(obj: Any, probe: bool) -> None:
     emit_result(report, _fmt(obj))
 
 
+def _loaded(obj: Any) -> ConfigFile:
+    """The config file, with its warnings reported.
+
+    These commands load the file themselves rather than through the root
+    context, and they are the two a user runs *to understand* their config --
+    reading it here without repeating what it warned about would make them the
+    quietest commands in the CLI about their own subject.
+    """
+    cfg = load_config()
+    for warning in cfg.warnings:
+        diagnostic(
+            warning,
+            quiet=getattr(obj, "quiet", False),
+            verbosity=getattr(obj, "verbosity", 0),
+        )
+    return cfg
+
+
 def _resolved(obj: Any) -> ResolvedConfig:
     """The root context's config, or a freshly loaded one when invoked standalone."""
+    # Already loaded means the context already reported its warnings.
     if (existing := getattr(obj, "_config", None)) is not None:
         return existing
-    return ResolvedConfig(file=load_config(), profile_name=getattr(obj, "profile", None))
+    return ResolvedConfig(file=_loaded(obj), profile_name=getattr(obj, "profile", None))
 
 
 __all__ = ["config_group"]

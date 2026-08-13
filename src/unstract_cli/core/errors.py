@@ -244,9 +244,14 @@ def hint_for(status: int) -> str | None:
                 "values passed; `details` carries the service's own response."
             )
         case 401 | 403:
+            # A key that is wrong, revoked, from another organisation, or simply
+            # not permitted on this one deployment all arrive as the same
+            # response, so the hint must not settle on one of them.
             return (
-                "Check the API key for this product. Keys are per-product: "
-                "`unstract config doctor` reports which one resolved and from where."
+                "The key was rejected. Keys are per-product: `unstract config "
+                "doctor` reports which one resolved and from where. A key that "
+                "works elsewhere can still be rejected here -- it may not cover "
+                "this deployment, or may belong to another organisation."
             )
         case 404:
             return (

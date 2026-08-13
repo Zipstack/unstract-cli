@@ -52,7 +52,9 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
 #: missing: knowing a key is unset is no help without knowing where one is made.
 KEY_SOURCES = (
     "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
-    "shown on the API deployment's own page in the Unstract UI."
+    "shown on the API deployment's own page in the Unstract UI, and a key "
+    "covering every deployment in the organisation is minted under "
+    "Settings -> API Key Manager."
 )
 
 
@@ -518,6 +520,11 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
 
     Every credential uses ``env:`` indirection: the generated file is a map of
     where secrets live, never a copy of them.
+
+    One key on the product block, and aliases that carry only ``api_name``: a
+    key can cover every deployment in the organisation, so a key per alias is
+    the exception -- for an organisation whose deployments hold separate keys --
+    rather than the shape to start from.
     """
     return {
         "cloud-us": {
@@ -530,7 +537,7 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
-            "deployments": {},
+            "deployments": {"example": {"api_name": "your-api-deployment-name"}},
         },
         "cloud-eu": {
             LLMWHISPERER: {

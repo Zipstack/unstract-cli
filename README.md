@@ -75,8 +75,14 @@ api_key = "env:UNSTRACT_DEPLOYMENT_KEY"
 api_name = "invoice-parser"
 ```
 
+One `api_key` on the `docstudio` block covers every alias under it: a key minted
+under **Settings → API Key Manager** authenticates every API deployment in the
+organisation, so an alias normally carries only its `api_name`. Give an alias its
+own `api_key` when its deployment has a separate key of its own.
+
 Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is shown
-on the API deployment's own page in the Unstract UI. `config init` also writes an
+on the API deployment's own page in the Unstract UI, and an organisation-wide one
+under Settings → API Key Manager. `config init` also writes an
 `onprem-example` profile as a shape to copy for a self-hosted install — its host
 is a placeholder, and only the *active* profile is ever resolved.
 

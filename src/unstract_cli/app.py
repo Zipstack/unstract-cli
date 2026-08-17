@@ -137,7 +137,7 @@ pass_context = click.make_pass_decorator(Context, ensure=True)
     "discover_tier",
     type=click.Choice(TIERS),
     default=None,
-    help="Describe this CLI as JSON instead of running a command.",
+    help="Describe this CLI as JSON instead of running a command, useful for agents.",
 )
 @click.version_option(package_name="unstract-cli")
 @click.pass_context

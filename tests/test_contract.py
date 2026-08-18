@@ -23,13 +23,9 @@ from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 from unstract_cli.core.params import derive_params, operation_params
 
 #: (product, operationId, client method) per command that derives its flags,
-#: with the spec parameters that method cannot accept. Most are a parameter the
-#: client owns rather than one it lacks: `url_in_post` says the URL is in the
-#: body, which the client decides; `files` is built from the paths given;
-#: `execution_id` is read out of the endpoint URL the server handed back.
-#: `highlights.mode` is the exception -- the endpoint reads it for quota
-#: accounting and the published client has no argument for it, so the CLI cannot
-#: offer it without the call failing.
+#: with the spec parameters that method cannot accept. Most are parameters the
+#: client owns rather than lacks; `highlights.mode` is the exception, and the
+#: CLI cannot offer it without the call failing.
 COMMANDS = [
     (
         "llmwhisperer",
@@ -75,10 +71,8 @@ def test_every_derived_flag_is_an_argument_the_client_accepts(product, operation
         assert param.name in accepted
 
 
-#: The flags the specs derive today. Every other check in this file reads the
-#: spec on both sides of its comparison, so a spec that loses a parameter loses
-#: the flag and the expectation together; this file is the side that does not
-#: move on its own.
+#: The flags the specs derive today, written down rather than read from the
+#: spec, so a parameter lost upstream fails here instead of vanishing quietly.
 SNAPSHOT = Path(__file__).parent / "derived_flags.json"
 
 #: Refreshing the snapshot is a decision, not a side effect of running the suite.

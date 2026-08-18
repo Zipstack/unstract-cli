@@ -118,9 +118,8 @@ def discover(root: click.Group, tier: str) -> dict[str, Any]:
             "groups": [
                 summary(name, sub) for name, sub in top if isinstance(sub, click.Group)
             ],
-            # A command that has no sub-commands is listed apart from the groups:
-            # a consumer drilling into each group for its commands finds nothing
-            # under a leaf, and would drop it.
+            # Leaf commands are listed apart from the groups, so a consumer
+            # walking groups for their commands does not drop them.
             "commands": [
                 summary(name, sub)
                 for name, sub in top

@@ -39,9 +39,8 @@ RUN_POLL = PollSpec(
 #: `--output raw` prints one field rather than the whole payload.
 RAW_FIELD = "extraction_result"
 
-#: Parameters the run POST and the status GET share. What a caller asked to be
-#: included in the result has to be asked for again when the result is read, or a
-#: waited run returns less than the same flags returned without --wait.
+#: Parameters the run POST and the status GET share: what was asked for in the
+#: run has to be asked for again when the result is read.
 _SHARED_WITH_STATUS = ("include_metadata", "include_metrics", "include_extracted_text")
 
 
@@ -101,9 +100,8 @@ def run(
                 click.echo(f"status: {status}", err=True) if not ctx.quiet else None
             ),
         )
-    # The waited result identifies the execution nowhere at the top level, so a
-    # caller has nothing to correlate against the service. --no-wait returns the
-    # handle as data; waiting returns it as meta.
+    # A waited result names no execution, so the handle is returned as meta for
+    # correlation.
     finish(ctx, result, raw_field=RAW_FIELD, meta=_handle_meta(started))
 
 

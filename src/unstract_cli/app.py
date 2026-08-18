@@ -165,9 +165,8 @@ def cli(
         profile=profile,
     )
     if discover_tier:
-        # Answered without a subcommand and without touching configuration:
-        # discovery is how a caller finds out what to run, so it must work
-        # before anything is set up.
+        # Discovery is how a caller learns what to run, so it has to answer
+        # before any configuration exists.
         emit_result(discover(cli, discover_tier), ctx.obj.output)
         ctx.exit(int(ExitCode.SUCCESS))
     if ctx.invoked_subcommand is None:

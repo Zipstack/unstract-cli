@@ -72,9 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except (click.Abort, KeyboardInterrupt):
-        # Click turns an interrupt into Abort, and nothing here prompts, so
-        # Abort means only that. Reporting it as a generic failure tells a
-        # supervisor to retry what the user deliberately stopped.
+        # Nothing here prompts, so Click's Abort can only mean an interrupt.
         return int(
             emit_error(
                 CLIError("Interrupted.", ExitCode.INTERRUPTED, retryable=True), fmt

@@ -179,8 +179,7 @@ class ConfigFile:
     #: than named. Such a file is not trusted with credentials or hosts.
     is_project_local: bool = False
     #: Keys withheld from an untrusted file, as ``{(profile, *blocks, key): value}``.
-    #: They are excluded from *resolution* -- that is the security property -- but
-    #: kept here so a write-back does not delete them from the user's own file.
+    #: Excluded from resolution, but kept so a write-back does not drop them.
     withheld: dict[tuple[str, ...], Any] = field(default_factory=dict)
 
 
@@ -243,9 +242,8 @@ def load_config(path: Path | None = None) -> ConfigFile:
     if not isinstance(profiles, dict):
         raise ConfigError(f"`profiles` in {target} must be a table.")
 
-    # Stripped rather than ignored wholesale, and said out loud: the rest of the
-    # file is the project's own workflow, and a setting dropped in silence is its
-    # own kind of surprise.
+    # Said out loud rather than dropped in silence; the rest of the file still
+    # applies.
     withheld: dict[tuple[str, ...], Any] = {}
     if project_local:
         withheld = _strip_untrusted(profiles)
@@ -302,10 +300,8 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
         doc["default_profile"] = cfg.default_profile
     doc["profiles"] = _restored_profiles(cfg, target)
 
-    # Create with 0600 from the outset rather than widening then narrowing: a
-    # world-readable window, however brief, is a window. O_NOFOLLOW because this
-    # write truncates: a symlink here means some other file is what actually gets
-    # overwritten, and the config path is not always one the user chose.
+    # 0600 from the outset, never widened even briefly. O_NOFOLLOW because this
+    # write truncates, and the path is not always one the user chose.
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(target, flags, 0o600)
@@ -359,10 +355,8 @@ class ResolvedConfig:
         return profile if isinstance(profile, dict) else {}
 
     def _product_block(self, product: str) -> dict[str, Any]:
-        # Exactly one accepted shape: settings nested under the product name. No
-        # aliases and no flat fallback -- a config that looks applied but is not
-        # is worse than one that plainly is not, because the failure surfaces
-        # later as a missing-credential error with no obvious cause.
+        # One accepted shape only, settings nested under the product name: a
+        # config that looks applied but is not fails later with no obvious cause.
         block = self._profile().get(product)
         return block if isinstance(block, dict) else {}
 
@@ -401,9 +395,8 @@ class ResolvedConfig:
         if env_vars := ENV_VARS.get((product, key)):
             hints.append(f"set ${env_vars[0]}")
         hints.append(f"or add `{key}` to the [profiles.<name>.{product}] block")
-        # Only suggest a flag that actually exists. Credentials have no flag by
-        # design -- a secret on the command line lands in shell history and
-        # process listings.
+        # Credentials have no flag by design: a secret on the command line
+        # lands in shell history and in the process list.
         if key != "api_key":
             hints.append(f"or pass --{key.replace('_', '-')}")
         raise ConfigError(
@@ -547,9 +540,8 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "api_key": "env:LLMWHISPERER_API_KEY",
             },
         },
-        # A shape to copy for a self-hosted install, not a profile to select: the
-        # host is a placeholder, and only the *active* profile is ever resolved,
-        # so leaving it in place costs nothing.
+        # A shape to copy for a self-hosted install, not a profile to select:
+        # its host is a placeholder and only the active profile is resolved.
         "onprem-example": {
             LLMWHISPERER: {
                 "base_url": "https://llmwhisperer.unstract.internal.example/api/v2",

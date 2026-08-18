@@ -30,9 +30,8 @@ from unstract_cli.core.errors import CLIError, ExitCode
 class PollSpec:
     """How to read progress out of one operation's responses."""
 
-    #: Where the job handle lives in the initial response (whisper_hash,
-    #: execution_id, ...). It is echoed back on timeout so a caller can resume
-    #: rather than reprocess the document.
+    #: Where the job handle lives in the initial response. Echoed back on
+    #: timeout so a caller can resume rather than reprocess the document.
     handle_field: str
     terminal_success: tuple[str, ...]
     terminal_failure: tuple[str, ...]

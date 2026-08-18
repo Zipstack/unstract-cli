@@ -30,18 +30,15 @@ class ExitCode(IntEnum):
     INTERRUPTED = 130
 
 
-#: HTTP status -> exit code. 422 maps to VALIDATION, which is right for a real
-#: validation failure; the deployment API's use of 422 for in-progress states is
-#: handled by the poll engine before reaching here, by branching on the response
-#: body rather than the status code.
+#: HTTP status -> exit code. An in-progress 422 never reaches here: the poll
+#: engine branches on the response body first.
 _STATUS_MAP: dict[int, ExitCode] = {
     400: ExitCode.VALIDATION,
     401: ExitCode.AUTH,
     403: ExitCode.AUTH,
     404: ExitCode.NOT_FOUND,
-    # Only the deployment status endpoint answers 406. A whisper result read
-    # twice comes back as a 400 whose body says so, and translating on that
-    # prose would break the moment the wording changes.
+    # Only the deployment status endpoint answers 406; the whisper equivalent
+    # is a 400 whose body says so, which is prose we do not translate on.
     406: ExitCode.ALREADY_CONSUMED,
     408: ExitCode.TIMEOUT,
     409: ExitCode.VALIDATION,
@@ -244,9 +241,8 @@ def hint_for(status: int) -> str | None:
                 "values passed; `details` carries the service's own response."
             )
         case 401 | 403:
-            # A key that is wrong, revoked, from another organisation, or simply
-            # not permitted on this one deployment all arrive as the same
-            # response, so the hint must not settle on one of them.
+            # Wrong, revoked, foreign-organisation and not-permitted all arrive
+            # as the same response, so the hint cannot settle on one of them.
             return (
                 "The key was rejected. Keys are per-product: `unstract config "
                 "doctor` reports which one resolved and from where. A key that "

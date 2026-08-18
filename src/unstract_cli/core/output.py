@@ -31,9 +31,7 @@ from typing import Any
 
 from unstract_cli.core.errors import CLIError, ExitCode, known_secrets, scrub
 
-#: Major version of the stdout envelope, published in every ``meta``. A consumer
-#: ignores fields it does not recognise and refuses a version it was not written
-#: against.
+#: Major version of the stdout envelope, published in every ``meta``.
 CONTRACT_VERSION = 1
 
 #: Environment markers the coding agents set for the tools they drive. Patterns,

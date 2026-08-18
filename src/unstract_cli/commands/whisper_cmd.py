@@ -28,9 +28,8 @@ from unstract_cli.core.poll import (
 
 PRODUCT = "llmwhisperer"
 
-#: An extraction is finished when the *body* says so. `unknown` is terminal too:
-#: the service reports it for a hash it no longer knows, and polling one forever
-#: is worse than reporting it.
+#: Terminal states as the body reports them. `unknown` is one: the service
+#: returns it for a hash it no longer knows, which no amount of polling changes.
 EXTRACT_POLL = PollSpec(
     handle_field="whisper_hash",
     terminal_success=("processed",),
@@ -90,9 +89,8 @@ def extract(
         )
 
     with translated(endpoint="whisper"):
-        # The client has its own blocking loop; the CLI's is used instead so
-        # that --interval, --timeout and the handle-on-timeout behaviour are the
-        # same for every product.
+        # The CLI's own poll loop is used over the client's so that waiting
+        # behaves the same for every product.
         accepted = client.whisper(
             **({"url": source} if _is_url(source) else {"file_path": source}),
             **sent,

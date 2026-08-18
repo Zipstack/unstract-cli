@@ -174,9 +174,8 @@ def client_params(method: Callable[..., Any]) -> dict[str, inspect.Parameter]:
     }
 
 
-#: Python annotation -> OpenAPI type. A source-derived spec reports what the
-#: endpoint reads off the wire, which can differ from what the call takes:
-#: `extract_all_lines` is a string there and a `bool` in the signature.
+#: Python annotation -> OpenAPI type. A source-derived spec describes the wire,
+#: which can differ from what the client method takes.
 _ANNOTATIONS: dict[Any, str] = {
     bool: "boolean",
     int: "integer",
@@ -203,9 +202,8 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
         # No default in the signature means the call cannot omit it.
         updates["required"] = True
     elif not _is_unset(signature.default):
-        # What omitting the flag gets you: the client sends its own value. An
-        # `Unset` default sends nothing, so there the spec's default is the
-        # honest answer, because the server applies it.
+        # What omitting the flag gets you: an `Unset` default sends nothing, so
+        # the spec's default is the one that applies.
         updates["default"] = signature.default
     return replace(param, **updates)
 
@@ -214,12 +212,8 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
 #: docstring, which is how both clients document their parameters.
 _ARG_LINE = re.compile(r"^\s*(\w+)\s*(\([^)]*\))?\s*:\s*(.*)$")
 
-#: Sentences a description restates from elsewhere, stripped in the order a
-#: description carries them. Each pattern ends at its own sentence rather than at
-#: the end of the text, so a description that carries prose after the restated
-#: sentence keeps it: the default ends at the full stop that starts the next
-#: sentence, the value list at the full stop closing a quoted value. The value
-#: list is matched on its opening quote, leaving prose that says "can be" alone.
+#: Sentences a description restates from elsewhere, stripped in the order they
+#: appear. Each pattern ends at its own sentence, so prose after it survives.
 _RESTATED = (
     re.compile(r"\s*Defaults to .*?\.(?=\s+[A-Z]|\s*$)"),
     re.compile(r'\s*Can be ".*?"\s*\.'),
@@ -252,9 +246,8 @@ def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
             out[current] = match.group(3).strip()
         elif current:
             out[current] = f"{out[current]} {line.strip()}".strip()
-    # The default and the allowed values are rendered from the signature and the
-    # spec, so the docstring's own sentences for them are a second copy that
-    # disagrees the moment either drifts.
+    # Default and allowed values are rendered from the signature and the spec;
+    # the docstring's own copy of them would disagree as soon as either moves.
     return {name: _strip_restated(text) for name, text in out.items() if text}
 
 
@@ -302,9 +295,9 @@ def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
     short = entry.get("short")
 
     if param.type == "boolean":
-        # A paired flag, not `is_flag`: a parameter whose default is true cannot
-        # be turned off by a flag that only knows how to turn things on, and
-        # `default=None` keeps "not passed" distinct from "passed false".
+        # A paired flag, not `is_flag`: a default-true parameter cannot be
+        # turned off by an on-only flag, and `None` keeps "not passed" apart
+        # from "passed false".
         decls = [f"{param.flag}/--no-{param.name.replace('_', '-')}"]
         if short:
             decls.insert(0, short)

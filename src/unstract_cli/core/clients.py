@@ -176,10 +176,8 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
             endpoint=endpoint,
         )
     if reported:
-        # Success at the HTTP layer, failure in the body -- the most interesting
-        # failure this API has, and the one a status-code mapping has nothing to
-        # say about. Not retryable: re-running starts a second billed execution
-        # rather than retrying the first.
+        # HTTP success carrying a failure in the body. Not retryable: a re-run
+        # starts a second billed execution rather than retrying the first.
         raise CLIError(
             str(reported),
             ExitCode.VALIDATION,

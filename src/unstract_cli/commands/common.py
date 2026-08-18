@@ -10,9 +10,7 @@ import click
 from unstract_cli.app import Context
 from unstract_cli.core.output import emit_result
 
-#: Seconds between polls, and the ceiling on the whole wait. Both are flags; the
-#: defaults are a compromise between a fast small document and not hammering the
-#: service while a large one runs.
+#: Poll interval and the ceiling on the whole wait. Both are flags.
 DEFAULT_INTERVAL = 3.0
 DEFAULT_TIMEOUT = 300.0
 

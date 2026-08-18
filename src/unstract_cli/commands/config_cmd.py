@@ -319,8 +319,7 @@ def config_doctor(obj: Any, probe: bool) -> None:
         for entry in products.values()
         if "api_key" in entry
     ):
-        # Not a problem -- an unconfigured setting is reported, not failed -- but
-        # the next question after "no key" is always where one comes from. The
+        # The next question after "no key" is always where one comes from. The
         # field name avoids the word the payload scrubber redacts on.
         report["getting_started"] = KEY_SOURCES
     if probe:

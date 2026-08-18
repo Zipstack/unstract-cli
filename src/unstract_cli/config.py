@@ -148,18 +148,20 @@ def _deref(value: Any) -> Any:
     An unset variable resolves to ``None`` rather than the literal string, so a
     missing credential surfaces as "not configured" instead of being sent as the
     nonsense value ``"env:FOO"``.
+
+    An empty string resolves the same way: the placeholders a generated config
+    carries must not satisfy `require`.
     """
-    if isinstance(value, str) and value.startswith("env:"):
-        return os.environ.get(value[4:].strip()) or None
+    if isinstance(value, str):
+        if value.startswith("env:"):
+            return os.environ.get(value[4:].strip()) or None
+        return value or None
     return value
 
 
-#: Settings a *discovered* project-local file may not supply. Such a file is
-#: attacker-controlled in any checkout the user did not write, and combined with
-#: ``env:`` indirection it would otherwise point the CLI at a host of the
-#: author's choosing and hand it the user's real key as a Bearer token.
-#: Everything else -- org_id, profile selection, deployment aliases -- is still
-#: honoured, so the project-local workflow keeps working.
+#: Settings a *discovered* project-local file may not supply: a checkout the
+#: user did not write must not choose the host their key is sent to. Everything
+#: else -- org_id, profile selection, deployment aliases -- is still honoured.
 UNTRUSTED_PROJECT_KEYS = frozenset({"api_key", "base_url"})
 
 

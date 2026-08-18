@@ -92,6 +92,22 @@ def test_require_names_every_way_to_supply_the_setting():
     assert "--api-key" not in message
 
 
+def test_placeholder_is_not_a_value(write_config):
+    """`config init` writes `org_id = ""`, and that must not satisfy `require`."""
+    write_config('default_profile = "p"\n\n[profiles.p.docstudio]\norg_id = ""\n')
+    assert resolved().get(DOCSTUDIO, "org_id") is None
+    assert resolved().resolution_source(DOCSTUDIO, "org_id")["resolved"] is False
+    with pytest.raises(ConfigError):
+        resolved().require(DOCSTUDIO, "org_id")
+
+
+def test_starter_profile_org_id_does_not_satisfy_require(write_config):
+    path = write_config("")
+    save_config(ConfigFile(default_profile="cloud-us", profiles=starter_profiles()), path)
+    with pytest.raises(ConfigError):
+        resolved().require(DOCSTUDIO, "org_id")
+
+
 def test_unknown_profile_is_an_error_not_a_silent_empty_block(write_config):
     write_config(PROFILE_TOML)
     with pytest.raises(ConfigError, match="not found"):

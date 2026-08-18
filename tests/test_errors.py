@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from unstract_cli.core.errors import (
@@ -106,3 +108,18 @@ def test_scrub_ignores_short_values():
     # Redacting a 3-character "key" would mangle unrelated text.
     assert scrub("the key is abc", ["abc"]) == "the key is abc"
     assert scrub("the key is abcdefghij", ["abcdefghij"]) == f"the key is {REDACTED}"
+
+
+def test_the_readme_table_lists_every_exit_code():
+    """The README table is a copy of the enum, and the only one users read."""
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    documented = {
+        int(row.split("|")[1]) for row in readme.splitlines() if _is_code_row(row)
+    }
+
+    assert documented == {int(code) for code in ExitCode}
+
+
+def _is_code_row(row: str) -> bool:
+    cells = row.split("|")
+    return len(cells) > 2 and cells[1].strip().isdigit()

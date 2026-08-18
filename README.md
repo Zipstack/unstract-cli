@@ -5,10 +5,12 @@ LLMWhisperer, run it through a Document Studio API deployment, get structured
 JSON back. It also clones one organization's resources into another.
 
 ```bash
-pipx install git+https://github.com/Zipstack/unstract-cli
+uv tool install git+https://github.com/Zipstack/unstract-cli
 unstract config init
 unstract config doctor
 ```
+
+Or run it without installing: `uvx --from git+https://github.com/Zipstack/unstract-cli unstract --discover groups`.
 
 ## Output
 
@@ -35,7 +37,10 @@ If a coding agent is driving (detected from the environment it sets), the
 *default* becomes json. `--agent yes|no` forces that either way, and an explicit
 `-o` always wins over both.
 
-Failures exit non-zero with a stable code:
+Failures exit non-zero with a stable code. The codes are this CLI's own
+convention, not a service's — they are the `ExitCode` enum in
+`core/errors.py`, and `--discover full` publishes the table so a caller does not
+have to copy it:
 
 | Code | Meaning |
 |------|---------|
@@ -57,7 +62,10 @@ Failures exit non-zero with a stable code:
 `~/.unstract/config.toml`, or a project-local `.unstract.toml` found by upward
 search, or `$UNSTRACT_CONFIG`, or `--config`. Every setting resolves
 **flag > env > profile > built-in default**, and the CLI is fully usable with no
-config file at all.
+config file at all. The flag tier is the connection options on each product
+group — `unstract docstudio --base-url … --org-id … deployment run …`, and
+`--base-url`/`--api-key` on `whisper` — which override the profile for that one
+invocation without writing anything.
 
 ```toml
 default_profile = "cloud-us"
@@ -86,11 +94,16 @@ under Settings → API Key Manager. `config init` also writes an
 `onprem-example` profile as a shape to copy for a self-hosted install — its host
 is a placeholder, and only the *active* profile is ever resolved.
 
-Credentials use `env:VAR_NAME` indirection, so the file records where a secret
-lives rather than the secret itself. `unstract config doctor` reports where each
-setting resolved from — including whether an `env:` reference is actually set in
-the current process — without echoing any value. It exits non-zero when one of
-its own checks failed, so a setup script can branch on it.
+A credential can be written into the file literally, but `env:VAR_NAME`
+indirection is what `config init` writes and what the examples use: the file
+then records where a secret lives rather than the secret itself, and stays safe
+to copy or commit. Either way the file is created `0600`, and `config doctor`
+warns when its mode is wider than that.
+
+`unstract config doctor` reports where each setting resolved from — including
+whether an `env:` reference is actually set in the current process — without
+echoing any value. It exits non-zero when one of its own checks failed, so a
+setup script can branch on it.
 
 A project-local `.unstract.toml` **found by upward search** may not supply
 `api_key` or `base_url`. Those are ignored, with a warning; everything else in it
@@ -103,16 +116,20 @@ What that protects is the key and the host, not the routing: `org_id`,
 project file can still decide *which* deployment a command runs against on a
 host you trust. Read one before you run inside a checkout you did not write.
 
-`clone` is the exception: it talks to two deployments at once, which no single
-profile describes, so it takes both endpoints as flags and both admin Platform
-keys from `UNSTRACT_SRC_PLATFORM_KEY` / `UNSTRACT_TGT_PLATFORM_KEY`. It exits 0
-when nothing failed, which is not the same as everything having moved: oversize
-and unsupported documents are skipped by design, and `data.skipped` counts them.
+`clone` is the exception, and it is an operator command: a human moving one
+organisation's resources into another, holding two admin Platform keys. It is
+not part of the document-processing path the rest of this CLI wraps, so an agent
+serving a user request should not reach for it unasked. It talks to two
+deployments at once, which no single profile describes, so it takes both
+endpoints as flags and both keys from `UNSTRACT_SRC_PLATFORM_KEY` /
+`UNSTRACT_TGT_PLATFORM_KEY`. It exits 0 when nothing failed, which is not the
+same as everything having moved: oversize and unsupported documents are skipped
+by design, and `data.skipped` counts them.
 
 ## Development
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-pytest        # offline; no network, no credentials
-ruff check .
+uv run pytest   # offline; no network, no credentials
+uv run ruff check .
 ```

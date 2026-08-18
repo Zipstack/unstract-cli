@@ -153,9 +153,14 @@ def cli(
 ) -> None:
     """The official CLI for Unstract.
 
-    Extract documents with LLMWhisperer and run API deployments. `--discover
-    groups` maps every command as JSON; pass `-o json` when scripting or parsing
-    the output.
+    LLMWhisperer extracts text and layout from documents; Document Studio runs
+    them through API deployments that return structured JSON.
+
+    Scripting or driving this from an agent: `-o json` prints one
+    `{ok, data, error, meta}` envelope on stdout and nothing else, failures
+    exit non-zero with a stable code, and `--discover groups|summary|full`
+    describes the commands, their flags and the output contract as JSON without
+    running anything.
     """
     set_config_path(config_file)
     ctx.obj = Context(

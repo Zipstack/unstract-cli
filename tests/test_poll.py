@@ -224,6 +224,18 @@ def test_a_save_leaves_no_temporary_file_behind(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == [target.name]
 
 
+def test_a_planted_temporary_file_is_not_written_through(tmp_path):
+    """A save directory another user can write is a directory they can plant a
+    symlink in, and following it would truncate whatever it points at."""
+    victim = tmp_path / "victim"
+    victim.write_text("do not touch")
+    (tmp_path / "out.json.tmp").symlink_to(victim)
+
+    persist(tmp_path / "out.json", {"a": 1})
+
+    assert victim.read_text() == "do not touch"
+
+
 def test_persist_writes_text_payloads_unwrapped(tmp_path):
     target = persist(tmp_path / "a.txt", "plain extracted text")
     assert target.read_text() == "plain extracted text"

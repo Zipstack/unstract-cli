@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 
 import pytest
 
+from unstract_cli import config as config_module
 from unstract_cli.config import (
     DEFAULT_BASE_URLS,
     DOCSTUDIO,
@@ -209,6 +211,29 @@ def test_saved_config_is_owner_only(tmp_path):
     )
     assert stat.S_IMODE(written.stat().st_mode) == 0o600
     assert load_config(written).default_profile == "cloud-us"
+
+
+def test_an_existing_file_is_narrowed_before_the_secret_is_written(tmp_path, monkeypatch):
+    """The mode passed to `os.open` applies only on creation, so rewriting a
+    world-readable file would otherwise publish the new key while it is written."""
+    path = tmp_path / "config.toml"
+    path.write_text("")
+    path.chmod(0o644)
+
+    seen = []
+    real = config_module.tomli_w.dump
+    monkeypatch.setattr(
+        config_module.tomli_w,
+        "dump",
+        lambda doc, fh: (
+            seen.append(stat.S_IMODE(os.fstat(fh.fileno()).st_mode)),
+            real(doc, fh),
+        )[1],
+    )
+    written = save_config(ConfigFile(profiles=starter_profiles()), path)
+
+    assert seen == [0o600]
+    assert stat.S_IMODE(written.stat().st_mode) == 0o600
 
 
 def test_loose_permissions_warn_rather_than_fail(write_config):

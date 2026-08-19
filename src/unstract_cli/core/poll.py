@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -111,17 +112,24 @@ def persist(path: str | Path, payload: Any) -> Path:
         if isinstance(payload, str)
         else json.dumps(payload, indent=2, default=str)
     )
-    tmp = target.with_name(target.name + ".tmp")
+    tmp: Path | None = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        with tmp.open("w", encoding="utf-8") as handle:
+        # A predictable sibling in a directory someone else can write is a
+        # symlink waiting to be planted, and the write would follow it. `mkstemp`
+        # names it unpredictably and creates it exclusively; the 0600 it opens
+        # with is what `os.replace` then gives the result.
+        handle_fd, name = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+        tmp = Path(name)
+        with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, target)
     except OSError as exc:
-        with suppress(OSError):
-            tmp.unlink(missing_ok=True)
+        if tmp is not None:
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
         raise CLIError(
             f"The result could not be written to {path!r}: {exc}.",
             ExitCode.SAVE_FAILED,

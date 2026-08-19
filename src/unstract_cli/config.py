@@ -300,8 +300,8 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
         doc["default_profile"] = cfg.default_profile
     doc["profiles"] = _restored_profiles(cfg, target)
 
-    # 0600 from the outset, never widened even briefly. O_NOFOLLOW because this
-    # write truncates, and the path is not always one the user chose.
+    # O_NOFOLLOW because this write truncates, and the path is not always one
+    # the user chose.
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(target, flags, 0o600)
@@ -313,9 +313,12 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
             f"overwrite {os.readlink(target)} instead. Pass --config with the path "
             "of the real file."
         ) from exc
+    # The mode above only applies to a file this call creates, so an existing
+    # wider one is narrowed before any content goes through the descriptor:
+    # after the write is a window in which the new secret is world-readable.
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "wb") as fh:
         tomli_w.dump(doc, fh)
-    os.chmod(target, 0o600)
     return target
 
 

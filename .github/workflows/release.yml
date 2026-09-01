@@ -26,6 +26,10 @@ on:
 jobs:
   release-and-publish:
     runs-on: ubuntu-latest
+    outputs:
+      # Consumed by `build-binaries`, which checks out the tag this run created
+      # rather than whatever the branch has moved on to.
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: write
       # Publishing is by PyPI Trusted Publisher, so there is no API token.
@@ -170,3 +174,77 @@ jobs:
           echo "Published ${{ steps.version.outputs.version }} to PyPI with uv publish using Trusted Publishers"
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}"
           echo "PyPI: https://pypi.org/project/unstract-cli/${{ steps.version.outputs.version }}/"
+
+  # `needs`, not a tag trigger: the release has to exist before anything attaches
+  # an asset to it. A tag-push workflow would race the `gh release create` above,
+  # and the loser is whichever calls POST /releases second -- which for `gh`
+  # means failing after PyPI has already published.
+  #
+  # PyInstaller does not cross-compile, so one runner per OS and architecture.
+  build-binaries:
+    needs: [release-and-publish]
+    permissions:
+      contents: write
+    strategy:
+      # One platform's toolchain breaking is not a reason to lose the other two.
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 rather than 24.04: a binary's glibc floor is its builder's, and
+          # 22.04's 2.35 still covers Ubuntu 22.04 and Debian 12, where 24.04's
+          # 2.39 would drop both.
+          - runner: ubuntu-22.04
+            asset: unstract-linux-x86_64
+          - runner: ubuntu-22.04-arm
+            asset: unstract-linux-arm64
+          - runner: macos-latest # arm64
+            asset: unstract-macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.release-and-publish.outputs.version }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A real install, not the `-e` that ci.yml uses: what gets frozen is then
+      # exactly what the wheel holds, so the binary and `pip install
+      # unstract-cli` are the same tree. An editable install freezes a walk of
+      # the working directory, which would sweep in any stray file under `src/`.
+      - name: Install the CLI and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          python -m pip install 'pyinstaller==6.22.2'
+
+      - run: pyinstaller --clean --noconfirm unstract.spec
+
+      - name: Name and check the binary
+        run: |
+          mv dist/unstract "${{ matrix.asset }}"
+          chmod +x "${{ matrix.asset }}"
+          # The overlay and both specs are read at import time, so a binary that
+          # answers --version at all has its whole data payload.
+          ./"${{ matrix.asset }}" --version
+          ./"${{ matrix.asset }}" --discover full > /dev/null
+          # Derived flags come from the specs; their help text comes from the
+          # clients' docstrings. A build made with -OO passes everything above
+          # and fails only this.
+          ./"${{ matrix.asset }}" whisper extract --help \
+            | grep -q 'Adds line numbers to the extracted text'
+          ./"${{ matrix.asset }}" docstudio deployment run --help \
+            | grep -q -- '--hitl-packet-id'
+
+      - run: shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+
+      # The release already exists, so the default token is enough and the App
+      # credential never reaches a job that runs a build. `--clobber` makes a
+      # re-run idempotent.
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "v${{ needs.release-and-publish.outputs.version }}" \
+            "${{ matrix.asset }}" "${{ matrix.asset }}.sha256" --clobber

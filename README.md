@@ -18,6 +18,26 @@ instead.
 
 Or run it without installing: `uvx --from git+https://github.com/Zipstack/unstract-cli unstract --discover groups`.
 
+Prefer one file and no Python at all? Every release attaches a standalone binary
+for Linux (x86_64 and arm64) and Apple Silicon:
+
+```bash
+curl -Lo unstract https://github.com/Zipstack/unstract-cli/releases/latest/download/unstract-linux-x86_64
+chmod +x unstract && sudo mv unstract /usr/local/bin/
+```
+
+Substitute `unstract-linux-arm64` or `unstract-macos-arm64`; each asset has a
+`.sha256` beside it. Keep the name `unstract` when you move it into place — the
+CLI reports the name it was invoked as, so a binary left called
+`unstract-macos-arm64` says exactly that in `--version` and in every usage line.
+
+The binaries are unsigned. `curl` does not quarantine what it downloads, so
+macOS runs one as-is; a browser download does get quarantined, and needs
+`xattr -d com.apple.quarantine /usr/local/bin/unstract` once. The Linux binaries
+are built on Ubuntu 22.04, so they need glibc 2.35 or newer — on anything older
+(RHEL 9 and Amazon Linux 2023 are 2.34), the `uv` install above is the way in.
+There is no Windows or Intel-Mac binary; both are `uv tool install`.
+
 ## Output
 
 `unstract` prints a table by default — in a terminal and in a pipe alike, so
@@ -138,4 +158,27 @@ by design, and `data.skipped` counts them.
 uv venv && uv pip install -e '.[dev]'
 uv run pytest   # offline; no network, no credentials
 uv run ruff check .
+```
+
+The standalone binaries are built from `unstract.spec`, which is committed and
+hand-edited — `pyinstaller` regenerating it would drop the comments explaining
+why each option is set. CI builds one per platform; to reproduce one locally,
+use a clean non-editable environment, because PyInstaller freezes what is
+installed rather than what `pyproject.toml` lists:
+
+```bash
+python3.12 -m venv .venv-freeze
+./.venv-freeze/bin/python -m pip install . 'pyinstaller==6.22.2'
+./.venv-freeze/bin/pyinstaller --clean --noconfirm unstract.spec
+```
+
+Then exercise it with no interpreter in reach — a dev box has a Python, which
+masks a missing module. `--version` is not a trivial check here: importing the
+command modules derives every flag from the bundled specs, so it fails outright
+if the spec's `datas` came out wrong.
+
+```bash
+mkdir -p /tmp/emptybin
+env -i PATH=/tmp/emptybin HOME=$HOME ./dist/unstract --version
+env -i PATH=/tmp/emptybin HOME=$HOME ./dist/unstract whisper extract --help
 ```

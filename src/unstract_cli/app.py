@@ -218,8 +218,9 @@ def whisper_group(ctx: Context, **overrides: str | None) -> None:
     "--transport-timeout",
     type=float,
     default=None,
-    help="Seconds before a stalled connection is given up on. Unset means it "
-    "is not, which is what the client has always done.",
+    help="Seconds before a stalled connection is given up on. Unset means no "
+    "bound for `deployment run` and `status`, and the platform client's own "
+    "60s default for `deployment ls`.",
 )
 @pass_context
 def docstudio_group(

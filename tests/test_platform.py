@@ -15,7 +15,13 @@ from __future__ import annotations
 import pytest
 from unstract.clone.context import OrgEndpoint
 
-from unstract_cli.config import DOCSTUDIO, PLATFORM, ConfigFile, ResolvedConfig
+from unstract_cli.config import (
+    DEFAULT_BASE_URLS,
+    DOCSTUDIO,
+    PLATFORM,
+    ConfigFile,
+    ResolvedConfig,
+)
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.platform import (
     CLIPlatformClient,
@@ -144,6 +150,73 @@ def test_an_explicit_platform_host_still_wins() -> None:
     )
 
     assert platform_base_url(config) == "https://platform.example"
+
+
+def test_the_saas_default_is_honoured_when_the_caller_names_it() -> None:
+    """The first fix compared the resolved value against
+    `DEFAULT_BASE_URLS[PLATFORM]` to tell "unset" from "chosen". Those are the
+    same string, so a caller who named the SaaS host was read as having named
+    nothing and silently redirected to docstudio's -- the inverse of the defect
+    it fixed. `config init` writes that exact host into every profile, so this
+    is the common shape, not a corner of it.
+    """
+    profile = _resolved(
+        {
+            "p": {
+                DOCSTUDIO: {"base_url": "https://onprem.example"},
+                PLATFORM: {"base_url": DEFAULT_BASE_URLS[PLATFORM]},
+            }
+        }
+    )
+    flag = _resolved(
+        {"p": {DOCSTUDIO: {"base_url": "https://onprem.example"}}},
+        **{"platform.base_url": DEFAULT_BASE_URLS[PLATFORM]},
+    )
+
+    assert platform_base_url(profile) == DEFAULT_BASE_URLS[PLATFORM]
+    assert platform_base_url(flag) == DEFAULT_BASE_URLS[PLATFORM]
+
+
+def test_the_built_in_default_is_the_last_resort_not_a_veto() -> None:
+    """Nobody named a host anywhere: the built-in default is still the answer.
+    `get_explicit` stopping before the defaults must not lose that.
+    """
+    assert platform_base_url(_resolved({"p": {}})) == DEFAULT_BASE_URLS[PLATFORM]
+
+
+@pytest.mark.parametrize("value", [0, 0.0, -1])
+def test_a_non_positive_timeout_is_refused_before_urllib3_sees_it(value) -> None:
+    """urllib3 raises a bare `ValueError` for a non-positive timeout, which
+    matches no arm in `__main__`. Truncating the float with `int()` turned every
+    `--transport-timeout` under 1s into exactly that.
+    """
+    config = _resolved({"p": {PLATFORM: {"api_key": "pk-000000000000"}}})
+
+    with pytest.raises(CLIError) as caught:
+        platform_client(config, timeout=value)
+
+    assert caught.value.exit_code == ExitCode.USAGE
+
+
+def test_a_sub_second_timeout_survives_as_a_float() -> None:
+    """`int(0.5)` is 0, which is the ValueError above; `int(1.9)` is 1, which is
+    a bound the caller did not ask for.
+    """
+    config = _resolved({"p": {PLATFORM: {"api_key": "pk-000000000000"}}})
+
+    assert platform_client(config, timeout=0.5).timeout == 0.5
+    assert platform_client(config, timeout=1.9).timeout == 1.9
+
+
+def test_the_api_prefix_env_var_is_wired(monkeypatch) -> None:
+    """The profile tier reads the block directly without consulting `ENV_VARS`,
+    so removing the entry left the suite green while `$UNSTRACT_API_PREFIX` did
+    nothing.
+    """
+    monkeypatch.setenv("UNSTRACT_API_PREFIX", "unstract-api/v1")
+    config = _resolved({"p": {PLATFORM: {"api_key": "pk-000000000000"}}})
+
+    assert platform_client(config).endpoint.api_path_prefix == "unstract-api/v1"
 
 
 def test_a_self_hosted_api_prefix_reaches_the_endpoint() -> None:

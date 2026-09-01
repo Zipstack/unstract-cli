@@ -93,7 +93,6 @@ api_key = "env:UNSTRACT_DEPLOYMENT_KEY"
 
 [profiles.cloud-us.platform]
 base_url = "https://us-central.unstract.com"
-api_key = "env:UNSTRACT_PLATFORM_KEY"
 
 [profiles.cloud-us.deployments.invoices]
 api_name = "invoice-parser"
@@ -115,9 +114,14 @@ The two Unstract keys are not interchangeable and neither replaces the other. A
 deployment key runs deployments and cannot say which organisation it belongs
 to; a platform key identifies the organisation and lists what is in it, and
 cannot run a deployment. `auth whoami` and `deployment ls` take the platform key;
-`deployment run` and `deployment status` take the deployment key. `org_id` lives
-on the `docstudio` block either way — `auth whoami` writes the one it resolves
-there, because that is where everything that needs it reads from.
+`deployment run` and `deployment status` take the deployment key; `auth whoami`
+and `deployment ls` take the platform key. `org_id` lives on the `docstudio`
+block either way — `auth whoami` writes the one it resolves there, because that
+is where everything that needs it reads from.
+
+`config init` deliberately leaves `platform.api_key` out of the block above, so
+that a caller who only holds a deployment key is not told a platform key is
+missing. Add the line, or set `$UNSTRACT_PLATFORM_KEY`, when you have one.
 
 A credential can be written into the file literally, but `env:VAR_NAME`
 indirection is what `config init` writes and what the examples use: the file

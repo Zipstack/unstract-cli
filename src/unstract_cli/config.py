@@ -30,34 +30,49 @@ from unstract_cli.core.errors import remember_secret
 
 LLMWHISPERER = "llmwhisperer"
 DOCSTUDIO = "docstudio"
-PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO)
+PLATFORM = "platform"
+PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO, PLATFORM)
 
 #: Built-in defaults, lowest precedence.
 DEFAULT_BASE_URLS: dict[str, str] = {
     LLMWHISPERER: "https://llmwhisperer-api.us-central.unstract.com/api/v2",
     DOCSTUDIO: "https://us-central.unstract.com",
+    # The same host as docstudio: one deployment serves both the platform API
+    # and the deployments it manages.
+    PLATFORM: "https://us-central.unstract.com",
 }
 
 #: Environment variables per (product, setting), checked before the config file
 #: and in the order given. The trailing names are the ones the published clients
 #: themselves read: an environment already set up for a client must not leave
 #: the CLI silently on its built-in default, which is production.
+#:
+#: `platform` deliberately has no `org_id` of its own. A platform key carries
+#: its organisation, and `auth whoami` writes the one it resolves to the
+#: docstudio block -- the block everything else already reads. Two `org_id`
+#: settings would mean two rows in `config doctor` that a user has to keep in
+#: agreement by hand.
 ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (LLMWHISPERER, "api_key"): ("LLMWHISPERER_API_KEY",),
     (LLMWHISPERER, "base_url"): ("LLMWHISPERER_BASE_URL", "LLMWHISPERER_BASE_URL_V2"),
     (DOCSTUDIO, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY", "UNSTRACT_API_DEPLOYMENT_KEY"),
     (DOCSTUDIO, "base_url"): ("UNSTRACT_BASE_URL",),
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
+    (PLATFORM, "api_key"): ("UNSTRACT_PLATFORM_KEY",),
+    (PLATFORM, "base_url"): ("UNSTRACT_BASE_URL",),
 }
 
 
-#: Where the two credentials are minted. Quoted wherever the CLI reports one as
-#: missing: knowing a key is unset is no help without knowing where one is made.
+#: Where the three credentials are minted. Quoted wherever the CLI reports one
+#: as missing: knowing a key is unset is no help without knowing where one is
+#: made.
 KEY_SOURCES = (
     "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
     "shown on the API deployment's own page in the Unstract UI, and a key "
     "covering every deployment in the organisation is minted under "
-    "Settings -> API Key Manager."
+    "Settings -> API Key Manager. A platform key, which identifies the "
+    "organisation and lists what is in it but cannot run a deployment, is "
+    "minted by an organisation admin under Settings -> Platform API Keys."
 )
 
 
@@ -538,6 +553,10 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
+            PLATFORM: {
+                "base_url": DEFAULT_BASE_URLS[PLATFORM],
+                "api_key": "env:UNSTRACT_PLATFORM_KEY",
+            },
             "deployments": {"example": {"api_name": "your-api-deployment-name"}},
         },
         "cloud-eu": {
@@ -558,6 +577,10 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
+            PLATFORM: {
+                "base_url": "https://unstract.internal.example",
+                "api_key": "env:UNSTRACT_PLATFORM_KEY",
+            },
         },
     }
 
@@ -569,6 +592,7 @@ __all__ = [
     "HOME_CONFIG",
     "KEY_SOURCES",
     "LLMWHISPERER",
+    "PLATFORM",
     "PRODUCTS",
     "PROJECT_CONFIG_NAME",
     "UNTRUSTED_PROJECT_KEYS",

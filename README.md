@@ -6,8 +6,9 @@ JSON back. It also clones one organization's resources into another.
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/Zipstack/unstract-cli/main/install.sh | sh
-unstract config init
-unstract config doctor
+export UNSTRACT_PLATFORM_KEY=...
+unstract auth whoami                  # resolves and stores your organisation
+unstract docstudio deployment ls      # what can I run?
 ```
 
 The installer fetches `uv` if it is missing and installs the CLI with it; `uv`
@@ -15,6 +16,11 @@ brings its own Python, so nothing on the machine has to match. Already have
 `uv`? `uv tool install git+https://github.com/Zipstack/unstract-cli` is the same
 thing. Set `UNSTRACT_CLI_SOURCE` to install a branch or a local checkout
 instead.
+
+`auth whoami` is the shortest way in: a platform key carries the organisation it
+belongs to, so supplying the key is enough to discover `org_id` rather than
+reading it out of a web-app URL. `config init` and `config doctor` are still
+there for a profile you write by hand.
 
 Or run it without installing: `uvx --from git+https://github.com/Zipstack/unstract-cli unstract --discover groups`.
 
@@ -70,8 +76,8 @@ search, or `$UNSTRACT_CONFIG`, or `--config`. Every setting resolves
 **flag > env > profile > built-in default**, and the CLI is fully usable with no
 config file at all. The flag tier is the connection options on each product
 group — `unstract docstudio --base-url … --org-id … deployment run …`, and
-`--base-url`/`--api-key` on `whisper` — which override the profile for that one
-invocation without writing anything.
+`--base-url`/`--api-key` on `whisper` and on `auth` — which override the profile
+for that one invocation without writing anything.
 
 ```toml
 default_profile = "cloud-us"
@@ -85,6 +91,10 @@ base_url = "https://us-central.unstract.com"
 org_id = "org_ABC123"
 api_key = "env:UNSTRACT_DEPLOYMENT_KEY"
 
+[profiles.cloud-us.platform]
+base_url = "https://us-central.unstract.com"
+api_key = "env:UNSTRACT_PLATFORM_KEY"
+
 [profiles.cloud-us.deployments.invoices]
 api_name = "invoice-parser"
 ```
@@ -96,9 +106,18 @@ own `api_key` when its deployment has a separate key of its own.
 
 Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is shown
 on the API deployment's own page in the Unstract UI, and an organisation-wide one
-under Settings → API Key Manager. `config init` also writes an
-`onprem-example` profile as a shape to copy for a self-hosted install — its host
-is a placeholder, and only the *active* profile is ever resolved.
+under Settings → API Key Manager. A **platform key** is minted by an
+organisation admin under Settings → Platform API Keys. `config init` also writes
+an `onprem-example` profile as a shape to copy for a self-hosted install — its
+host is a placeholder, and only the *active* profile is ever resolved.
+
+The two Unstract keys are not interchangeable and neither replaces the other. A
+deployment key runs one deployment and cannot say which organisation it belongs
+to; a platform key identifies the organisation and lists what is in it, and
+cannot run a deployment. `auth whoami` and `deployment ls` take the platform key;
+`deployment run` and `deployment status` take the deployment key. `org_id` lives
+on the `docstudio` block either way — `auth whoami` writes the one it resolves
+there, because that is where everything that needs it reads from.
 
 A credential can be written into the file literally, but `env:VAR_NAME`
 indirection is what `config init` writes and what the examples use: the file
@@ -128,7 +147,8 @@ not part of the document-processing path the rest of this CLI wraps, so an agent
 serving a user request should not reach for it unasked. It talks to two
 deployments at once, which no single profile describes, so it takes both
 endpoints as flags and both keys from `UNSTRACT_SRC_PLATFORM_KEY` /
-`UNSTRACT_TGT_PLATFORM_KEY`. It exits 0 when nothing failed, which is not the
+`UNSTRACT_TGT_PLATFORM_KEY` — two keys for two organisations, so it reads neither
+the `platform` profile block nor `$UNSTRACT_PLATFORM_KEY`. It exits 0 when nothing failed, which is not the
 same as everything having moved: oversize and unsupported documents are skipped
 by design, and `data.skipped` counts them.
 

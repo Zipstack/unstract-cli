@@ -28,7 +28,12 @@ def test_groups_names_the_products_and_stops_there(capsys):
     """The cheap question stays cheap: no command list, no flags."""
     code, data = run(capsys, "--discover", "groups")
     assert code == int(ExitCode.SUCCESS)
-    assert {g["name"] for g in data["groups"]} == {"config", "docstudio", "whisper"}
+    assert {g["name"] for g in data["groups"]} == {
+        "auth",
+        "config",
+        "docstudio",
+        "whisper",
+    }
     # A leaf listed among the groups is a group a consumer finds empty.
     assert [c["name"] for c in data["commands"]] == ["clone"]
     assert all(entry["help"] for entry in [*data["groups"], *data["commands"]])
@@ -165,6 +170,22 @@ def probe_client(monkeypatch):
     return install
 
 
+@pytest.fixture
+def platform_probe_client(monkeypatch):
+    def install(reply=None):
+        class Fake:
+            def whoami(self):
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply or {}
+
+        monkeypatch.setattr(
+            config_cmd, "platform_client", lambda _config, org_id=None: Fake()
+        )
+
+    return install
+
+
 def test_doctor_makes_no_call_without_probe(capsys, probe_client):
     probe_client(CLIError("must not be called"))
     code, data = run(capsys, "config", "doctor")
@@ -212,3 +233,59 @@ def test_the_deployment_probe_says_it_verified_nothing(capsys, probe_client, mon
     assert entry["checked"] is False and entry["ok"] is None
     assert entry["resolved"] is True
     assert "NOT verified" in entry["detail"]
+
+
+def test_the_platform_probe_verifies_the_key_and_names_the_organisation(
+    capsys, probe_client, platform_probe_client, monkeypatch
+):
+    """`whoami` reads nothing but the key, so unlike a deployment it can be
+    checked for real -- and the organisation it resolves is the reason to
+    hold the key at all.
+    """
+    probe_client({"quota": 1})
+    platform_probe_client({"organization_id": "org_ABC123"})
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    _, data = run(capsys, "config", "doctor", "--probe")
+
+    assert data["probe"]["platform"] == {
+        "checked": True,
+        "ok": True,
+        "organization_id": "org_ABC123",
+        "detail": "The key was accepted, and resolved to an organisation.",
+    }
+
+
+def test_an_absent_platform_key_is_reported_not_failed(capsys, probe_client):
+    """A platform key is optional -- holding only a deployment key is the
+    common case -- so not having one must not decide the exit code.
+    """
+    probe_client({"quota": 1})
+
+    code, data = run(capsys, "config", "doctor", "--probe")
+
+    assert code == int(ExitCode.SUCCESS)
+    entry = data["probe"]["platform"]
+    assert entry["checked"] is False
+    assert entry["ok"] is None
+
+
+def test_a_rejected_platform_key_fails_the_probe(
+    capsys, probe_client, platform_probe_client, monkeypatch
+):
+    """A key that is set and wrong is a real misconfiguration, unlike one that
+    is simply absent."""
+    probe_client({"quota": 1})
+    platform_probe_client(CLIError("bad key", ExitCode.AUTH))
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    report = json.loads(capsys.readouterr().out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert report["probe"]["platform"] == {
+        "checked": True,
+        "ok": False,
+        "detail": "bad key",
+        "exit_code": int(ExitCode.AUTH),
+    }

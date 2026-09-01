@@ -12,6 +12,7 @@ import socket
 
 import pytest
 from requests.exceptions import ConnectionError
+from unstract.clone.exceptions import PlatformAPIError
 from unstract.clone.report import CloneReport, Endpoint, PhaseResult
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
@@ -22,8 +23,8 @@ from urllib3.exceptions import MaxRetryError, NameResolutionError
 
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
-from unstract_cli.commands import clone_cmd, docstudio_cmd, whisper_cmd
-from unstract_cli.config import LLMWHISPERER
+from unstract_cli.commands import clone_cmd, docstudio_cmd, platform_cmd, whisper_cmd
+from unstract_cli.config import LLMWHISPERER, PLATFORM
 from unstract_cli.core.errors import CLIError, ExitCode
 
 
@@ -117,6 +118,27 @@ def deployment_client(monkeypatch):
     return install
 
 
+@pytest.fixture
+def platform_client(monkeypatch):
+    """Install a fake Platform API client and hand it back to the test."""
+
+    def install(**replies):
+        client = FakeWhisper(**replies)
+        client.built_with = {}
+
+        def build(config, org_id=None):
+            # Resolving the key is what registers it for scrubbing, so the fake
+            # factory has to do it too or the seam hides a production path.
+            client.built_with["api_key"] = config.get(PLATFORM, "api_key")
+            client.built_with["org_id"] = org_id
+            return client
+
+        monkeypatch.setattr(platform_cmd, "platform_client", build)
+        return client
+
+    return install
+
+
 # --------------------------------------------------------------------------- #
 # The command surface
 # --------------------------------------------------------------------------- #
@@ -140,9 +162,11 @@ def test_the_v1_commands_are_registered():
         "update",
     }
     assert set(tree["docstudio"]["commands"]["deployment"]["commands"]) == {
+        "ls",
         "run",
         "status",
     }
+    assert set(tree["auth"]["commands"]) == {"whoami"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1119,3 +1143,188 @@ def test_a_key_quoted_in_a_clone_report_does_not_survive_the_table(capsys, monke
     assert code == int(ExitCode.SUCCESS)
     assert "adapters" in captured.out
     assert key not in captured.out and key not in captured.err
+
+
+# --------------------------------------------------------------------------- #
+# auth whoami
+# --------------------------------------------------------------------------- #
+
+IDENTITY = {
+    "organization_id": "org_ABC123",
+    "organization_name": "Acme",
+    "permission": "read",
+    "key_name": "ci",
+}
+
+
+def _platform_env(monkeypatch, tmp_path):
+    """A resolvable platform key, and a config file of our own to write into."""
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+
+
+def test_whoami_reports_the_identity_the_service_returned(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami=IDENTITY)
+
+    code, out, _ = run(capsys, "auth", "whoami")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"] == IDENTITY
+
+
+def test_whoami_is_called_with_no_organisation(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """Resolving the organisation is the point, so requiring one would be
+    circular."""
+    _platform_env(monkeypatch, tmp_path)
+    client = platform_client(whoami=IDENTITY)
+
+    run(capsys, "auth", "whoami")
+
+    assert client.built_with["org_id"] is None
+    assert client.built_with["api_key"] == "pk-123"
+
+
+def test_whoami_stores_the_organisation_where_everything_else_reads_it(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami=IDENTITY)
+
+    _, out, _ = run(capsys, "auth", "whoami")
+
+    assert envelope(out)["meta"]["saved"] is True
+    # Read back through the CLI rather than out of the file: what matters is
+    # that the next command resolves it, not where the bytes landed.
+    _, out, _ = run(capsys, "config", "get", "docstudio", "org_id")
+    assert envelope(out)["data"]["value"] == "org_ABC123"
+
+
+def test_whoami_can_validate_without_writing_anything(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami=IDENTITY)
+
+    _, out, _ = run(capsys, "auth", "whoami", "--no-save")
+
+    assert envelope(out)["meta"]["saved"] is False
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_a_rejected_platform_key_exits_on_the_auth_code(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """A traceback here would mean the Platform API's own exception type never
+    reached the translator."""
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami=PlatformAPIError("nope", status_code=401, body="{}"))
+
+    code, out, _ = run(capsys, "auth", "whoami")
+
+    assert code == int(ExitCode.AUTH)
+    assert envelope(out)["ok"] is False
+
+
+def test_whoami_without_a_key_is_a_usage_error(capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+    code, out, _ = run(capsys, "auth", "whoami")
+
+    assert code == int(ExitCode.USAGE)
+    assert "UNSTRACT_PLATFORM_KEY" in json.dumps(envelope(out)["error"])
+
+
+# --------------------------------------------------------------------------- #
+# docstudio deployment ls
+# --------------------------------------------------------------------------- #
+
+DEPLOYMENT_ROW = {
+    "api_name": "invoice-parser",
+    "display_name": "Invoices",
+    "id": "dep-1",
+    "is_active": True,
+    "api_endpoint": "https://example.com/deployment/api/org/invoice-parser/",
+    "created_by_email": "someone@example.com",
+    "last_5_run_statuses": [],
+}
+
+
+def _returns(value):
+    """Queue one reply whose value is itself a list.
+
+    `FakeWhisper` reads a list reply as a queue of replies, so a bare list would
+    hand back its first row rather than the listing.
+    """
+    return [value]
+
+
+def _listing_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+    monkeypatch.setenv("UNSTRACT_ORG_ID", "org_ABC123")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+
+
+def test_ls_narrows_the_row_to_what_a_caller_can_read(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _listing_env(monkeypatch, tmp_path)
+    platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+
+    _, out, _ = run(capsys, "docstudio", "deployment", "ls")
+
+    (row,) = envelope(out)["data"]["results"]
+    assert set(row) == set(platform_cmd.LISTING_FIELDS)
+    assert row["api_name"] == "invoice-parser"
+
+
+def test_ls_can_return_every_field_the_server_sent(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _listing_env(monkeypatch, tmp_path)
+    platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+
+    _, out, _ = run(capsys, "docstudio", "deployment", "ls", "--full")
+
+    (row,) = envelope(out)["data"]["results"]
+    assert row == DEPLOYMENT_ROW
+
+
+def test_ls_passes_the_name_filter_to_the_server(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """Filtering here rather than locally: the server has the exact-match
+    filter, and a local one would still page the whole organisation."""
+    _listing_env(monkeypatch, tmp_path)
+    client = platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+
+    run(capsys, "docstudio", "deployment", "ls", "--api-name", "invoice-parser")
+
+    assert client.kwargs_for("list_api_deployments") == {"api_name": "invoice-parser"}
+
+
+def test_ls_runs_inside_the_configured_organisation(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _listing_env(monkeypatch, tmp_path)
+    client = platform_client(list_api_deployments=_returns([]))
+
+    run(capsys, "docstudio", "deployment", "ls")
+
+    assert client.built_with["org_id"] == "org_ABC123"
+
+
+def test_ls_without_an_organisation_says_how_to_get_one(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+    platform_client(list_api_deployments=_returns([]))
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "ls")
+
+    assert code == int(ExitCode.USAGE)
+    assert "whoami" in json.dumps(envelope(out)["error"])

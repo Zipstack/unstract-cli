@@ -5,9 +5,10 @@ crash should look like a crash. Everything a client raises on purpose is
 expected, so it is translated here into a ``CLIError`` carrying an exit code, a
 hint and the response detail.
 
-The two clients report failure differently -- LLMWhisperer raises with a status
-code attached, the deployment client returns a dict containing one -- so both
-shapes converge here rather than in each command.
+The clients report failure differently -- LLMWhisperer raises with a status
+code attached, the deployment client returns a dict containing one, the Platform
+API client raises with the body attached -- so every shape converges here rather
+than in each command.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from unstract.api_deployments.client import (
     APIDeploymentsClient,
     APIDeploymentsClientException,
 )
+from unstract.clone.exceptions import PlatformAPIError
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
     LLMWhispererClientV2,
@@ -137,6 +139,18 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
         raise CLIError(message, details=details, endpoint=endpoint) from exc
     except APIDeploymentsClientException as exc:
         raise CLIError(str(exc), ExitCode.USAGE, endpoint=endpoint) from exc
+    except PlatformAPIError as exc:
+        # The Platform API client raises rather than returning a status, and
+        # carries the response body on the exception. Untranslated it would
+        # reach the entry point as an unexpected crash and print a traceback.
+        if exc.status_code:
+            raise error_from_status(
+                int(exc.status_code),
+                str(exc),
+                details=exc.body,
+                endpoint=endpoint,
+            ) from exc
+        raise CLIError(str(exc), details=exc.body, endpoint=endpoint) from exc
     except Timeout as exc:
         raise CLIError(
             str(exc),

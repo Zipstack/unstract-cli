@@ -16,6 +16,7 @@ from unstract_cli.commands.config_cmd import config_group
 from unstract_cli.config import (
     DOCSTUDIO,
     LLMWHISPERER,
+    PLATFORM,
     ConfigError,
     ResolvedConfig,
     load_config,
@@ -84,7 +85,7 @@ class Context:
     def secrets(self) -> list[str]:
         """Resolved credentials, for scrubbing anything on its way to a stream."""
         out: list[str] = []
-        for product in (LLMWHISPERER, DOCSTUDIO):
+        for product in (LLMWHISPERER, DOCSTUDIO, PLATFORM):
             try:
                 if value := self.config.get(product, "api_key"):
                     out.append(str(value))
@@ -234,11 +235,29 @@ def deployment_group() -> None:
     """Work with a deployed API."""
 
 
+@cli.group("auth")
+@_connection_options()
+@pass_context
+def auth_group(ctx: Context, **overrides: str | None) -> None:
+    """Identify the credential you are using.
+
+    Its flags configure the platform key, which is the credential that knows
+    which organisation it belongs to. A deployment key does not: it authenticates
+    against the deployment it was minted for and never reaches this endpoint.
+    """
+    ctx.override(PLATFORM, overrides)
+
+
 cli.add_command(config_group)
 
 # Imported for their side effect of registering commands, and imported last
 # because those modules hang their commands off the groups declared just above.
-from unstract_cli.commands import clone_cmd, docstudio_cmd, whisper_cmd  # noqa: E402,F401
+from unstract_cli.commands import (  # noqa: E402,F401
+    clone_cmd,
+    docstudio_cmd,
+    platform_cmd,
+    whisper_cmd,
+)
 
 
 def command_tree() -> dict[str, Any]:

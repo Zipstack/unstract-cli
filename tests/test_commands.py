@@ -12,6 +12,7 @@ import socket
 
 import pytest
 from requests.exceptions import ConnectionError
+from unstract.clone.exceptions import PlatformAPIError
 from unstract.clone.report import CloneReport, Endpoint, PhaseResult
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
@@ -22,8 +23,8 @@ from urllib3.exceptions import MaxRetryError, NameResolutionError
 
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
-from unstract_cli.commands import clone_cmd, docstudio_cmd, whisper_cmd
-from unstract_cli.config import LLMWHISPERER
+from unstract_cli.commands import clone_cmd, docstudio_cmd, platform_cmd, whisper_cmd
+from unstract_cli.config import LLMWHISPERER, PLATFORM
 from unstract_cli.core.errors import CLIError, ExitCode
 
 
@@ -117,6 +118,30 @@ def deployment_client(monkeypatch):
     return install
 
 
+@pytest.fixture
+def platform_client(monkeypatch):
+    """Install a fake Platform API client and hand it back to the test."""
+
+    def install(**replies):
+        client = FakeWhisper(**replies)
+        client.built_with = {}
+
+        def build(config, org_id=None, *, timeout=None):
+            # Resolving the key is what registers it for scrubbing, so the fake
+            # factory has to do it too or the seam hides a production path.
+            # The signature tracks the real `platform_client` deliberately: a
+            # fixture that drifts from it passes while testing nothing.
+            client.built_with["api_key"] = config.get(PLATFORM, "api_key")
+            client.built_with["org_id"] = org_id
+            client.built_with["timeout"] = timeout
+            return client
+
+        monkeypatch.setattr(platform_cmd, "platform_client", build)
+        return client
+
+    return install
+
+
 # --------------------------------------------------------------------------- #
 # The command surface
 # --------------------------------------------------------------------------- #
@@ -140,9 +165,11 @@ def test_the_v1_commands_are_registered():
         "update",
     }
     assert set(tree["docstudio"]["commands"]["deployment"]["commands"]) == {
+        "ls",
         "run",
         "status",
     }
+    assert set(tree["auth"]["commands"]) == {"whoami"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1119,3 +1146,472 @@ def test_a_key_quoted_in_a_clone_report_does_not_survive_the_table(capsys, monke
     assert code == int(ExitCode.SUCCESS)
     assert "adapters" in captured.out
     assert key not in captured.out and key not in captured.err
+
+
+# --------------------------------------------------------------------------- #
+# auth whoami
+# --------------------------------------------------------------------------- #
+
+IDENTITY = {
+    "organization_id": "org_ABC123",
+    "organization_name": "Acme",
+    "permission": "read",
+    "key_name": "ci",
+}
+
+
+def _platform_env(monkeypatch, tmp_path):
+    """A resolvable platform key, and a config file of our own to write into."""
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+
+
+def test_whoami_reports_the_identity_the_service_returned(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami=IDENTITY)
+
+    code, out, _ = run(capsys, "auth", "whoami")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"] == IDENTITY
+
+
+def test_whoami_is_called_with_no_organisation(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """Resolving the organisation is the point, so requiring one would be
+    circular."""
+    _platform_env(monkeypatch, tmp_path)
+    client = platform_client(whoami=IDENTITY)
+
+    run(capsys, "auth", "whoami")
+
+    assert client.built_with["org_id"] is None
+    assert client.built_with["api_key"] == "pk-123"
+
+
+def test_whoami_stores_the_organisation_where_everything_else_reads_it(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami=IDENTITY)
+
+    _, out, _ = run(capsys, "auth", "whoami")
+
+    assert envelope(out)["meta"]["saved"] is True
+    # Read back through the CLI rather than out of the file: what matters is
+    # that the next command resolves it, not where the bytes landed.
+    _, out, _ = run(capsys, "config", "get", "docstudio", "org_id")
+    assert envelope(out)["data"]["value"] == "org_ABC123"
+
+
+def test_whoami_can_validate_without_writing_anything(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami=IDENTITY)
+
+    _, out, _ = run(capsys, "auth", "whoami", "--no-save")
+
+    assert envelope(out)["meta"]["saved"] is False
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_a_rejected_platform_key_exits_on_the_auth_code(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """A traceback here would mean the Platform API's own exception type never
+    reached the translator."""
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami=PlatformAPIError("nope", status_code=401, body="{}"))
+
+    code, out, _ = run(capsys, "auth", "whoami")
+
+    assert code == int(ExitCode.AUTH)
+    assert envelope(out)["ok"] is False
+
+
+def test_whoami_without_a_key_is_a_usage_error(capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+    code, out, _ = run(capsys, "auth", "whoami")
+
+    assert code == int(ExitCode.USAGE)
+    assert "UNSTRACT_PLATFORM_KEY" in json.dumps(envelope(out)["error"])
+
+
+# --------------------------------------------------------------------------- #
+# docstudio deployment ls
+# --------------------------------------------------------------------------- #
+
+DEPLOYMENT_ROW = {
+    "api_name": "invoice-parser",
+    "display_name": "Invoices",
+    "id": "dep-1",
+    "is_active": True,
+    "api_endpoint": "https://example.com/deployment/api/org/invoice-parser/",
+    "created_by_email": "someone@example.com",
+    "last_5_run_statuses": [],
+}
+
+
+def _returns(value):
+    """Queue one reply whose value is itself a list.
+
+    `FakeWhisper` reads a list reply as a queue of replies, so a bare list would
+    hand back its first row rather than the listing.
+    """
+    return [value]
+
+
+def _listing_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+    monkeypatch.setenv("UNSTRACT_ORG_ID", "org_ABC123")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+
+
+def test_ls_narrows_the_row_to_what_a_caller_can_read(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _listing_env(monkeypatch, tmp_path)
+    platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+
+    _, out, _ = run(capsys, "docstudio", "deployment", "ls")
+
+    (row,) = envelope(out)["data"]["results"]
+    assert set(row) == set(platform_cmd.LISTING_FIELDS)
+    assert row["api_name"] == "invoice-parser"
+
+
+def test_ls_can_return_every_field_the_server_sent(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _listing_env(monkeypatch, tmp_path)
+    platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+
+    _, out, _ = run(capsys, "docstudio", "deployment", "ls", "--full")
+
+    (row,) = envelope(out)["data"]["results"]
+    assert row == DEPLOYMENT_ROW
+
+
+def test_ls_passes_the_name_filter_to_the_server(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """Filtering here rather than locally: the server has the exact-match
+    filter, and a local one would still page the whole organisation."""
+    _listing_env(monkeypatch, tmp_path)
+    client = platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+
+    run(capsys, "docstudio", "deployment", "ls", "--api-name", "invoice-parser")
+
+    assert client.kwargs_for("list_api_deployments") == {"api_name": "invoice-parser"}
+
+
+def test_ls_runs_inside_the_configured_organisation(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _listing_env(monkeypatch, tmp_path)
+    client = platform_client(list_api_deployments=_returns([]))
+
+    run(capsys, "docstudio", "deployment", "ls")
+
+    assert client.built_with["org_id"] == "org_ABC123"
+
+
+def test_ls_without_an_organisation_says_how_to_get_one(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+    platform_client(list_api_deployments=_returns([]))
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "ls")
+
+    assert code == int(ExitCode.USAGE)
+    assert "whoami" in json.dumps(envelope(out)["error"])
+
+
+# --------------------------------------------------------------------------- #
+# auth whoami — where it writes, and what happens when it cannot
+# --------------------------------------------------------------------------- #
+
+
+def _config_with(tmp_path, monkeypatch, text):
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(path))
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+    return path
+
+
+def test_whoami_writes_to_the_profile_the_run_is_actually_using(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """Reads resolve through `active_profile` (flag > env > file default).
+    Re-deriving that chain here dropped the env tier, so the organisation was
+    written into a profile no later command reads -- and `deployment ls` then
+    failed immediately after a `whoami` reporting `saved: true`.
+    """
+    path = _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n'
+        '[profiles.cloud-us.docstudio]\norg_id = ""\n'
+        '[profiles.cloud-eu.docstudio]\norg_id = ""\n',
+    )
+    monkeypatch.setenv("UNSTRACT_PROFILE", "cloud-eu")
+    platform_client(whoami=IDENTITY)
+
+    _, out, _ = run(capsys, "auth", "whoami")
+
+    assert envelope(out)["meta"]["profile"] == "cloud-eu"
+    assert 'org_id = "org_ABC123"' in path.read_text().split("[profiles.cloud-eu")[1]
+
+
+def test_whoami_refuses_to_invent_a_profile_that_does_not_exist(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """`setdefault` created it. That silently disarmed the "Profile not found"
+    guard for every later command, which then resolved the built-in production
+    defaults instead -- from a single typo, permanently.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = ""\n',
+    )
+    platform_client(whoami=IDENTITY)
+
+    code, out, _ = run(capsys, "-p", "cloud-uss", "auth", "whoami")
+
+    # SAVE_FAILED, not USAGE: the key resolved and only the note-taking failed,
+    # so the identity comes back in `details` rather than being discarded.
+    error = envelope(out)["error"]
+    assert code == int(ExitCode.SAVE_FAILED)
+    assert "cloud-uss" in json.dumps(error)
+    assert error["details"]["organization_id"] == IDENTITY["organization_id"]
+
+
+def test_whoami_writes_to_the_only_profile_when_no_default_is_named(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """The unknown-profile guard fired on the literal "cloud-us" fallback -- a
+    name the caller never typed -- for any file with profiles and no
+    `default_profile`, and advised creating a third that would shadow theirs.
+    """
+    path = _config_with(
+        tmp_path,
+        monkeypatch,
+        '[profiles.work.docstudio]\norg_id = ""\n',
+    )
+    platform_client(whoami=IDENTITY)
+
+    code, out, _ = run(capsys, "auth", "whoami")
+
+    assert code == 0
+    assert envelope(out)["meta"]["profile"] == "work"
+    written = path.read_text(encoding="utf-8")
+    assert f'org_id = "{IDENTITY["organization_id"]}"' in written
+    assert 'default_profile = "work"' in written
+
+
+def test_whoami_will_not_guess_between_several_unselected_profiles(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """Two profiles and no default: writing into either would be a guess. It
+    says so and hands the identity back, rather than naming `cloud-us`.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        '[profiles.work.docstudio]\norg_id = ""\n[profiles.home.docstudio]\norg_id = ""\n',
+    )
+    platform_client(whoami=IDENTITY)
+
+    code, out, _ = run(capsys, "auth", "whoami")
+    error = envelope(out)["error"]
+
+    assert code == int(ExitCode.SAVE_FAILED)
+    assert "cloud-us" not in json.dumps(error)
+    assert "-p <name>" in json.dumps(error)
+    assert error["details"]["organization_id"] == IDENTITY["organization_id"]
+
+
+def test_whoami_keeps_the_identity_when_the_write_fails(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """The read succeeded and only the convenience write failed. Losing the
+    identity to a full disk reported a working key as a total failure, on an
+    exit code that means "you invoked it wrong".
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = ""\n',
+    )
+    platform_client(whoami=IDENTITY)
+    monkeypatch.setattr(
+        platform_cmd,
+        "save_config",
+        lambda *a, **k: (_ for _ in ()).throw(OSError(13, "nope")),
+    )
+
+    code, out, _ = run(capsys, "auth", "whoami")
+    error = envelope(out)["error"]
+
+    assert code == int(ExitCode.SAVE_FAILED)
+    # Not full equality: `redact_value` masks any field whose *name* looks
+    # secret, and `key_name` matches -- so the identity reaches `details` with
+    # that one field starred out. The organisation is the part the caller needs
+    # in order to carry on without the write.
+    assert error["details"]["organization_id"] == IDENTITY["organization_id"]
+    assert error["details"]["key_name"] == "***REDACTED***"
+
+
+def test_whoami_does_not_rewrite_a_discovered_project_config(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """A `.unstract.toml` found by walking up is very likely committed. Writing
+    it replaced a teammate's org_id, dropped every comment and narrowed the mode
+    -- from a command named `whoami`, with no flag asked for.
+    """
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / ".unstract.toml").write_text(
+        '# hand written\ndefault_profile = "team"\n[profiles.team.docstudio]\norg_id = "org_TEAM"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+    platform_client(whoami=IDENTITY)
+
+    code, out, envelope_err = run(capsys, "auth", "whoami")
+    body = envelope(out)
+
+    # Declining the write is not failing the call: README blesses a committed
+    # `.unstract.toml`, and `auth whoami` is the documented first command, so
+    # exiting 2 broke the quickstart and discarded the identity with it.
+    assert code == 0
+    assert body["data"]["organization_id"] == IDENTITY["organization_id"]
+    assert body["meta"]["saved"] is False
+    assert "project-local" in body["meta"]["reason"]
+    assert "# hand written" in (project / ".unstract.toml").read_text()
+    assert "org_TEAM" in (project / ".unstract.toml").read_text()
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["auth", "whoami"], None),
+        (["auth", "--transport-timeout", "12.5", "whoami"], 12.5),
+        (["docstudio", "deployment", "ls"], None),
+        (["docstudio", "--transport-timeout", "12.5", "deployment", "ls"], 12.5),
+    ],
+)
+def test_the_transport_timeout_flag_reaches_the_platform_client(
+    capsys, platform_client, monkeypatch, tmp_path, argv, expected
+):
+    """The flag was accepted on both groups and threaded through the factory,
+    but nothing asserted the commands passed it: deleting either call site left
+    the suite green. The fixture recorded the value and no test read it.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    client = platform_client(whoami=IDENTITY, list_api_deployments=_returns([]))
+
+    code, _, _ = run(capsys, *argv)
+
+    assert code == 0
+    assert client.built_with["timeout"] == expected
+
+
+@pytest.mark.parametrize("value", ["0", "0.0", "-1"])
+def test_a_non_positive_transport_timeout_is_a_usage_error_not_a_traceback(
+    capsys, monkeypatch, tmp_path, value
+):
+    """urllib3 raises a bare `ValueError` for a non-positive timeout, which
+    matches no arm in `__main__` -- a traceback and no envelope. The flag is
+    `type=float`, so anything in (0, 1) truncated to that same 0.
+    """
+    _config_with(tmp_path, monkeypatch, "")
+
+    code, out, _ = run(capsys, "auth", "--transport-timeout", value, "whoami")
+
+    assert code == int(ExitCode.USAGE)
+    assert "transport-timeout" in envelope(out)["error"]["message"]
+
+
+def test_a_deployment_key_flag_is_refused_rather_than_ignored_by_ls(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """`--api-key` on the docstudio group is a *deployment* key and `ls`
+    authenticates with a platform key. It was accepted, dropped, and the
+    platform key then reported missing -- which reads as a broken flag rather
+    than the wrong credential.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    platform_client(list_api_deployments=_returns([]))
+
+    code, out, _ = run(
+        capsys, "docstudio", "--api-key", "dk-FROM-FLAG", "deployment", "ls"
+    )
+    error = envelope(out)["error"]
+
+    assert code == int(ExitCode.USAGE)
+    assert "platform key" in error["message"]
+    assert "UNSTRACT_PLATFORM_KEY" in error["hint"]
+    assert "dk-FROM-FLAG" not in json.dumps(envelope(out))
+
+
+def test_the_platform_key_never_reaches_a_stream(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """`translated()` attaches `PlatformAPIError.body` -- the server's own
+    response -- as `details`. If the far end echoes the key, that is the path it
+    would travel to stdout.
+    """
+    _config_with(tmp_path, monkeypatch, 'default_profile = "cloud-us"\n')
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-SUPERSECRET-0987654321")
+    platform_client(
+        whoami=PlatformAPIError(
+            "GET whoami/ returned 401",
+            status_code=401,
+            body='{"echoed": "pk-SUPERSECRET-0987654321"}',
+        )
+    )
+
+    _, out, err = run(capsys, "auth", "whoami")
+
+    assert "pk-SUPERSECRET-0987654321" not in out
+    assert "pk-SUPERSECRET-0987654321" not in err
+
+
+def test_a_rejected_key_keeps_its_message_on_one_line(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """`PlatformAPIError` folds the body into its own string, so `str(exc)` put
+    up to 2KB of server response into `error.message` -- which `emit_error`
+    documents as a one-line summary -- and duplicated it into `details`.
+    """
+    _config_with(tmp_path, monkeypatch, 'default_profile = "cloud-us"\n')
+    platform_client(
+        whoami=PlatformAPIError(
+            "GET whoami/ returned 401", status_code=401, body='{"m": "x"}'
+        )
+    )
+
+    _, out, _ = run(capsys, "auth", "whoami")
+    error = envelope(out)["error"]
+
+    assert "\n" not in error["message"]
+    assert error["details"] == '{"m": "x"}'

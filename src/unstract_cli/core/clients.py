@@ -5,9 +5,10 @@ crash should look like a crash. Everything a client raises on purpose is
 expected, so it is translated here into a ``CLIError`` carrying an exit code, a
 hint and the response detail.
 
-The two clients report failure differently -- LLMWhisperer raises with a status
-code attached, the deployment client returns a dict containing one -- so both
-shapes converge here rather than in each command.
+The clients report failure differently -- LLMWhisperer raises with a status
+code attached, the deployment client returns a dict containing one, the Platform
+API client raises with the body attached -- so every shape converges here rather
+than in each command.
 """
 
 from __future__ import annotations
@@ -16,11 +17,19 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from requests.exceptions import ConnectionError, Timeout
+from requests.exceptions import (
+    ConnectionError,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    RequestException,
+    Timeout,
+)
 from unstract.api_deployments.client import (
     APIDeploymentsClient,
     APIDeploymentsClientException,
 )
+from unstract.clone.exceptions import PlatformAPIError
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
     LLMWhispererClientV2,
@@ -137,6 +146,23 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
         raise CLIError(message, details=details, endpoint=endpoint) from exc
     except APIDeploymentsClientException as exc:
         raise CLIError(str(exc), ExitCode.USAGE, endpoint=endpoint) from exc
+    except PlatformAPIError as exc:
+        # `PlatformAPIError.__init__` appends "\n  body: <resp.text[:2000]>" to
+        # its own message, so `str(exc)` would put up to 2KB of server body into
+        # `error.message` -- which `emit_error` documents as a one-line summary
+        # -- and duplicate it into `details`.
+        message = str(exc).split("\n  body:", 1)[0]
+        # The Platform API client raises rather than returning a status, and
+        # carries the response body on the exception. Untranslated it would
+        # reach the entry point as an unexpected crash and print a traceback.
+        if exc.status_code:
+            raise error_from_status(
+                int(exc.status_code),
+                message,
+                details=exc.body,
+                endpoint=endpoint,
+            ) from exc
+        raise CLIError(message, details=exc.body, endpoint=endpoint) from exc
     except Timeout as exc:
         raise CLIError(
             str(exc),
@@ -159,6 +185,29 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
             endpoint=endpoint,
             retryable=True,
             hint="Could not reach the service. Check the base URL and connectivity.",
+        ) from exc
+    except RequestException as exc:
+        # Must sit after Timeout and ConnectionError, which are subclasses.
+        #
+        # The Platform client is a bare `requests.Session`: unlike the other two
+        # it wraps nothing itself, so a malformed base URL (`MissingSchema`,
+        # `InvalidURL`) or a 2xx carrying HTML from a proxy or SPA host
+        # (`JSONDecodeError`) arrives here raw. Every one of those subclasses
+        # `OSError`, so untranslated they were caught by the entry point's
+        # full-disk handler and rendered "Check the path and disk." -- the wrong
+        # subsystem, on the one message a user with a bad base URL most needs to
+        # be right.
+        usage = isinstance(exc, (MissingSchema, InvalidSchema, InvalidURL))
+        raise CLIError(
+            str(exc),
+            ExitCode.USAGE if usage else ExitCode.SERVER_ERROR,
+            endpoint=endpoint,
+            hint=(
+                "Check `base_url` -- it needs a scheme, e.g. https://host."
+                if usage
+                else "The service answered, but not with JSON. Check that "
+                "`base_url` names the API rather than a proxy or web app."
+            ),
         ) from exc
 
 

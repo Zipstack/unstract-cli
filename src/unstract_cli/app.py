@@ -16,6 +16,7 @@ from unstract_cli.commands.config_cmd import config_group
 from unstract_cli.config import (
     DOCSTUDIO,
     LLMWHISPERER,
+    PLATFORM,
     ConfigError,
     ResolvedConfig,
     load_config,
@@ -84,7 +85,7 @@ class Context:
     def secrets(self) -> list[str]:
         """Resolved credentials, for scrubbing anything on its way to a stream."""
         out: list[str] = []
-        for product in (LLMWHISPERER, DOCSTUDIO):
+        for product in (LLMWHISPERER, DOCSTUDIO, PLATFORM):
             try:
                 if value := self.config.get(product, "api_key"):
                     out.append(str(value))
@@ -217,8 +218,9 @@ def whisper_group(ctx: Context, **overrides: str | None) -> None:
     "--transport-timeout",
     type=float,
     default=None,
-    help="Seconds before a stalled connection is given up on. Unset means it "
-    "is not, which is what the client has always done.",
+    help="Seconds before a stalled connection is given up on. Unset means no "
+    "bound for `deployment run` and `status`, and the platform client's own "
+    "60s default for `deployment ls`.",
 )
 @pass_context
 def docstudio_group(
@@ -234,11 +236,39 @@ def deployment_group() -> None:
     """Work with a deployed API."""
 
 
+@cli.group("auth")
+@_connection_options()
+@click.option(
+    "--transport-timeout",
+    type=float,
+    default=None,
+    help="Seconds before a stalled connection is given up on. Unset means the "
+    "client's own default, which is 60.",
+)
+@pass_context
+def auth_group(
+    ctx: Context, transport_timeout: float | None, **overrides: str | None
+) -> None:
+    """Identify the credential you are using.
+
+    Its flags configure the platform key, which is the credential that knows
+    which organisation it belongs to. A deployment key does not: it authenticates
+    against the deployment it was minted for and never reaches this endpoint.
+    """
+    ctx.transport_timeout = transport_timeout
+    ctx.override(PLATFORM, overrides)
+
+
 cli.add_command(config_group)
 
 # Imported for their side effect of registering commands, and imported last
 # because those modules hang their commands off the groups declared just above.
-from unstract_cli.commands import clone_cmd, docstudio_cmd, whisper_cmd  # noqa: E402,F401
+from unstract_cli.commands import (  # noqa: E402,F401
+    clone_cmd,
+    docstudio_cmd,
+    platform_cmd,
+    whisper_cmd,
+)
 
 
 def command_tree() -> dict[str, Any]:

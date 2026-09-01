@@ -19,6 +19,7 @@ import errno
 import os
 import stat
 import tomllib
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,43 +31,65 @@ from unstract_cli.core.errors import remember_secret
 
 LLMWHISPERER = "llmwhisperer"
 DOCSTUDIO = "docstudio"
-PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO)
+PLATFORM = "platform"
+PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO, PLATFORM)
 
 #: Built-in defaults, lowest precedence.
 DEFAULT_BASE_URLS: dict[str, str] = {
     LLMWHISPERER: "https://llmwhisperer-api.us-central.unstract.com/api/v2",
     DOCSTUDIO: "https://us-central.unstract.com",
+    # The same host as docstudio: one deployment serves both the platform API
+    # and the deployments it manages.
+    PLATFORM: "https://us-central.unstract.com",
 }
 
 #: Environment variables per (product, setting), checked before the config file
 #: and in the order given. The trailing names are the ones the published clients
 #: themselves read: an environment already set up for a client must not leave
 #: the CLI silently on its built-in default, which is production.
+#:
+#: `platform` deliberately has no `org_id` of its own. A platform key carries
+#: its organisation, and `auth whoami` writes the one it resolves to the
+#: docstudio block -- the block everything else already reads. Two `org_id`
+#: settings would mean two rows in `config doctor` that a user has to keep in
+#: agreement by hand.
 ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (LLMWHISPERER, "api_key"): ("LLMWHISPERER_API_KEY",),
     (LLMWHISPERER, "base_url"): ("LLMWHISPERER_BASE_URL", "LLMWHISPERER_BASE_URL_V2"),
     (DOCSTUDIO, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY", "UNSTRACT_API_DEPLOYMENT_KEY"),
     (DOCSTUDIO, "base_url"): ("UNSTRACT_BASE_URL",),
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
+    (PLATFORM, "api_key"): ("UNSTRACT_PLATFORM_KEY",),
+    (PLATFORM, "base_url"): ("UNSTRACT_BASE_URL",),
+    # `clone` takes this as --api-prefix because a self-hosted deployment can
+    # mount the Platform API somewhere other than api/v1. `OrgEndpoint` already
+    # defaults to api/v1, which standard installs serve; this is what reaches
+    # the ones that remount it, where whoami and `deployment ls` are otherwise
+    # unreachable.
+    (PLATFORM, "api_prefix"): ("UNSTRACT_API_PREFIX",),
 }
 
 
-#: Where the two credentials are minted. Quoted wherever the CLI reports one as
-#: missing: knowing a key is unset is no help without knowing where one is made.
+#: Where the three credentials are minted. Quoted wherever the CLI reports one
+#: as missing: knowing a key is unset is no help without knowing where one is
+#: made.
 KEY_SOURCES = (
     "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
     "shown on the API deployment's own page in the Unstract UI, and a key "
     "covering every deployment in the organisation is minted under "
-    "Settings -> API Key Manager."
+    "Settings -> API Key Manager. A platform key, which identifies the "
+    "organisation and lists what is in it but cannot run a deployment, is "
+    "minted by an organisation admin under Settings -> Platform API Keys."
 )
 
 
 def settings_for(product: str) -> tuple[str, ...]:
     """The settings a product actually has.
 
-    Products differ: `org_id` is a URL path segment for one and meaningless for
-    the other, and reporting a setting a user has no way to supply reads as a
-    misconfiguration they cannot fix.
+    Products differ: `org_id` is a setting only for `docstudio` -- llmwhisperer
+    has no organisation, and `platform` reads docstudio's -- and reporting a
+    setting a user has no way to supply reads as a misconfiguration they cannot
+    fix.
     """
     return tuple(sorted(key for prod, key in ENV_VARS if prod == product))
 
@@ -373,17 +396,48 @@ class ResolvedConfig:
             remember_secret(value)
         return value
 
+    def get_explicit(self, product: str, key: str) -> Any:
+        """Resolve through **flag > env > profile** only, stopping before defaults.
+
+        `get` cannot answer "did anyone actually name this?" -- it returns
+        `DEFAULT_BASE_URLS[product]` for an unset `base_url`, so a caller who
+        deliberately named the default host and one who named nothing come back
+        as the same string. Anything that must treat those two differently asks
+        here instead of comparing the answer against the default, which reads
+        the caller's own choice as silence.
+        """
+        value = self._explicit(product, key)
+        if key == "api_key":
+            remember_secret(value)
+        return value
+
+    def explicit_tiers(self, product: str, key: str) -> Iterator[Any]:
+        """What each tier says, in order -- flag, env, profile -- unset as `None`.
+
+        For a setting two products share -- one deployment serves both, so
+        `base_url` is really one question asked twice -- picking a product first
+        and then walking its tiers inverts the precedence the whole config layer
+        promises: a profile value on the preferred product beats a *flag* on the
+        other. Walking tier by tier across both products keeps flag > env >
+        profile true regardless of which product a value was written under.
+
+        Lazy on purpose: reading the profile block resolves the profile name,
+        which raises for one that does not exist. A caller answered by an
+        earlier tier must not be failed by a later one it never consulted.
+        """
+        yield self.overrides.get(f"{product}.{key}", self.overrides.get(key))
+        yield next(
+            (v for e in ENV_VARS.get((product, key), ()) if (v := os.environ.get(e))),
+            None,
+        )
+        yield _deref(self._product_block(product).get(key))
+
+    def _explicit(self, product: str, key: str) -> Any:
+        """The tiers a human supplied: flag, then environment, then profile."""
+        return next((v for v in self.explicit_tiers(product, key) if v is not None), None)
+
     def _resolve(self, product: str, key: str, default: Any = None) -> Any:
-        if (value := self.overrides.get(f"{product}.{key}")) is not None:
-            return value
-        if (value := self.overrides.get(key)) is not None:
-            return value
-
-        for env_var in ENV_VARS.get((product, key), ()):
-            if value := os.environ.get(env_var):
-                return value
-
-        if (value := _deref(self._product_block(product).get(key))) is not None:
+        if (value := self._explicit(product, key)) is not None:
             return value
 
         if default is not None:
@@ -538,6 +592,11 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
+            # No `api_key` on purpose. A platform key is optional -- holding
+            # only a deployment key is the common case -- and an `env:`
+            # reference to an unset variable is a `config doctor` problem,
+            # which would exit 1 for every user who does not hold one.
+            PLATFORM: {"base_url": DEFAULT_BASE_URLS[PLATFORM]},
             "deployments": {"example": {"api_name": "your-api-deployment-name"}},
         },
         "cloud-eu": {
@@ -558,6 +617,8 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
+            # No `api_key` -- see the cloud-us block.
+            PLATFORM: {"base_url": "https://unstract.internal.example"},
         },
     }
 
@@ -569,6 +630,7 @@ __all__ = [
     "HOME_CONFIG",
     "KEY_SOURCES",
     "LLMWHISPERER",
+    "PLATFORM",
     "PRODUCTS",
     "PROJECT_CONFIG_NAME",
     "UNTRUSTED_PROJECT_KEYS",

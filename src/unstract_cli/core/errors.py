@@ -37,8 +37,11 @@ _STATUS_MAP: dict[int, ExitCode] = {
     401: ExitCode.AUTH,
     403: ExitCode.AUTH,
     404: ExitCode.NOT_FOUND,
-    # Only the deployment status endpoint answers 406; the whisper equivalent
-    # is a 400 whose body says so, which is prose we do not translate on.
+    # The deployment status endpoint is the one that answers 406 meaningfully;
+    # the whisper equivalent is a 400 whose body says so, which is prose we do
+    # not translate on. A 406 from anywhere else -- DRF returns one on content
+    # negotiation failure -- lands on this code too, and reads as a one-shot
+    # read that was already consumed.
     406: ExitCode.ALREADY_CONSUMED,
     408: ExitCode.TIMEOUT,
     409: ExitCode.VALIDATION,
@@ -246,8 +249,8 @@ def hint_for(status: int) -> str | None:
             return (
                 "The key was rejected. Keys are per-product: `unstract config "
                 "doctor` reports which one resolved and from where. A key that "
-                "works elsewhere can still be rejected here -- it may not cover "
-                "this deployment, or may belong to another organisation."
+                "works elsewhere can still be rejected here -- it may be the "
+                "wrong kind for this command, or belong to another organisation."
             )
         case 404:
             return (

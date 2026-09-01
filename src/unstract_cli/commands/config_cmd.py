@@ -18,6 +18,7 @@ from unstract_cli.config import (
     DOCSTUDIO,
     KEY_SOURCES,
     LLMWHISPERER,
+    PLATFORM,
     PRODUCTS,
     ConfigError,
     ConfigFile,
@@ -36,6 +37,7 @@ from unstract_cli.core.output import (
     emit_result,
     resolve_format,
 )
+from unstract_cli.core.platform import platform_client
 
 #: Keys whose value is never echoed back, even on explicit request: this output
 #: is as likely to land in a log or a transcript as on a screen.
@@ -208,10 +210,11 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     """Check each product's credentials against the service, where that is possible.
 
     LLMWhisperer has a read-only usage endpoint, so its key can be verified for
-    real. A deployment has no side-effect-free endpoint -- the only thing to call
-    is an execution -- so its entry reports that the settings resolve and says
-    plainly that nothing was verified. Claiming otherwise would be worse than
-    not checking.
+    real, and so does the platform API -- `whoami` reads nothing but the key
+    itself. A deployment has no side-effect-free endpoint -- the only thing to
+    call is an execution -- so its entry reports that the settings resolve and
+    says plainly that nothing was verified. Claiming otherwise would be worse
+    than not checking.
     """
     out: dict[str, Any] = {}
     try:
@@ -231,6 +234,31 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
             "checked": True,
             "ok": True,
             "detail": "The key was accepted by the usage endpoint.",
+        }
+
+    try:
+        with translated(endpoint="whoami"):
+            identity = platform_client(resolved).whoami()
+    except CLIError as exc:
+        out[PLATFORM] = {
+            "checked": True,
+            "ok": False,
+            "detail": exc.message,
+            "exit_code": int(exc.exit_code),
+        }
+    except ConfigError as exc:
+        # Null, not False: a platform key is optional -- a caller holding only a
+        # deployment key is the common case -- so an absent one is a report
+        # rather than a failure, and must not decide this command's exit code.
+        out[PLATFORM] = {"checked": False, "ok": None, "detail": str(exc)}
+    else:
+        out[PLATFORM] = {
+            "checked": True,
+            "ok": True,
+            # The organisation is the reason to hold this key, so the probe
+            # reports which one answered rather than only that one did.
+            "organization_id": identity.get("organization_id"),
+            "detail": "The key was accepted, and resolved to an organisation.",
         }
 
     resolves = all(

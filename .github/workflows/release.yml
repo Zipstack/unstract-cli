@@ -14,7 +14,7 @@ on:
           - major
           - none
       pre_release:
-        description: "Create as pre-release"
+        description: "Publish a release candidate (`<version>rcN`) instead of the version itself. Dispatch again with this off to promote the same version to stable."
         required: false
         default: false
         type: boolean
@@ -78,8 +78,20 @@ jobs:
             minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
             patch) PATCH=$((PATCH + 1)) ;;
           esac
+          NEXT_VERSION="$MAJOR.$MINOR.$PATCH"
 
-          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          # A pre-release is a candidate for NEXT_VERSION, not a version of its
+          # own, so it never moves the committed one: the file keeps naming the
+          # last stable release, and repeat dispatches count up from the rc tags
+          # already published for that target.
+          if [ "${{ github.event.inputs.pre_release }}" = "true" ]; then
+            HIGHEST_RC=$(git tag -l "v${NEXT_VERSION}rc*" \
+              | sed -nE "s/^v${NEXT_VERSION}rc([0-9]+)$/\1/p" | sort -n | tail -1)
+            NEW_VERSION="${NEXT_VERSION}rc$(( ${HIGHEST_RC:-0} + 1 ))"
+          else
+            NEW_VERSION="$NEXT_VERSION"
+          fi
+
           echo "New version: $NEW_VERSION"
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
@@ -121,9 +133,12 @@ jobs:
         run: |
           NEW_VERSION="${{ steps.version.outputs.version }}"
 
-          # `none` publishes the version already in the file, so there is
+          # A pre-release leaves the committed version alone, and `none`
+          # publishes the version already in the file, so both reach here with
           # nothing to commit.
-          if ! git diff --quiet; then
+          if [ "${{ github.event.inputs.pre_release }}" = "true" ]; then
+            git checkout -- src/unstract_cli/__init__.py
+          elif ! git diff --quiet; then
             git add src/unstract_cli/__init__.py
             git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
             git push origin main

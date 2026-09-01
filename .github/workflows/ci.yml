@@ -29,3 +29,19 @@ jobs:
       - run: .venv/bin/python -m pytest -q
       - run: .venv/bin/python -m unstract_cli -o json --discover full > latest.json
       - run: diff floor.json latest.json
+
+  # The binaries are built and attached only after a release has published, so
+  # without this a broken spec -- a PyInstaller bump, a client re-pin, a data
+  # file added without a `datas` entry -- would surface as a live release whose
+  # advertised download 404s. One platform is enough to catch that; the release
+  # matrix covers the other two.
+  binary:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install . 'pyinstaller==6.22.2'
+      - run: pyinstaller --clean --noconfirm unstract.spec
+      - run: scripts/smoke-binary.sh dist/unstract

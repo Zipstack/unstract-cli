@@ -9,15 +9,25 @@ and hand-edited since. This file is the build, not that command line: the
 options below are decisions, and a regenerated spec would drop them silently.
 """
 
-from PyInstaller.utils.hooks import collect_data_files
-
-# Three packaged files are read through `importlib.resources` -- `overlay.toml`
-# and the two vendored specs -- and all three are read at *import* time, by the
-# `@spec_options` decorators the command modules apply at module scope. They are
-# data, not modules, so nothing puts them in the PYZ. This also picks up
-# `specs/provenance.json`, which records which spec revision the flags were
-# derived from and belongs with them.
-datas = collect_data_files("unstract_cli")
+# The packaged files that are read through `importlib.resources` -- `overlay.toml`
+# and the vendored specs -- and read at *import* time, by the `@spec_options`
+# decorators the command modules apply at module scope. They are data, not
+# modules, so nothing puts them in the PYZ, and a bundle without them builds
+# clean and then fails on every invocation.
+#
+# Taken from `src/` rather than from `collect_data_files("unstract_cli")`, which
+# reads the *installed* package. PyInstaller prepends the entry script's parent
+# package directory to the module search path, so the code is frozen from `src/`
+# either way; sourcing the data from site-packages would let an edited module
+# ship beside a stale spec. One tree decides both.
+#
+# A new data file needs a line here. `ci.yml` builds this spec on every pull
+# request, so one that is read at import time fails the gate rather than a
+# release.
+datas = [
+    ("src/unstract_cli/overlay.toml", "unstract_cli"),
+    ("src/unstract_cli/specs", "unstract_cli/specs"),
+]
 
 hiddenimports = [
     # `unstract.clone.report.CloneReport.render` imports these inside the

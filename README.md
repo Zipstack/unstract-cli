@@ -162,23 +162,24 @@ uv run ruff check .
 
 The standalone binaries are built from `unstract.spec`, which is committed and
 hand-edited — `pyinstaller` regenerating it would drop the comments explaining
-why each option is set. CI builds one per platform; to reproduce one locally,
-use a clean non-editable environment, because PyInstaller freezes what is
-installed rather than what `pyproject.toml` lists:
+why each option is set. Every pull request builds it, and a release builds one
+per platform. To reproduce one locally:
 
 ```bash
 python3.12 -m venv .venv-freeze
 ./.venv-freeze/bin/python -m pip install . 'pyinstaller==6.22.2'
 ./.venv-freeze/bin/pyinstaller --clean --noconfirm unstract.spec
+scripts/smoke-binary.sh dist/unstract
 ```
 
-Then exercise it with no interpreter in reach — a dev box has a Python, which
-masks a missing module. `--version` is not a trivial check here: importing the
-command modules derives every flag from the bundled specs, so it fails outright
-if the spec's `datas` came out wrong.
+The install is for the dependencies. `unstract_cli` itself is frozen from
+`src/`, because PyInstaller puts the entry script's own tree on the module
+search path ahead of anything installed — so an edit is picked up by a rebuild
+alone, and the spec reads the packaged specs and overlay out of `src/` too
+rather than out of site-packages, so the two cannot drift apart.
 
-```bash
-mkdir -p /tmp/emptybin
-env -i PATH=/tmp/emptybin HOME=$HOME ./dist/unstract --version
-env -i PATH=/tmp/emptybin HOME=$HOME ./dist/unstract whisper extract --help
-```
+`smoke-binary.sh` runs the binary under `env -i` with an empty `PATH`, which is
+the only way to see a missing module: a dev box has a Python that would answer
+the import. `--version` is not a trivial check there — importing the command
+modules derives every flag from the bundled specs, so it fails outright if the
+spec's `datas` came out wrong.

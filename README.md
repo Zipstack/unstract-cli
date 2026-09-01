@@ -5,10 +5,16 @@ LLMWhisperer, run it through a Document Studio API deployment, get structured
 JSON back. It also clones one organization's resources into another.
 
 ```bash
-uv tool install git+https://github.com/Zipstack/unstract-cli
+curl -LsSf https://raw.githubusercontent.com/Zipstack/unstract-cli/main/install.sh | sh
 unstract config init
 unstract config doctor
 ```
+
+The installer fetches `uv` if it is missing and installs the CLI with it; `uv`
+brings its own Python, so nothing on the machine has to match. Already have
+`uv`? `uv tool install git+https://github.com/Zipstack/unstract-cli` is the same
+thing. Set `UNSTRACT_CLI_SOURCE` to install a branch or a local checkout
+instead.
 
 Or run it without installing: `uvx --from git+https://github.com/Zipstack/unstract-cli unstract --discover groups`.
 

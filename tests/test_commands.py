@@ -8,6 +8,7 @@ caller sees on stdout and in the exit code.
 from __future__ import annotations
 
 import json
+import socket
 
 import pytest
 from requests.exceptions import ConnectionError
@@ -16,6 +17,8 @@ from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
     LLMWhispererClientV2,
 )
+from urllib3.connection import HTTPConnection
+from urllib3.exceptions import MaxRetryError, NameResolutionError
 
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
@@ -37,6 +40,14 @@ def run(capsys, *args):
 
 def envelope(out: str) -> dict:
     return json.loads(out)
+
+
+def _name_resolution_error(host: str) -> ConnectionError:
+    """What requests raises when DNS has no answer, built rather than provoked:
+    resolving a name for real would make this suite depend on the network."""
+    conn = HTTPConnection(host)
+    reason = NameResolutionError(host, conn, socket.gaierror(-2, "no answer"))
+    return ConnectionError(MaxRetryError(pool=conn, url="/", reason=reason))
 
 
 class FakeWhisper:
@@ -414,6 +425,42 @@ def test_highlights_returns_the_metadata_alone_without_a_page_size(
     assert envelope(out)["data"] == {"1": [1, 100, 20, 1000]}
 
 
+def test_a_host_that_does_not_resolve_is_not_worth_retrying(capsys, whisper_client):
+    """Every other connection failure is transient; a name that does not resolve
+    is a typo, and a caller told to retry retries against it forever."""
+    whisper_client(get_usage_info=_name_resolution_error("nope.invalid"))
+    code, out, _ = run(capsys, "whisper", "usage")
+    assert code == int(ExitCode.SERVER_ERROR)
+    error = envelope(out)["error"]
+    assert error["retryable"] is False
+    assert "nope.invalid" in error["message"]
+
+
+def test_an_unreachable_service_is_worth_retrying(capsys, whisper_client):
+    whisper_client(get_usage_info=ConnectionError("connection refused"))
+    code, out, _ = run(capsys, "whisper", "usage")
+    assert code == int(ExitCode.SERVER_ERROR)
+    assert envelope(out)["error"]["retryable"] is True
+
+
+def test_highlights_needs_lines_or_all_of_them(capsys, whisper_client):
+    """The API takes either; asking for neither is a usage error, not a call."""
+    whisper_client(get_highlight_data={})
+    code, out, _ = run(capsys, "whisper", "highlights", "h1")
+    assert code == int(ExitCode.USAGE)
+    assert "--extract-all-lines" in envelope(out)["error"]["message"]
+
+
+def test_extract_all_lines_stands_in_for_a_line_range(capsys, whisper_client):
+    """The client takes `lines` positionally even when the request does not need
+    it, so omitting the flag would raise inside the client rather than answer."""
+    client = whisper_client(get_highlight_data={"1": [1, 100, 20, 1000]})
+    code, out, _ = run(capsys, "whisper", "highlights", "h1", "--extract-all-lines")
+    assert code == int(ExitCode.SUCCESS)
+    sent = client.kwargs_for("get_highlight_data")
+    assert sent == {"lines": "", "extract_all_lines": True}
+
+
 # --------------------------------------------------------------------------- #
 # Deployments
 # --------------------------------------------------------------------------- #
@@ -505,6 +552,42 @@ def test_run_passes_only_the_flags_that_were_given(capsys, deployment_client, tm
     assert sent["tags"] == "a,b"
     assert sent["include_metrics"] is False
     assert "llm_profile_id" not in sent
+
+
+def test_a_queued_run_reports_the_handle_it_started(capsys, deployment_client, tmp_path):
+    """Without --wait the answer is an acknowledgement, so the only thing worth
+    printing is what the caller polls with."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file={
+            "status_code": 200,
+            "execution_status": "PENDING",
+            "execution_id": "e-1",
+            "extraction_result": None,
+        }
+    )
+
+    code, out, _ = run(
+        capsys, "docstudio", "deployment", "run", "my-api", str(doc), "--no-wait"
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["meta"]["execution_id"] == "e-1"
+
+    code = main(
+        [
+            "-o",
+            "raw",
+            "docstudio",
+            "deployment",
+            "run",
+            "my-api",
+            str(doc),
+            "--no-wait",
+        ]
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert capsys.readouterr().out.strip() == "e-1"
 
 
 def test_an_error_status_from_a_run_is_a_failure(capsys, deployment_client, tmp_path):

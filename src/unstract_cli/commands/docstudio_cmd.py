@@ -84,7 +84,14 @@ def run(
         raise_for_result(started, endpoint=client.api_url)
 
         if not wait:
-            finish(ctx, started, raw_field=RAW_FIELD)
+            # An ack carries no extraction result, so what `--output raw` prints
+            # and what the caller has to poll with are both the handle.
+            finish(
+                ctx,
+                started,
+                raw_field="execution_id",
+                meta=_handle_meta(started),
+            )
             return
 
         result = wait_for_completion(

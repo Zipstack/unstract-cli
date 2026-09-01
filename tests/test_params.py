@@ -234,6 +234,16 @@ def test_a_required_parameter_stays_required():
     assert click_option(Param("url", "string", required=True), {}).required is True
 
 
+@pytest.mark.parametrize("type_name", ["string", "boolean"])
+def test_a_required_flag_is_enforced_by_the_parser(type_name):
+    """From Click 8.2 a default counts as a value the caller supplied, so a
+    required option given one is never actually required."""
+    option = click_option(Param("lines", type_name, required=True), {})
+    command = click.Command("c", params=[option], callback=lambda **_: None)
+    with pytest.raises(click.MissingParameter):
+        command.make_context("c", [])
+
+
 # --------------------------------------------------------------------------- #
 # Choosing what to send
 # --------------------------------------------------------------------------- #

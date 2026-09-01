@@ -245,9 +245,18 @@ def highlights(
     The scaling is arithmetic on the metadata, not a second request, so it is
     folded in here rather than being a command of its own.
     """
+    sent = requested(params)
+    if not sent.get("lines") and not sent.get("extract_all_lines"):
+        raise CLIError(
+            "Nothing to fetch: pass --lines, or --extract-all-lines for all of them.",
+            ExitCode.USAGE,
+        )
+    # The client takes `lines` positionally whether or not the request needs it.
+    sent.setdefault("lines", "")
+
     client = llmwhisperer(ctx.config)
     with translated(endpoint="highlights"):
-        data = client.get_highlight_data(whisper_hash, **requested(params))
+        data = client.get_highlight_data(whisper_hash, **sent)
 
     if target_width and target_height:
         data = {

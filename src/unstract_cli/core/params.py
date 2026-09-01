@@ -202,10 +202,12 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
     updates: dict[str, Any] = {}
     if (mapped := _ANNOTATIONS.get(signature.annotation)) is not None:
         updates["type"] = mapped
-    if signature.default is inspect.Parameter.empty:
-        # No default in the signature means the call cannot omit it.
-        updates["required"] = True
-    elif not _is_unset(signature.default):
+    # Whether a flag is mandatory is the spec's answer, not the signature's: a
+    # signature with no default says only that the *call* cannot omit the
+    # argument, which the command answers by supplying one.
+    if signature.default is not inspect.Parameter.empty and not _is_unset(
+        signature.default
+    ):
         # What omitting the flag gets you: an `Unset` default sends nothing, so
         # the spec's default is the one that applies.
         updates["default"] = signature.default
@@ -298,6 +300,10 @@ def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
     help_text = entry.get("help") or _help_text(param, choices)
     short = entry.get("short")
 
+    # A required option is left without one: from Click 8.2 an explicit default
+    # counts as a value the caller supplied, and `required` stops being enforced.
+    absent: dict[str, Any] = {} if param.required else {"default": None}
+
     if param.type == "boolean":
         # A paired flag, not `is_flag`: a default-true parameter cannot be
         # turned off by an on-only flag, and `None` keeps "not passed" apart
@@ -305,7 +311,7 @@ def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
         decls = [f"{param.flag}/--no-{param.name.replace('_', '-')}"]
         if short:
             decls.insert(0, short)
-        return click.Option(decls, default=None, required=param.required, help=help_text)
+        return click.Option(decls, required=param.required, help=help_text, **absent)
 
     decls = [param.flag]
     if short:
@@ -313,10 +319,10 @@ def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
     return click.Option(
         decls,
         type=click.Choice(choices) if choices else _TYPES.get(param.type, click.STRING),
-        default=None,
         required=param.required,
         multiple=param.array,
         help=help_text,
+        **absent,
     )
 
 

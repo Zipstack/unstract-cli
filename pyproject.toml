@@ -7,8 +7,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 
 dependencies = [
-    # Pinned to a major: `--discover` reads the shape of
-    # `click.Parameter.to_info_dict()`.
+    # Pinned to a major: `--discover` describes the CLI by reading Click's own
+    # objects -- a parameter's default, flags, type and choices, and a group's
+    # commands -- so a major that reshapes those reshapes the published contract.
     "click>=8.1,<9",
     # Writing the config file only; reading it uses the stdlib `tomllib`.
     "tomli-w>=1.0",

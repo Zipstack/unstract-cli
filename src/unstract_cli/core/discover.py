@@ -25,6 +25,11 @@ from unstract_cli.core.output import CONTRACT_VERSION
 
 TIERS = ("groups", "summary", "full")
 
+#: Click's marker for "no default was given". It stopped being `None` in 8.2 and
+#: is not exported, so it is read off a bare option and tracks whichever version
+#: is installed -- serialised, it would publish a string that reads as a value.
+_NO_DEFAULT = click.Option(["--unset"]).default
+
 
 def contract() -> dict[str, Any]:
     """How to consume this CLI's output, published rather than assumed.
@@ -76,17 +81,28 @@ def _param(param: click.Parameter) -> dict[str, Any]:
         entry["repeatable"] = bool(param.multiple)
     if isinstance(param.type, click.Choice):
         entry["choices"] = list(param.type.choices)
-    if param.default is not None and not isinstance(param, click.Argument):
+    if (
+        param.default is not None
+        and param.default is not _NO_DEFAULT
+        and not isinstance(param, click.Argument)
+    ):
         entry["default"] = param.default
     return entry
 
 
+def _params(command: click.Command) -> list[dict[str, Any]]:
+    """The flags a caller can pass to one command, group or the root.
+
+    A group carries the connection settings for everything beneath it, so
+    describing only the leaves describes a call nobody can make.
+    """
+    return [_param(p) for p in command.params if p.name not in ("help", "discover")]
+
+
 def _describe(command: click.Command, tier: str) -> dict[str, Any]:
     entry: dict[str, Any] = {"help": (command.help or "").strip().split("\n")[0]}
-    if tier == "full" and not isinstance(command, click.Group):
-        entry["params"] = [
-            _param(p) for p in command.params if p.name not in ("help", "discover")
-        ]
+    if tier == "full":
+        entry["params"] = _params(command)
         # Which field `--output raw` prints for this command, where it has one.
         if raw := getattr(command, "raw_field", None):
             entry["raw_field"] = raw
@@ -134,6 +150,7 @@ def discover(root: click.Group, tier: str) -> dict[str, Any]:
         },
     }
     if tier == "full":
+        payload["params"] = _params(root)
         payload["exit_codes"] = exit_codes()
         payload["contract"] = contract()
     return payload

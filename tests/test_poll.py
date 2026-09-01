@@ -127,6 +127,9 @@ def test_timeout_carries_the_handle_so_work_is_resumable():
     assert payload["whisper_hash"] == "h1"
     assert payload["last_status"] == "processing"
     assert "Resume" in payload["hint"]
+    # The job is still running, so this is the failure a caller is meant to
+    # come back from rather than the one that ends the attempt.
+    assert payload["retryable"] is True
     # The last sleep is clipped so the wait lasts exactly as long as asked.
     assert clock.slept == [5, 5, 2]
     assert clock.now() == 12

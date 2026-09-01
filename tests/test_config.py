@@ -68,6 +68,33 @@ def test_env_beats_profile(write_config, monkeypatch):
     assert resolved().get(LLMWHISPERER, "base_url") == "https://env.example/api/v2"
 
 
+@pytest.mark.parametrize(
+    ("product", "key", "var", "value"),
+    [
+        (
+            LLMWHISPERER,
+            "base_url",
+            "LLMWHISPERER_BASE_URL_V2",
+            "https://staging.example/api/v2",
+        ),
+        (DOCSTUDIO, "api_key", "UNSTRACT_API_DEPLOYMENT_KEY", "deployment-key"),
+    ],
+)
+def test_the_env_names_the_clients_read_are_honoured(
+    monkeypatch, product, key, var, value
+):
+    """An environment set up for the published client must not leave the CLI on
+    its built-in default, which points at production."""
+    monkeypatch.setenv(var, value)
+    assert resolved().get(product, key) == value
+
+
+def test_the_cli_s_own_env_name_wins_over_the_client_s(monkeypatch):
+    monkeypatch.setenv("LLMWHISPERER_BASE_URL", "https://first.example/api/v2")
+    monkeypatch.setenv("LLMWHISPERER_BASE_URL_V2", "https://second.example/api/v2")
+    assert resolved().get(LLMWHISPERER, "base_url") == "https://first.example/api/v2"
+
+
 def test_override_beats_env(write_config, monkeypatch):
     write_config(PROFILE_TOML)
     monkeypatch.setenv("LLMWHISPERER_BASE_URL", "https://env.example/api/v2")

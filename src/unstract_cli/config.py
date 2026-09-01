@@ -38,11 +38,14 @@ DEFAULT_BASE_URLS: dict[str, str] = {
     DOCSTUDIO: "https://us-central.unstract.com",
 }
 
-#: Environment variables per (product, setting), checked before the config file.
+#: Environment variables per (product, setting), checked before the config file
+#: and in the order given. The trailing names are the ones the published clients
+#: themselves read: an environment already set up for a client must not leave
+#: the CLI silently on its built-in default, which is production.
 ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (LLMWHISPERER, "api_key"): ("LLMWHISPERER_API_KEY",),
-    (LLMWHISPERER, "base_url"): ("LLMWHISPERER_BASE_URL",),
-    (DOCSTUDIO, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY",),
+    (LLMWHISPERER, "base_url"): ("LLMWHISPERER_BASE_URL", "LLMWHISPERER_BASE_URL_V2"),
+    (DOCSTUDIO, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY", "UNSTRACT_API_DEPLOYMENT_KEY"),
     (DOCSTUDIO, "base_url"): ("UNSTRACT_BASE_URL",),
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
 }
@@ -398,7 +401,7 @@ class ResolvedConfig:
         if env_vars := ENV_VARS.get((product, key)):
             hints.append(f"set ${env_vars[0]}")
         hints.append(f"or add `{key}` to the [profiles.<name>.{product}] block")
-        # Credentials have no flag by design: a secret on the command line
+        # `--api-key` exists but is not suggested: a secret on the command line
         # lands in shell history and in the process list.
         if key != "api_key":
             hints.append(f"or pass --{key.replace('_', '-')}")

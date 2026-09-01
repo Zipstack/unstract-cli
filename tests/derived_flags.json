@@ -296,7 +296,7 @@
       "description": "Line numbers or ranges, e.g. `1-5,9`. Required unless `extract_all_lines=true`.",
       "array": false,
       "nullable": false,
-      "required": true,
+      "required": false,
       "choices": []
     },
     "--whisper-hash": {

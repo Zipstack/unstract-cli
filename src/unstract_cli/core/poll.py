@@ -249,6 +249,7 @@ def wait_for_completion(
                 f"Timed out after {timeout:g}s waiting for completion "
                 f"(last status: {status!r}).",
                 ExitCode.TIMEOUT,
+                retryable=True,
                 hint=(
                     f"The job is still running. Resume with the {spec.handle_field} "
                     f"below rather than resubmitting the document."

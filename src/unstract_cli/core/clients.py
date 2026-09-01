@@ -107,6 +107,19 @@ def _message_and_details(value: Any) -> tuple[str, Any]:
     return str(value), None
 
 
+def _unresolved_host(exc: BaseException) -> str | None:
+    """The host a connection failed to resolve, or ``None`` if that is not why.
+
+    A name that does not resolve is the one connection failure retrying cannot
+    fix. Matched by type name rather than by import: the exception belongs to a
+    transitive dependency of the clients, not to anything declared here.
+    """
+    reason = getattr(exc.args[0] if exc.args else None, "reason", None)
+    if type(reason).__name__ != "NameResolutionError":
+        return None
+    return getattr(getattr(reason, "conn", None), "host", "") or ""
+
+
 @contextmanager
 def translated(endpoint: str | None = None) -> Iterator[None]:
     """Turn a client failure into a CLIError with an exit code and a hint."""
@@ -133,6 +146,13 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
             hint="The request timed out in transit; the job may still be running.",
         ) from exc
     except ConnectionError as exc:
+        if (host := _unresolved_host(exc)) is not None:
+            raise CLIError(
+                f"Could not resolve the host {host or endpoint or 'in the base URL'}.",
+                ExitCode.SERVER_ERROR,
+                endpoint=endpoint,
+                hint="Check the base URL for a typo. Retrying will not help.",
+            ) from exc
         raise CLIError(
             str(exc),
             ExitCode.SERVER_ERROR,

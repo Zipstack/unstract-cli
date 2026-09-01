@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+import click
 import pytest
 
 from unstract_cli.__main__ import main
@@ -60,6 +61,55 @@ def test_full_carries_enough_to_build_a_call(capsys):
     assert params["wait"]["flags"] == ["--wait", "--no-wait"]
     assert params["interval"]["type"] == "float"
     assert extract["raw_field"] == "result_text"
+
+
+def test_full_publishes_the_flags_that_are_not_on_the_command(capsys):
+    """The connection settings live on the group and the format on the root, so
+    a description of the leaves alone describes a call nobody can make."""
+    _, data = run(capsys, "--discover", "full")
+
+    root = {p["name"]: p for p in data["params"]}
+    assert "-o" in root["output"]["flags"]
+    assert "--profile" in root["profile"]["flags"]
+
+    whisper = {p["name"]: p for p in data["commands"]["whisper"]["params"]}
+    assert "--api-key" in whisper["api_key"]["flags"]
+    assert "--base-url" in whisper["base_url"]["flags"]
+    assert "org_id" in {p["name"] for p in data["commands"]["docstudio"]["params"]}
+
+
+def test_no_flag_publishes_a_default_it_does_not_have(capsys):
+    """Click marks "no default given" with a sentinel object, not None, and a
+    serialised sentinel reads as a value the caller could send back."""
+    _, data = run(capsys, "--discover", "full")
+
+    def defaults(node):
+        for param in node.get("params", []):
+            if "default" in param:
+                yield param["name"], param["default"]
+        for child in node.get("commands", {}).values():
+            yield from defaults(child)
+
+    published = list(defaults(data))
+    assert published
+    for name, value in published:
+        assert not isinstance(value, str) or "Sentinel" not in value, name
+        assert not repr(value).startswith("<"), name
+
+
+def test_a_bare_option_publishes_no_default():
+    """The case the CLI's own flags do not cover: an option declared with no
+    default at all, which is what a derived required flag is."""
+    from unstract_cli.core.discover import _param
+
+    assert "default" not in _param(click.Option(["--bare"]))
+
+
+@pytest.mark.parametrize("fmt", ["table", "raw", "json"])
+def test_discovery_answers_as_json_whatever_the_format_says(capsys, fmt):
+    """It is the machine-readable description; a wrapped table is not one."""
+    assert main(["-o", fmt, "--discover", "summary"]) == int(ExitCode.SUCCESS)
+    assert json.loads(capsys.readouterr().out)["data"]["commands"]
 
 
 def test_full_carries_the_exit_code_table(capsys):

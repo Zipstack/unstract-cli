@@ -171,8 +171,9 @@ def cli(
     )
     if discover_tier:
         # Discovery is how a caller learns what to run, so it has to answer
-        # before any configuration exists.
-        emit_result(discover(cli, discover_tier), ctx.obj.output)
+        # before any configuration exists -- and always as JSON, because the
+        # only consumer of a machine-readable description is a machine.
+        emit_result(discover(cli, discover_tier), OutputFormat.JSON)
         ctx.exit(int(ExitCode.SUCCESS))
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())

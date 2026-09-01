@@ -18,3 +18,8 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest -q
+      # `uv run` resolves from uv.lock, so the suite above never sees the newest
+      # click the pin allows -- which is what an install in the wild gets, and
+      # what discovery reads the internals of.
+      - run: uv pip install -U click
+      - run: .venv/bin/python -m pytest -q

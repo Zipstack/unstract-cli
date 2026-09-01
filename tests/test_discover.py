@@ -55,7 +55,6 @@ def test_full_carries_enough_to_build_a_call(capsys):
         "high_quality",
         "low_cost",
         "native_text",
-        "pdf_to_images",
         "table",
     ]
     assert params["wait"]["flags"] == ["--wait", "--no-wait"]

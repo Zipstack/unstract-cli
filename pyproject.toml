@@ -11,11 +11,11 @@ dependencies = [
     "click>=8.1,<9",
     # Writing the config file only; reading it uses the stdlib `tomllib`.
     "tomli-w>=1.0",
-    # Pinned to a commit: the CLI derives its flags and help text from these
-    # clients, so one that moves changes the CLI's surface. Both pins move to
-    # released versions before this ships.
-    "unstract-client @ git+https://github.com/Zipstack/unstract-python-client@a77ef6a",
-    "llmwhisperer-client @ git+https://github.com/Zipstack/llm-whisperer-python-client@7f64caf",
+    # Pinned exactly: the CLI derives its flags and help text from these
+    # clients, so one that moves changes the CLI's surface. Each release re-pins
+    # deliberately, against the specs vendored in `src/unstract_cli/specs`.
+    "unstract-client==1.6.0",
+    "llmwhisperer-client==2.9.0",
 ]
 
 [project.optional-dependencies]
@@ -26,17 +26,12 @@ dev = [
 
 [project.scripts]
 unstract = "unstract_cli.__main__:main"
-# `unstract-client` installs an `unstract` script too, so whichever package is
-# installed last wins that name; this one always reaches this CLI.
+# An alias for anyone who has the name `unstract` taken by something else.
 unstract-cli = "unstract_cli.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-# Needed for the git-pinned clients above.
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/unstract_cli"]

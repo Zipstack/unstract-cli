@@ -172,13 +172,17 @@ wheels = [
 
 [[package]]
 name = "llmwhisperer-client"
-version = "2.7.0"
-source = { git = "https://github.com/Zipstack/llm-whisperer-python-client?rev=7f64caf#7f64caf5893370e0d472c50df3df39ef198fb37b" }
+version = "2.9.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "httpx" },
     { name = "requests" },
     { name = "tenacity" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/25/c7/d8c822ac12837073d07b9c4c3b4e3967ac6b6f8c91737899ca192e1f24fa/llmwhisperer_client-2.9.0.tar.gz", hash = "sha256:8db10ba2c3a9a8351f22bce809535489154bdc7531e7a54f7c04c7601b0cd784", size = 3317195, upload-time = "2026-09-01T10:15:39.042Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/7b/b192239d0b31e6979ba4d47336585de0fe437847d6839ff936bb9cb0310d/llmwhisperer_client-2.9.0-py3-none-any.whl", hash = "sha256:a2895053b21819fed2a6c85bc15ba05c74b883071b980360e32be537a285836a", size = 69257, upload-time = "2026-09-01T10:15:37.751Z" },
 ]
 
 [[package]]
@@ -345,18 +349,18 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1,<9" },
-    { name = "llmwhisperer-client", git = "https://github.com/Zipstack/llm-whisperer-python-client?rev=7f64caf" },
+    { name = "llmwhisperer-client", specifier = "==2.9.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "tomli-w", specifier = ">=1.0" },
-    { name = "unstract-client", git = "https://github.com/Zipstack/unstract-python-client?rev=a77ef6a" },
+    { name = "unstract-client", specifier = "==1.6.0" },
 ]
 provides-extras = ["dev"]
 
 [[package]]
 name = "unstract-client"
-version = "1.5.3"
-source = { git = "https://github.com/Zipstack/unstract-python-client?rev=a77ef6a#a77ef6ae65d69a8290b5aa3fb6b13952a2084d45" }
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "click" },
@@ -364,6 +368,10 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "tenacity" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ad/8b/7c4eea378ec143a6c862ad03d96bc1cf0b8fab5f23078d51569b78a704a0/unstract_client-1.6.0.tar.gz", hash = "sha256:9fabdcf7c6752910d986bee5c66fb0e0f32b17f73cb1c27e51402eb372dfe81d", size = 203664, upload-time = "2026-09-01T10:13:54.391Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/18/9492ecbc9b0e83128147f688d815ace4cfee4d332ad1e9543cb8b1550344/unstract_client-1.6.0-py3-none-any.whl", hash = "sha256:8e4642d1fd0d2afd9983117ac6c78436f6476724b53c15f3266c725fde901757", size = 114425, upload-time = "2026-09-01T10:13:53.25Z" },
 ]
 
 [[package]]

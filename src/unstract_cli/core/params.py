@@ -123,7 +123,9 @@ def operation_params(product: str, operation_id: str) -> list[Param]:
     """Every parameter one operation accepts: query, then request body.
 
     Path parameters are excluded: they are the route, supplied by the command
-    from configuration, not by the caller as a flag.
+    from configuration, not by the caller as a flag. So are deprecated ones: a
+    superseded spelling the client still accepts would otherwise become a second
+    flag for the same value.
     """
     operation = find_operation(product, operation_id)
     params = [
@@ -134,7 +136,7 @@ def operation_params(product: str, operation_id: str) -> list[Param]:
             required=bool(p.get("required")),
         )
         for p in operation.get("parameters", [])
-        if p.get("in") == "query"
+        if p.get("in") == "query" and not p.get("deprecated")
     ]
 
     body = operation.get("requestBody", {}).get("content", {})
@@ -147,6 +149,8 @@ def operation_params(product: str, operation_id: str) -> list[Param]:
             schema = _resolve_ref(product, ref)
         mandatory = set(schema.get("required") or ())
         for name, prop in (schema.get("properties") or {}).items():
+            if prop.get("deprecated"):
+                continue
             params.append(
                 _from_schema(
                     name,

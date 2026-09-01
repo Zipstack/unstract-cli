@@ -20,12 +20,11 @@ import pytest
 from unstract.api_deployments.client import APIDeploymentsClient
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
-from unstract_cli.core.params import derive_params, operation_params
+from unstract_cli.core.params import derive_params, find_operation, operation_params
 
 #: (product, operationId, client method) per command that derives its flags,
-#: with the spec parameters that method cannot accept. Most are parameters the
-#: client owns rather than lacks; `highlights.mode` is the exception, and the
-#: CLI cannot offer it without the call failing.
+#: with the spec parameters that method cannot accept -- parameters the client
+#: owns rather than lacks.
 COMMANDS = [
     (
         "llmwhisperer",
@@ -33,7 +32,7 @@ COMMANDS = [
         LLMWhispererClientV2.whisper,
         {"url_in_post"},
     ),
-    ("llmwhisperer", "highlights", LLMWhispererClientV2.get_highlight_data, {"mode"}),
+    ("llmwhisperer", "highlights", LLMWhispererClientV2.get_highlight_data, set()),
     ("docstudio", "execute", APIDeploymentsClient.structure_file, {"files"}),
     (
         "docstudio",
@@ -69,6 +68,28 @@ def test_every_derived_flag_is_an_argument_the_client_accepts(product, operation
     accepted = set(inspect.signature(method).parameters)
     for param in derive_params(product, operation, client_method=method):
         assert param.name in accepted
+
+
+@pytest.mark.parametrize(
+    ("product", "operation", "method"),
+    [(p, o, m) for p, o, m, _ in COMMANDS],
+    ids=[f"{p}:{o}" for p, o, _, _ in COMMANDS],
+)
+def test_a_deprecated_spelling_does_not_become_a_second_flag(product, operation, method):
+    """Both spellings of a renamed parameter are declared and both are accepted
+    by the client, so nothing but the deprecation marks one of them wrong."""
+    flags = [
+        param.flag for param in derive_params(product, operation, client_method=method)
+    ]
+    assert len(flags) == len(set(flags))
+    deprecated = {
+        p["name"]
+        for p in find_operation(product, operation).get("parameters", [])
+        if p.get("deprecated")
+    }
+    assert deprecated.isdisjoint(
+        param.name for param in derive_params(product, operation, client_method=method)
+    )
 
 
 #: The flags the specs derive today, written down rather than read from the

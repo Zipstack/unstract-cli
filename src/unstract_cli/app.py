@@ -237,14 +237,24 @@ def deployment_group() -> None:
 
 @cli.group("auth")
 @_connection_options()
+@click.option(
+    "--transport-timeout",
+    type=float,
+    default=None,
+    help="Seconds before a stalled connection is given up on. Unset means the "
+    "client's own default, which is 60.",
+)
 @pass_context
-def auth_group(ctx: Context, **overrides: str | None) -> None:
+def auth_group(
+    ctx: Context, transport_timeout: float | None, **overrides: str | None
+) -> None:
     """Identify the credential you are using.
 
     Its flags configure the platform key, which is the credential that knows
     which organisation it belongs to. A deployment key does not: it authenticates
     against the deployment it was minted for and never reaches this endpoint.
     """
+    ctx.transport_timeout = transport_timeout
     ctx.override(PLATFORM, overrides)
 
 

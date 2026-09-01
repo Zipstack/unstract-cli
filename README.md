@@ -112,7 +112,7 @@ an `onprem-example` profile as a shape to copy for a self-hosted install — its
 host is a placeholder, and only the *active* profile is ever resolved.
 
 The two Unstract keys are not interchangeable and neither replaces the other. A
-deployment key runs one deployment and cannot say which organisation it belongs
+deployment key runs deployments and cannot say which organisation it belongs
 to; a platform key identifies the organisation and lists what is in it, and
 cannot run a deployment. `auth whoami` and `deployment ls` take the platform key;
 `deployment run` and `deployment status` take the deployment key. `org_id` lives

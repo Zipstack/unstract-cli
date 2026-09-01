@@ -60,6 +60,11 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
     (PLATFORM, "api_key"): ("UNSTRACT_PLATFORM_KEY",),
     (PLATFORM, "base_url"): ("UNSTRACT_BASE_URL",),
+    # `clone` takes this as --api-prefix because a self-hosted deployment can
+    # mount the Platform API somewhere other than api/v1. Without it, whoami
+    # and `deployment ls` are unreachable on exactly the installs the
+    # onprem-example profile below caters to.
+    (PLATFORM, "api_prefix"): ("UNSTRACT_API_PREFIX",),
 }
 
 
@@ -79,9 +84,10 @@ KEY_SOURCES = (
 def settings_for(product: str) -> tuple[str, ...]:
     """The settings a product actually has.
 
-    Products differ: `org_id` is a URL path segment for one and meaningless for
-    the other, and reporting a setting a user has no way to supply reads as a
-    misconfiguration they cannot fix.
+    Products differ: `org_id` is a setting only for `docstudio` -- llmwhisperer
+    has no organisation, and `platform` reads docstudio's -- and reporting a
+    setting a user has no way to supply reads as a misconfiguration they cannot
+    fix.
     """
     return tuple(sorted(key for prod, key in ENV_VARS if prod == product))
 
@@ -553,10 +559,11 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
-            PLATFORM: {
-                "base_url": DEFAULT_BASE_URLS[PLATFORM],
-                "api_key": "env:UNSTRACT_PLATFORM_KEY",
-            },
+            # No `api_key` on purpose. A platform key is optional -- holding
+            # only a deployment key is the common case -- and an `env:`
+            # reference to an unset variable is a `config doctor` problem,
+            # which would exit 1 for every user who does not hold one.
+            PLATFORM: {"base_url": DEFAULT_BASE_URLS[PLATFORM]},
             "deployments": {"example": {"api_name": "your-api-deployment-name"}},
         },
         "cloud-eu": {
@@ -577,10 +584,8 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
-            PLATFORM: {
-                "base_url": "https://unstract.internal.example",
-                "api_key": "env:UNSTRACT_PLATFORM_KEY",
-            },
+            # No `api_key` -- see the cloud-us block.
+            PLATFORM: {"base_url": "https://unstract.internal.example"},
         },
     }
 

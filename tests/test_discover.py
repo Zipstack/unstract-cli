@@ -14,6 +14,7 @@ import pytest
 
 from unstract_cli.__main__ import main
 from unstract_cli.commands import config_cmd
+from unstract_cli.config import PLATFORM
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import CONTRACT_VERSION
 
@@ -180,7 +181,14 @@ def platform_probe_client(monkeypatch):
                 return reply or {}
 
         monkeypatch.setattr(
-            config_cmd, "platform_client", lambda _config, org_id=None: Fake()
+            config_cmd,
+            "platform_client",
+            # Resolves the key like its sibling in test_commands, so the probe
+            # tests exercise the registration that feeds the scrubber.
+            lambda config, org_id=None, *, timeout=None: (
+                config.get(PLATFORM, "api_key"),
+                Fake(),
+            )[1],
         )
 
     return install
@@ -289,3 +297,26 @@ def test_a_rejected_platform_key_fails_the_probe(
         "detail": "bad key",
         "exit_code": int(ExitCode.AUTH),
     }
+
+
+def test_config_init_then_doctor_exits_zero_without_a_platform_key(
+    capsys, monkeypatch, tmp_path
+):
+    """The property `test_an_absent_platform_key_is_reported_not_failed` claims,
+    checked the way a real user reaches it.
+
+    That test runs with no config file. The starter profile written by
+    `config init` used to carry `api_key = "env:UNSTRACT_PLATFORM_KEY"`, and an
+    `env:` reference to an unset variable is a doctor *problem* -- so the test
+    passed while every user who ran the documented first command got exit 1.
+    """
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("LLMWHISPERER_API_KEY", "lw-123456789")
+    monkeypatch.setenv("UNSTRACT_DEPLOYMENT_KEY", "dk-123456789")
+    monkeypatch.setenv("UNSTRACT_ORG_ID", "acme")
+    monkeypatch.delenv("UNSTRACT_PLATFORM_KEY", raising=False)
+
+    assert main(["-o", "json", "config", "init"]) == int(ExitCode.SUCCESS)
+    capsys.readouterr()
+
+    assert main(["-o", "json", "config", "doctor"]) == int(ExitCode.SUCCESS)

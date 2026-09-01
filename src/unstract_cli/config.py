@@ -19,6 +19,7 @@ import errno
 import os
 import stat
 import tomllib
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -410,18 +411,30 @@ class ResolvedConfig:
             remember_secret(value)
         return value
 
+    def explicit_tiers(self, product: str, key: str) -> Iterator[Any]:
+        """What each tier says, in order -- flag, env, profile -- unset as `None`.
+
+        For a setting two products share -- one deployment serves both, so
+        `base_url` is really one question asked twice -- picking a product first
+        and then walking its tiers inverts the precedence the whole config layer
+        promises: a profile value on the preferred product beats a *flag* on the
+        other. Walking tier by tier across both products keeps flag > env >
+        profile true regardless of which product a value was written under.
+
+        Lazy on purpose: reading the profile block resolves the profile name,
+        which raises for one that does not exist. A caller answered by an
+        earlier tier must not be failed by a later one it never consulted.
+        """
+        yield self.overrides.get(f"{product}.{key}", self.overrides.get(key))
+        yield next(
+            (v for e in ENV_VARS.get((product, key), ()) if (v := os.environ.get(e))),
+            None,
+        )
+        yield _deref(self._product_block(product).get(key))
+
     def _explicit(self, product: str, key: str) -> Any:
         """The tiers a human supplied: flag, then environment, then profile."""
-        if (value := self.overrides.get(f"{product}.{key}")) is not None:
-            return value
-        if (value := self.overrides.get(key)) is not None:
-            return value
-
-        for env_var in ENV_VARS.get((product, key), ()):
-            if value := os.environ.get(env_var):
-                return value
-
-        return _deref(self._product_block(product).get(key))
+        return next((v for v in self.explicit_tiers(product, key) if v is not None), None)
 
     def _resolve(self, product: str, key: str, default: Any = None) -> Any:
         if (value := self._explicit(product, key)) is not None:

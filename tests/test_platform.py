@@ -177,6 +177,46 @@ def test_the_saas_default_is_honoured_when_the_caller_names_it() -> None:
     assert platform_base_url(flag) == DEFAULT_BASE_URLS[PLATFORM]
 
 
+def test_a_docstudio_flag_beats_a_platform_host_in_the_profile() -> None:
+    """Greptile, on PR #3. Walking `platform`'s three tiers before docstudio's
+    let a *profile* value beat a *flag*, inverting the precedence the config
+    layer promises everywhere else -- and `config init` writes
+    `platform.base_url` into every profile it generates, so the flag was ignored
+    for every generated config, not a corner case.
+    """
+    config = _resolved(
+        {"p": {PLATFORM: {"base_url": DEFAULT_BASE_URLS[PLATFORM]}}},
+        **{"docstudio.base_url": "https://flag.example"},
+    )
+
+    assert platform_base_url(config) == "https://flag.example"
+
+
+def test_a_platform_flag_still_beats_a_docstudio_flag() -> None:
+    """Within one tier the specific product wins; across tiers it does not."""
+    config = _resolved(
+        {"p": {}},
+        **{
+            "platform.base_url": "https://platform-flag.example",
+            "docstudio.base_url": "https://docstudio-flag.example",
+        },
+    )
+
+    assert platform_base_url(config) == "https://platform-flag.example"
+
+
+def test_an_environment_host_beats_a_profile_on_either_product() -> None:
+    """`$UNSTRACT_BASE_URL` maps to both products, and env outranks profile."""
+    import os
+
+    config = _resolved({"p": {PLATFORM: {"base_url": "https://profile.example"}}})
+    os.environ["UNSTRACT_BASE_URL"] = "https://env.example"
+    try:
+        assert platform_base_url(config) == "https://env.example"
+    finally:
+        del os.environ["UNSTRACT_BASE_URL"]
+
+
 def test_the_built_in_default_is_the_last_resort_not_a_veto() -> None:
     """Nobody named a host anywhere: the built-in default is still the answer.
     `get_explicit` stopping before the defaults must not lose that.

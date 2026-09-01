@@ -71,16 +71,29 @@ def platform_base_url(config: ResolvedConfig) -> str:
     before the `platform` block existed, and every `docstudio --base-url`, would
     silently fall through to the built-in cloud default and send the key there.
 
-    Both tiers are read with `get_explicit`, which stops before the built-in
-    defaults. Comparing `get`'s answer against the default instead would read a
-    caller who named the SaaS host as one who named nothing -- and `config init`
-    writes that exact host into every generated profile, so that is the common
-    case, not a corner of it.
+    The two products are walked **tier by tier**, not one product at a time.
+    Asking `platform` for all three tiers first would let a profile's
+    `platform.base_url` beat a `docstudio --base-url` flag -- and `config init`
+    writes `platform.base_url` into every profile it generates, so that would
+    silently ignore the flag for every generated config, which is the majority
+    of them.
+
+    Each tier is read explicitly, stopping before the built-in defaults.
+    Comparing `get`'s answer against the default instead would read a caller who
+    named the SaaS host as one who named nothing -- the same `config init`
+    profiles again, from the other direction.
     """
-    if (named := config.get_explicit(PLATFORM, "base_url")) is not None:
-        return str(named)
-    if (shared := config.get_explicit(DOCSTUDIO, "base_url")) is not None:
-        return str(shared)
+    for from_platform, from_docstudio in zip(
+        config.explicit_tiers(PLATFORM, "base_url"),
+        config.explicit_tiers(DOCSTUDIO, "base_url"),
+        strict=True,
+    ):
+        # Within one tier the platform block wins: it is the specific answer to
+        # this question, where docstudio's is the one inherited from the sibling.
+        if from_platform is not None:
+            return str(from_platform)
+        if from_docstudio is not None:
+            return str(from_docstudio)
     return str(config.require(PLATFORM, "base_url"))
 
 

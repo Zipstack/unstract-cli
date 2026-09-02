@@ -60,7 +60,7 @@ def test_full_carries_enough_to_build_a_call(capsys):
     ]
     assert params["wait"]["flags"] == ["--wait", "--no-wait"]
     assert params["interval"]["type"] == "float"
-    assert extract["raw_field"] == "result_text"
+    assert extract["raw_fields"] == ["result_text"]
 
 
 def test_full_publishes_the_flags_that_are_not_on_the_command(capsys):
@@ -95,6 +95,19 @@ def test_no_flag_publishes_a_default_it_does_not_have(capsys):
     for name, value in published:
         assert not isinstance(value, str) or "Sentinel" not in value, name
         assert not repr(value).startswith("<"), name
+
+
+def test_an_on_off_flag_publishes_the_same_default_across_click_versions():
+    """The one declaration this CLI uses most answers differently per version:
+    given no default, some report `False` and some their own sentinel. Neither
+    is what omitting the flag does, which is to send nothing."""
+    from unstract_cli.core.discover import _param
+
+    assert "default" not in _param(click.Option(["--x/--no-x"], default=None))
+    # A default that was actually chosen still travels.
+    assert _param(click.Option(["--y/--no-y"], default=True))["default"] is True
+    # And a plain on-only flag keeps reporting the False it really defaults to.
+    assert _param(click.Option(["--z"], is_flag=True))["default"] is False
 
 
 def test_a_bare_option_publishes_no_default():

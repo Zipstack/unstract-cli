@@ -30,6 +30,11 @@ TIERS = ("groups", "summary", "full")
 #: is installed -- serialised, it would publish a string that reads as a value.
 _NO_DEFAULT = click.Option(["--unset"]).default
 
+#: The same question for a paired on/off flag, which answers it differently:
+#: given no default, some versions report `False` and others their own sentinel.
+#: Read the same way, so neither is mistaken for a default the flag really has.
+_NO_FLAG_DEFAULT = click.Option(["--unset/--no-unset"], default=None).default
+
 
 def contract() -> dict[str, Any]:
     """How to consume this CLI's output, published rather than assumed.
@@ -81,12 +86,19 @@ def _param(param: click.Parameter) -> dict[str, Any]:
         entry["repeatable"] = bool(param.multiple)
     if isinstance(param.type, click.Choice):
         entry["choices"] = list(param.type.choices)
-    if (
-        param.default is not None
-        and param.default is not _NO_DEFAULT
-        and not isinstance(param, click.Argument)
-    ):
-        entry["default"] = param.default
+    # What omitting the flag actually gets you, which is not what Click reports:
+    # the same declaration answers differently across the supported range, so
+    # reading `param.default` straight publishes a contract per version.
+    default = param.default
+    if param.secondary_opts and default is _NO_FLAG_DEFAULT:
+        # An on/off flag the CLI declares with no default means "not passed, so
+        # not sent". Publishing the `False` some versions report here would
+        # promise a value the CLI does not send.
+        default = None
+    elif default is _NO_DEFAULT:
+        default = False if getattr(param, "is_flag", False) else None
+    if default is not None and not isinstance(param, click.Argument):
+        entry["default"] = default
     return entry
 
 
@@ -103,9 +115,11 @@ def _describe(command: click.Command, tier: str) -> dict[str, Any]:
     entry: dict[str, Any] = {"help": (command.help or "").strip().split("\n")[0]}
     if tier == "full":
         entry["params"] = _params(command)
-        # Which field `--output raw` prints for this command, where it has one.
-        if raw := getattr(command, "raw_field", None):
-            entry["raw_field"] = raw
+        # What `--output raw` prints for this command, best answer first: the
+        # first of these the answer carries is the one printed, and an answer
+        # carrying none of them fails rather than printing something else.
+        if raw := getattr(command, "raw_fields", ()):
+            entry["raw_fields"] = list(raw)
     if isinstance(command, click.Group):
         entry["commands"] = {
             name: _describe(sub, tier) for name, sub in sorted(command.commands.items())

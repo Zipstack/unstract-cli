@@ -207,12 +207,44 @@ def render_table(
     return "\n".join(out)
 
 
+def raw_value(env: dict[str, Any], fields: tuple[str, ...]) -> Any:
+    """The first declared field this answer actually carries.
+
+    Commands declare several because one call has several shapes: a queued run
+    answers with a handle and no result, and a status read answers with a state
+    until there is a result to answer with. Each is a value the caller asked
+    for, so raw prints the first one present rather than the first one declared.
+
+    ``meta`` is searched too, because a handle the CLI had to derive rather than
+    read off the response lands there and is still what the caller wants.
+
+    Nothing present is a failure, not empty output. Raw is one value on stdout
+    and nothing else, so it cannot say "not this time" inside itself: printing
+    the whole payload would answer a question nobody asked, and printing the
+    field's own ``null`` is worse, because a caller polling for a result cannot
+    tell it apart from a finished job that produced nothing.
+    """
+    payload = env["data"] if env["ok"] else env["error"]
+    if not fields or not isinstance(payload, dict):
+        return payload
+    for name in fields:
+        for source in (payload, env.get("meta") or {}):
+            if isinstance(source, dict) and source.get(name) is not None:
+                return source[name]
+    raise CLIError(
+        f"This answer carries none of {', '.join(fields)}, so there is nothing "
+        "to print as raw output.",
+        ExitCode.GENERIC,
+        hint="Read it with `-o json`, which prints whatever the answer does carry.",
+    )
+
+
 def render(
     env: dict[str, Any],
     fmt: OutputFormat = OutputFormat.JSON,
     *,
     columns: tuple[str, ...] = (),
-    raw_field: str | None = None,
+    raw_fields: tuple[str, ...] = (),
 ) -> str:
     """Render an envelope. ``table`` and ``raw`` show ``data``, or the error."""
     if fmt is OutputFormat.JSON:
@@ -222,8 +254,7 @@ def render(
     if fmt is OutputFormat.TABLE:
         return render_table(payload, columns)
 
-    if isinstance(payload, dict) and raw_field and raw_field in payload:
-        payload = payload[raw_field]
+    payload = raw_value(env, raw_fields)
     if isinstance(payload, bytes):
         return payload.decode("utf-8", errors="replace")
     if isinstance(payload, str):
@@ -236,7 +267,7 @@ def emit(
     fmt: OutputFormat = OutputFormat.JSON,
     *,
     columns: tuple[str, ...] = (),
-    raw_field: str | None = None,
+    raw_fields: tuple[str, ...] = (),
     secrets: list[str] | None = None,
 ) -> None:
     """Write one envelope to stdout -- and nothing else to stdout.
@@ -245,7 +276,7 @@ def emit(
     caller passed one: an emitter that has to remember is an emitter that
     eventually forgets.
     """
-    emit_text(render(env, fmt, columns=columns, raw_field=raw_field), secrets=secrets)
+    emit_text(render(env, fmt, columns=columns, raw_fields=raw_fields), secrets=secrets)
 
 
 def emit_text(text: str, *, secrets: list[str] | None = None) -> None:
@@ -266,7 +297,7 @@ def emit_result(
     *,
     meta: dict[str, Any] | None = None,
     columns: tuple[str, ...] = (),
-    raw_field: str | None = None,
+    raw_fields: tuple[str, ...] = (),
     secrets: list[str] | None = None,
 ) -> None:
     """Write a successful result."""
@@ -274,7 +305,7 @@ def emit_result(
         envelope(data=data, meta=meta),
         fmt,
         columns=columns,
-        raw_field=raw_field,
+        raw_fields=raw_fields,
         secrets=secrets,
     )
 
@@ -323,6 +354,7 @@ __all__ = [
     "emit_result",
     "emit_text",
     "envelope",
+    "raw_value",
     "render",
     "render_table",
     "resolve_format",

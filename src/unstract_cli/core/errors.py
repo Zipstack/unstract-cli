@@ -241,13 +241,15 @@ def hint_for(status: int) -> str | None:
                 "values passed; `details` carries the service's own response."
             )
         case 401 | 403:
-            # Wrong, revoked, foreign-organisation and not-permitted all arrive
-            # as the same response, so the hint cannot settle on one of them.
+            # Wrong, revoked and not-permitted all arrive as the same response,
+            # so the hint cannot settle on one of them. A key from another
+            # organisation is not among them: the resource is resolved within
+            # its organisation first, so that answers 404 instead.
             return (
                 "The key was rejected. Keys are per-product: `unstract config "
                 "doctor` reports which one resolved and from where. A key that "
-                "works elsewhere can still be rejected here -- it may not cover "
-                "this deployment, or may belong to another organisation."
+                "works elsewhere can still be rejected here if it does not cover "
+                "this deployment."
             )
         case 404:
             return (

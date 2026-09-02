@@ -12,6 +12,7 @@ shapes converge here rather than in each command.
 
 from __future__ import annotations
 
+import socket
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -79,7 +80,8 @@ def deployment(
         raise CLIError(
             f"Deployment {target!r} is missing {' and '.join(missing)}.",
             ExitCode.USAGE,
-            hint=(
+            hint=_alias_hint(config, target)
+            or (
                 "Define the deployment as an alias in the active profile, or set "
                 "$UNSTRACT_ORG_ID and $UNSTRACT_DEPLOYMENT_KEY."
             ),
@@ -91,6 +93,37 @@ def deployment(
         logging_level="ERROR",
         transport_timeout=transport_timeout,
     )
+
+
+def _alias_hint(config: ResolvedConfig, target: str) -> str | None:
+    """What to say when a target is not one of the aliases that are configured.
+
+    A bare API name is a supported way to name a deployment, so a target that is
+    not an alias cannot be rejected outright. It can still be a misspelt one,
+    and a caller who has defined aliases is likelier to have meant one of them
+    than to have typed a raw name, so the ones that exist are worth naming.
+    """
+    if not (aliases := config.deployment_aliases()) or target in aliases:
+        return None
+    return (
+        f"{target!r} is not one of the deployment aliases in the active profile "
+        f"({', '.join(aliases)}), so it was sent as an API name."
+    )
+
+
+@contextmanager
+def naming_aliases(config: ResolvedConfig, target: str) -> Iterator[None]:
+    """Say which aliases exist when a bare API name is not found.
+
+    Sending a misspelt alias as an API name is indistinguishable from sending a
+    real one until the service answers, so the correction belongs on the answer.
+    """
+    try:
+        yield
+    except CLIError as exc:
+        if exc.exit_code is ExitCode.NOT_FOUND and (hint := _alias_hint(config, target)):
+            exc.hint = f"{exc.hint} {hint}" if exc.hint else hint
+        raise
 
 
 def _message_and_details(value: Any) -> tuple[str, Any]:
@@ -107,17 +140,35 @@ def _message_and_details(value: Any) -> tuple[str, Any]:
     return str(value), None
 
 
+def _causes(exc: BaseException) -> Iterator[BaseException]:
+    """One failure and everything it was raised from, outermost first."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        yield seen
+        seen = seen.__cause__ or seen.__context__
+
+
 def _unresolved_host(exc: BaseException) -> str | None:
     """The host a connection failed to resolve, or ``None`` if that is not why.
 
     A name that does not resolve is the one connection failure retrying cannot
-    fix. Matched by type name rather than by import: the exception belongs to a
-    transitive dependency of the clients, not to anything declared here.
+    fix. Read from the chain rather than from the outermost exception: the
+    clients re-raise transport failures as their ``requests`` equivalents
+    carrying only a message, so nothing structural survives at the top -- but
+    the original is still attached underneath, and `socket.gaierror` is the
+    resolver's own answer whichever transport asked it.
     """
-    reason = getattr(exc.args[0] if exc.args else None, "reason", None)
-    if type(reason).__name__ != "NameResolutionError":
+    if not any(isinstance(cause, socket.gaierror) for cause in _causes(exc)):
         return None
-    return getattr(getattr(reason, "conn", None), "host", "") or ""
+    for cause in _causes(exc):
+        # httpx keeps the request on the error it raises; urllib3 keeps the
+        # connection. Either names the host without parsing a message.
+        url = getattr(getattr(cause, "request", None), "url", None)
+        if host := getattr(url, "host", "") or getattr(
+            getattr(cause, "conn", None), "host", ""
+        ):
+            return host
+    return ""
 
 
 @contextmanager
@@ -213,6 +264,7 @@ __all__ = [
     "deployment",
     "deployment_url",
     "llmwhisperer",
+    "naming_aliases",
     "raise_for_result",
     "translated",
     "translating",

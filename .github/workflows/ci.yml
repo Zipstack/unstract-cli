@@ -18,8 +18,13 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest -q
+      - run: uv run python -m unstract_cli -o json --discover full > locked.json
       # `uv run` resolves from uv.lock, so the suite above never sees the newest
       # click the pin allows -- which is what an install in the wild gets, and
       # what discovery reads the internals of.
       - run: uv pip install -U click
       - run: .venv/bin/python -m pytest -q
+      - run: .venv/bin/python -m unstract_cli -o json --discover full > latest.json
+      # Discovery is a published contract read out of Click's own objects, so a
+      # difference here is the contract changing with the installed version.
+      - run: diff locked.json latest.json

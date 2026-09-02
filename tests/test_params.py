@@ -235,6 +235,17 @@ def test_a_required_parameter_stays_required():
 
 
 @pytest.mark.parametrize("type_name", ["string", "boolean"])
+def test_a_required_flag_carries_no_default_at_all(type_name):
+    """No command mounts a required derived flag today, so the parser check
+    below has nothing live to protect. This pins the property itself: Click
+    treats any default as a value the caller supplied."""
+    option = click_option(Param("lines", type_name, required=True), {})
+    bare = click.Option(["--bare"])
+    assert option.default is bare.default
+    assert click_option(Param("lines", type_name), {}).default is None
+
+
+@pytest.mark.parametrize("type_name", ["string", "boolean"])
 def test_a_required_flag_is_enforced_by_the_parser(type_name):
     """From Click 8.2 a default counts as a value the caller supplied, so a
     required option given one is never actually required."""

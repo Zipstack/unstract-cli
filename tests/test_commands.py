@@ -8,17 +8,18 @@ caller sees on stdout and in the exit code.
 from __future__ import annotations
 
 import json
+import os
 import socket
 
+import httpx
 import pytest
 from requests.exceptions import ConnectionError
 from unstract.clone.report import CloneReport, Endpoint, PhaseResult
+from unstract.llmwhisperer import client_v2
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
     LLMWhispererClientV2,
 )
-from urllib3.connection import HTTPConnection
-from urllib3.exceptions import MaxRetryError, NameResolutionError
 
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
@@ -43,11 +44,25 @@ def envelope(out: str) -> dict:
 
 
 def _name_resolution_error(host: str) -> ConnectionError:
-    """What requests raises when DNS has no answer, built rather than provoked:
-    resolving a name for real would make this suite depend on the network."""
-    conn = HTTPConnection(host)
-    reason = NameResolutionError(host, conn, socket.gaierror(-2, "no answer"))
-    return ConnectionError(MaxRetryError(pool=conn, url="/", reason=reason))
+    """The failure the pinned client raises when a host does not resolve.
+
+    Built by putting a transport error through the client's own translation
+    rather than assembled here: the client re-raises with only a message, so a
+    hand-made stand-in can keep passing long after the client has stopped
+    producing anything like it.
+    """
+
+    def fail():
+        request = httpx.Request("GET", f"https://{host}/api/v2/get-usage-info")
+        raise httpx.ConnectError(
+            "[Errno -2] Name or service not known", request=request
+        ) from socket.gaierror(-2, "Name or service not known")
+
+    try:
+        client_v2._translate_transport_errors(fail)
+    except ConnectionError as exc:
+        return exc
+    raise AssertionError("the pinned client no longer translates a connect error")
 
 
 class FakeWhisper:
@@ -436,6 +451,22 @@ def test_a_host_that_does_not_resolve_is_not_worth_retrying(capsys, whisper_clie
     assert "nope.invalid" in error["message"]
 
 
+@pytest.mark.skipif(
+    not os.environ.get("UNSTRACT_CLI_LIVE"),
+    reason="asks the resolver about a host; set UNSTRACT_CLI_LIVE=1 to run it",
+)
+def test_a_real_resolver_failure_reaches_the_same_answer(capsys, monkeypatch):
+    """The offline stand-in is built by hand, however carefully. This one asks
+    the pinned client to reach a name no resolver will answer for."""
+    monkeypatch.setenv("LLMWHISPERER_API_KEY", "k")
+    monkeypatch.setenv("LLMWHISPERER_BASE_URL", "https://unresolvable.invalid/api/v2")
+    code, out, _ = run(capsys, "whisper", "usage")
+    assert code == int(ExitCode.SERVER_ERROR)
+    error = envelope(out)["error"]
+    assert error["retryable"] is False
+    assert "unresolvable.invalid" in error["message"]
+
+
 def test_an_unreachable_service_is_worth_retrying(capsys, whisper_client):
     whisper_client(get_usage_info=ConnectionError("connection refused"))
     code, out, _ = run(capsys, "whisper", "usage")
@@ -588,6 +619,127 @@ def test_a_queued_run_reports_the_handle_it_started(capsys, deployment_client, t
     )
     assert code == int(ExitCode.SUCCESS)
     assert capsys.readouterr().out.strip() == "e-1"
+
+
+def test_a_target_that_is_not_a_configured_alias_names_the_ones_that_are(
+    capsys, deployment_client, write_config
+):
+    """A misspelt alias is sent as an API name and comes back not-found, which
+    says nothing about the aliases sitting in the profile."""
+    write_config(
+        'default_profile = "p"\n'
+        "[profiles.p.docstudio]\n"
+        'org_id = "org"\n'
+        'api_key = "k"\n'
+        "[profiles.p.deployments.invoices]\n"
+        'api_name = "invoice-parser"\n'
+    )
+    deployment_client(check_execution_status={"status_code": 404, "error": "not found"})
+    code, out, _ = run(capsys, "docstudio", "deployment", "status", "invoces", "e-1")
+    assert code == int(ExitCode.NOT_FOUND)
+    hint = envelope(out)["error"]["hint"]
+    assert "invoces" in hint and "invoices" in hint
+
+
+def test_highlights_on_an_extraction_without_line_numbers_says_where_to_fix_it(
+    capsys, whisper_client
+):
+    """The call that can be fixed is the extract, which has already been paid
+    for; a hint about this call sends the caller nowhere."""
+    whisper_client(
+        get_highlight_data=LLMWhispererClientException(
+            {"message": "no line metadata", "status_code": 400}, 400
+        )
+    )
+    code, out, _ = run(capsys, "whisper", "highlights", "h1", "--lines", "1-5")
+    assert code == int(ExitCode.VALIDATION)
+    assert "--add-line-nos" in envelope(out)["error"]["hint"]
+
+
+ACK = {
+    "status_code": 200,
+    "execution_status": "PENDING",
+    "extraction_result": None,
+    "status_check_api_endpoint": "/deployment/api/status?execution_id=e-1",
+}
+
+PENDING_STATUS = {
+    "status_code": 422,
+    "pending": True,
+    "execution_status": "EXECUTING",
+    "extraction_result": None,
+}
+
+DONE_STATUS = {
+    "status_code": 200,
+    "execution_status": "COMPLETED",
+    "extraction_result": "the answer",
+}
+
+
+def _raw(capsys, *args) -> str:
+    assert main(["-o", "raw", *args]) == int(ExitCode.SUCCESS)
+    return capsys.readouterr().out.strip()
+
+
+def test_a_queued_run_renders_the_handle_it_had_to_derive(
+    capsys, deployment_client, tmp_path
+):
+    """The ack names no execution of its own -- the id is only in the endpoint
+    it hands back -- so raw would otherwise have nothing true to print."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(structure_file=ACK)
+
+    code, out, _ = run(
+        capsys, "docstudio", "deployment", "run", "my-api", str(doc), "--no-wait"
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["meta"]["execution_id"] == "e-1"
+
+    deployment_client(structure_file=ACK)
+    assert (
+        _raw(capsys, "docstudio", "deployment", "run", "my-api", str(doc), "--no-wait")
+        == "e-1"
+    )
+
+
+def test_a_still_running_status_never_renders_as_an_empty_result(
+    capsys, deployment_client
+):
+    """`extraction_result` is present and null while the job runs. Printing that
+    tells a polling caller the same thing as a finished job with no output."""
+    deployment_client(check_execution_status=PENDING_STATUS)
+    code, out, _ = run(capsys, "docstudio", "deployment", "status", "my-api", "e-1")
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["execution_status"] == "EXECUTING"
+
+    deployment_client(check_execution_status=PENDING_STATUS)
+    assert (
+        _raw(capsys, "docstudio", "deployment", "status", "my-api", "e-1") == "EXECUTING"
+    )
+
+
+def test_a_finished_status_renders_its_result(capsys, deployment_client):
+    deployment_client(check_execution_status=DONE_STATUS)
+    code, out, _ = run(capsys, "docstudio", "deployment", "status", "my-api", "e-1")
+    assert envelope(out)["data"]["extraction_result"] == "the answer"
+
+    deployment_client(check_execution_status=DONE_STATUS)
+    assert (
+        _raw(capsys, "docstudio", "deployment", "status", "my-api", "e-1") == "the answer"
+    )
+
+
+def test_raw_fails_rather_than_printing_something_else(capsys, deployment_client):
+    """An answer carrying none of the declared fields has no raw form. Dumping
+    the whole payload answers a question the caller did not ask."""
+    deployment_client(check_execution_status={"status_code": 200, "unexpected": 1})
+    code = main(["-o", "raw", "docstudio", "deployment", "status", "my-api", "e-1"])
+    out, err = capsys.readouterr()
+    assert code == int(ExitCode.GENERIC)
+    assert "unexpected" not in out
+    assert "extraction_result" in out or "extraction_result" in err
 
 
 def test_an_error_status_from_a_run_is_a_failure(capsys, deployment_client, tmp_path):

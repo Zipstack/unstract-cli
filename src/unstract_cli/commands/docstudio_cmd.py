@@ -14,9 +14,10 @@ import click
 from unstract.api_deployments.client import APIDeploymentsClient
 
 from unstract_cli.app import Context, deployment_group, pass_context
-from unstract_cli.commands.common import finish, raw_field, wait_options
+from unstract_cli.commands.common import finish, raw_fields, wait_options
 from unstract_cli.core.clients import (
     deployment,
+    naming_aliases,
     raise_for_result,
     translated,
     translating,
@@ -36,15 +37,18 @@ RUN_POLL = PollSpec(
     status_field=("execution_status", "status"),
 )
 
-#: `--output raw` prints one field rather than the whole payload.
-RAW_FIELD = "extraction_result"
+#: What `--output raw` prints, best answer first. A queued run answers with a
+#: handle and no result, and a status read answers with a state until there is
+#: one, so a single field would be wrong for two of the three shapes.
+RUN_RAW = ("extraction_result", "execution_id")
+STATUS_RAW = ("extraction_result", "execution_status")
 
 #: Parameters the run POST and the status GET share: what was asked for in the
 #: run has to be asked for again when the result is read.
 _SHARED_WITH_STATUS = ("include_metadata", "include_metrics", "include_extracted_text")
 
 
-@raw_field(RAW_FIELD)
+@raw_fields(*RUN_RAW)
 @deployment_group.command("run")
 @click.argument("target")
 @click.argument("files", nargs=-1, required=True, type=click.Path(exists=True))
@@ -77,21 +81,17 @@ def run(
     sent = requested(params)
     if save:
         preflight(save)
-    with translated(endpoint=client.api_url):
+    with naming_aliases(ctx.config, target), translated(endpoint=client.api_url):
         # Queued execution, so the request returns a handle instead of holding
         # the connection open for the length of the job.
         started = client.structure_file(list(files), timeout=0, **sent)
         raise_for_result(started, endpoint=client.api_url)
 
         if not wait:
-            # An ack carries no extraction result, so what `--output raw` prints
-            # and what the caller has to poll with are both the handle.
-            finish(
-                ctx,
-                started,
-                raw_field="execution_id",
-                meta=_handle_meta(started),
-            )
+            # The ack names no execution of its own: the handle has to be read
+            # back out of the endpoint it hands you, and `meta` is where the
+            # CLI puts what it had to derive.
+            finish(ctx, started, raw_fields=RUN_RAW, meta=_handle_meta(started))
             return
 
         result = wait_for_completion(
@@ -109,7 +109,7 @@ def run(
         )
     # A waited result names no execution, so the handle is returned as meta for
     # correlation.
-    finish(ctx, result, raw_field=RAW_FIELD, meta=_handle_meta(started))
+    finish(ctx, result, raw_fields=RUN_RAW, meta=_handle_meta(started))
 
 
 def _handle_meta(started: dict[str, Any]) -> dict[str, Any]:
@@ -137,7 +137,7 @@ def _status_poller(
     return translating(poll, client.api_url)
 
 
-@raw_field(RAW_FIELD)
+@raw_fields(*STATUS_RAW)
 @deployment_group.command("status")
 @click.argument("target")
 @click.argument("execution_id")
@@ -152,7 +152,7 @@ def status(ctx: Context, target: str, execution_id: str, **params: Any) -> None:
     """Report the state of a running or finished execution."""
     client = deployment(ctx.config, target, ctx.transport_timeout)
     endpoint = f"{client.api_url}?execution_id={execution_id}"
-    with translated(endpoint=client.api_url):
+    with naming_aliases(ctx.config, target), translated(endpoint=client.api_url):
         result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
             raise_for_result(result, endpoint=client.api_url)
@@ -168,7 +168,7 @@ def status(ctx: Context, target: str, execution_id: str, **params: Any) -> None:
             hint="Inspect `details` for the per-file error, or check the execution logs.",
             extra={"execution_id": execution_id},
         )
-    finish(ctx, result, raw_field=RAW_FIELD)
+    finish(ctx, result, raw_fields=STATUS_RAW)
 
 
 __all__ = ["run", "status"]

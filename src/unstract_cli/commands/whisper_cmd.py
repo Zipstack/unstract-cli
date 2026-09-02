@@ -13,7 +13,7 @@ import click
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
 from unstract_cli.app import Context, pass_context, whisper_group
-from unstract_cli.commands.common import finish, raw_field, wait_options
+from unstract_cli.commands.common import finish, raw_fields, wait_options
 from unstract_cli.core.clients import llmwhisperer, translated, translating
 from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
 from unstract_cli.core.params import requested, spec_options
@@ -39,14 +39,14 @@ EXTRACT_POLL = PollSpec(
 
 #: `--output raw` prints one field rather than the whole payload. Extraction
 #: results carry the text under this name.
-RAW_FIELD = "result_text"
+RAW_TEXT = ("result_text",)
 
 
 def _is_url(source: str) -> bool:
     return source.startswith(("http://", "https://"))
 
 
-@raw_field(RAW_FIELD)
+@raw_fields(*RAW_TEXT)
 @whisper_group.command("extract")
 @click.argument("source")
 @wait_options()
@@ -121,7 +121,7 @@ def extract(
     finish(
         ctx,
         result,
-        raw_field=RAW_FIELD,
+        raw_fields=RAW_TEXT,
         meta={"whisper_hash": accepted.get("whisper_hash")}
         if accepted.get("whisper_hash")
         else None,
@@ -174,7 +174,7 @@ def status(ctx: Context, whisper_hash: str) -> None:
     finish(ctx, result)
 
 
-@raw_field(RAW_FIELD)
+@raw_fields(*RAW_TEXT)
 @whisper_group.command("retrieve")
 @click.argument("whisper_hash")
 @click.option(
@@ -199,7 +199,7 @@ def retrieve(ctx: Context, whisper_hash: str, save: str | None) -> None:
     result = _extraction(payload)
     if save:
         persist(save, result)
-    finish(ctx, result, raw_field=RAW_FIELD)
+    finish(ctx, result, raw_fields=RAW_TEXT)
 
 
 @whisper_group.command("detail")
@@ -255,8 +255,19 @@ def highlights(
     sent.setdefault("lines", "")
 
     client = llmwhisperer(ctx.config)
-    with translated(endpoint="highlights"):
-        data = client.get_highlight_data(whisper_hash, **sent)
+    try:
+        with translated(endpoint="highlights"):
+            data = client.get_highlight_data(whisper_hash, **sent)
+    except CLIError as exc:
+        if exc.exit_code is ExitCode.VALIDATION:
+            # Line metadata is recorded during extraction or not at all, so the
+            # fix belongs to a call that has already been made and paid for.
+            exc.hint = (
+                "Line metadata exists only for an extraction run with "
+                "--add-line-nos. It cannot be added to this call: re-run "
+                "`whisper extract --add-line-nos` for the document."
+            )
+        raise
 
     if target_width and target_height:
         data = {

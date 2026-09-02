@@ -90,7 +90,7 @@ def test_table_and_raw_render_the_payload_not_the_envelope():
     env = envelope(data={"text": "hello"})
     assert "hello" in render(env, OutputFormat.TABLE)
     assert "ok" not in render(env, OutputFormat.TABLE)
-    assert render(env, OutputFormat.RAW, raw_field="text") == "hello"
+    assert render(env, OutputFormat.RAW, raw_fields=("text",)) == "hello"
 
 
 def test_raw_renders_the_error_when_the_run_failed():

@@ -123,3 +123,12 @@ def test_the_readme_table_lists_every_exit_code():
 def _is_code_row(row: str) -> bool:
     cells = row.split("|")
     return len(cells) > 2 and cells[1].strip().isdigit()
+
+
+def test_the_rejected_key_hint_does_not_blame_the_organisation():
+    """A key from another organisation cannot produce this: the resource is
+    resolved within its own organisation first, so that answers 404."""
+    hint = hint_for(401)
+    assert "organisation" not in hint
+    assert "does not cover" in hint
+    assert "organisation" in hint_for(404)

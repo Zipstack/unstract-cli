@@ -263,6 +263,25 @@ def test_an_existing_file_is_narrowed_before_the_secret_is_written(tmp_path, mon
     assert stat.S_IMODE(written.stat().st_mode) == 0o600
 
 
+def test_a_failed_write_leaves_the_previous_config_intact(tmp_path, monkeypatch):
+    """Truncating the real file first would trade a working config for an empty
+    one whenever anything after the truncate failed."""
+    path = tmp_path / "config.toml"
+    path.write_text('default_profile = "keep"\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        config_module.tomli_w,
+        "dump",
+        lambda doc, fh: (_ for _ in ()).throw(OSError("no space left on device")),
+    )
+    with pytest.raises(OSError):
+        save_config(ConfigFile(profiles=starter_profiles()), path)
+
+    assert path.read_text(encoding="utf-8") == 'default_profile = "keep"\n'
+    # And nothing half-written left behind next to it.
+    assert [p.name for p in tmp_path.iterdir()] == ["config.toml"]
+
+
 def test_loose_permissions_warn_rather_than_fail(write_config):
     path = write_config(PROFILE_TOML)
     path.chmod(0o644)

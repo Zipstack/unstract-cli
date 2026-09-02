@@ -15,9 +15,9 @@ environment variables; that is the expected mode in CI and agent sandboxes.
 
 from __future__ import annotations
 
-import errno
 import os
 import stat
+import tempfile
 import tomllib
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -303,25 +303,30 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
         doc["default_profile"] = cfg.default_profile
     doc["profiles"] = _restored_profiles(cfg, target)
 
-    # O_NOFOLLOW because this write truncates, and the path is not always one
-    # the user chose.
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(target, flags, 0o600)
-    except OSError as exc:
-        if exc.errno not in (errno.ELOOP, errno.EMLINK):
-            raise
+    # The path is not always one the user chose, and replacing a symlink would
+    # silently turn a deliberate one into a regular file.
+    if target.is_symlink():
         raise ConfigError(
             f"Refusing to write config through the symlink at {target}: it would "
             f"overwrite {os.readlink(target)} instead. Pass --config with the path "
             "of the real file."
-        ) from exc
-    # The mode above only applies to a file this call creates, so an existing
-    # wider one is narrowed before any content goes through the descriptor:
-    # after the write is a window in which the new secret is world-readable.
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        tomli_w.dump(doc, fh)
+        )
+
+    # Written through a temporary file and renamed into place. Truncating the
+    # real one first would destroy a working config if anything below it failed,
+    # and `mkstemp` both names the temporary unpredictably -- a guessable
+    # sibling in a shared directory is a symlink waiting to be planted -- and
+    # creates it 0600, which is the mode the rename then gives the config, with
+    # no window in which the new credential is readable more widely.
+    handle_fd, name = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    tmp = Path(name)
+    try:
+        with os.fdopen(handle_fd, "wb") as fh:
+            tomli_w.dump(doc, fh)
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return target
 
 

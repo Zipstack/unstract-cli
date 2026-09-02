@@ -318,7 +318,17 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     # sibling in a shared directory is a symlink waiting to be planted -- and
     # creates it 0600, which is the mode the rename then gives the config, with
     # no window in which the new credential is readable more widely.
-    handle_fd, name = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    try:
+        handle_fd, name = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    except OSError as exc:
+        # Renaming into place is what makes the write atomic, and that needs the
+        # directory, not just the file. Writing the file in place instead would
+        # put back the truncate this replaced.
+        raise ConfigError(
+            f"Cannot write {target}: its directory {target.parent} is not "
+            f"writable, and the config is replaced rather than overwritten so a "
+            f"failed write cannot destroy it ({exc.strerror})."
+        ) from exc
     tmp = Path(name)
     try:
         with os.fdopen(handle_fd, "wb") as fh:

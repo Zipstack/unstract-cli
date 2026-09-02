@@ -282,6 +282,21 @@ def test_a_failed_write_leaves_the_previous_config_intact(tmp_path, monkeypatch)
     assert [p.name for p in tmp_path.iterdir()] == ["config.toml"]
 
 
+def test_an_unwritable_directory_is_reported_rather_than_raised(tmp_path):
+    """Replacing the file needs the directory, which overwriting it did not, so
+    the case says what is wrong instead of surfacing a bare PermissionError."""
+    nested = tmp_path / "locked"
+    nested.mkdir()
+    path = nested / "config.toml"
+    path.write_text("", encoding="utf-8")
+    nested.chmod(0o500)
+    try:
+        with pytest.raises(ConfigError, match="not writable"):
+            save_config(ConfigFile(profiles=starter_profiles()), path)
+    finally:
+        nested.chmod(0o700)
+
+
 def test_loose_permissions_warn_rather_than_fail(write_config):
     path = write_config(PROFILE_TOML)
     path.chmod(0o644)

@@ -15,6 +15,7 @@ environment variables; that is the expected mode in CI and agent sandboxes.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 import tempfile
@@ -333,7 +334,20 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     try:
         with os.fdopen(handle_fd, "wb") as fh:
             tomli_w.dump(doc, fh)
+            # The rename only replaces one whole config with another if the new
+            # bytes are on the disk before it happens. Without this a crash can
+            # leave the rename standing over content that never landed.
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, target)
+        # And the rename is itself a directory change that has to be persisted;
+        # syncing the file does not cover the entry that now points at it.
+        with contextlib.suppress(OSError):  # not every platform syncs a directory
+            dir_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

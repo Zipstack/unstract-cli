@@ -282,6 +282,30 @@ def test_a_failed_write_leaves_the_previous_config_intact(tmp_path, monkeypatch)
     assert [p.name for p in tmp_path.iterdir()] == ["config.toml"]
 
 
+def test_the_replacement_is_synced_before_it_is_renamed(tmp_path, monkeypatch):
+    """A rename that outruns its own bytes survives a crash while the content
+    does not, which turns a working config into an empty one."""
+    path = tmp_path / "config.toml"
+    order: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(
+        config_module.os,
+        "fsync",
+        lambda fd: (order.append("fsync"), real_fsync(fd))[1],
+    )
+    monkeypatch.setattr(
+        config_module.os,
+        "replace",
+        lambda src, dst: (order.append("replace"), real_replace(src, dst))[1],
+    )
+
+    save_config(ConfigFile(profiles=starter_profiles()), path)
+
+    assert order[: order.index("replace")] == ["fsync"]
+    # The last one is the directory, so the rename itself is on the disk too.
+    assert order[-1] == "fsync"
+
+
 def test_an_unwritable_directory_is_reported_rather_than_raised(tmp_path):
     """Replacing the file needs the directory, which overwriting it did not, so
     the case says what is wrong instead of surfacing a bare PermissionError."""

@@ -1,0 +1,54 @@
+[project]
+name = "unstract-cli"
+# One source of truth, so the release workflow bumps a single file.
+dynamic = ["version"]
+description = "Unified, LLM-friendly CLI for the Unstract suite of products"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    # Pinned to a major: `--discover` describes the CLI by reading Click's own
+    # objects -- a parameter's default, flags, type and choices, and a group's
+    # commands -- so a major that reshapes those reshapes the published contract.
+    "click>=8.1,<9",
+    # Writing the config file only; reading it uses the stdlib `tomllib`.
+    "tomli-w>=1.0",
+    # Pinned exactly: the CLI derives its flags and help text from these
+    # clients, so one that moves changes the CLI's surface. Each release re-pins
+    # deliberately, against the specs vendored in `src/unstract_cli/specs`.
+    "unstract-client==1.6.0",
+    "llmwhisperer-client==2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+unstract = "unstract_cli.__main__:main"
+# An alias for anyone who has the name `unstract` taken by something else.
+unstract-cli = "unstract_cli.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/unstract_cli/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/unstract_cli"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

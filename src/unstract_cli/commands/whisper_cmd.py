@@ -1,0 +1,385 @@
+"""`unstract whisper ...` -- text and layout extraction.
+
+Every flag below the command name is derived from the committed spec, so this
+module holds only what the spec cannot say: which parameter is an argument,
+which the CLI owns, and how a result is polled for and retrieved.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import click
+from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
+
+from unstract_cli.app import Context, pass_context, whisper_group
+from unstract_cli.commands.common import finish, raw_fields, wait_options
+from unstract_cli.core.clients import llmwhisperer, translated, translating
+from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
+from unstract_cli.core.params import requested, spec_options
+from unstract_cli.core.poll import (
+    PollSpec,
+    classify,
+    extract_status,
+    persist,
+    preflight,
+    wait_for_completion,
+)
+
+PRODUCT = "llmwhisperer"
+
+#: Terminal states as the body reports them. `unknown` is one: the service
+#: returns it for a hash it no longer knows, which no amount of polling changes.
+EXTRACT_POLL = PollSpec(
+    handle_field="whisper_hash",
+    terminal_success=("processed",),
+    terminal_failure=("error", "unknown"),
+    status_field="status",
+)
+
+#: `--output raw` prints one field rather than the whole payload. Extraction
+#: results carry the text under this name.
+RAW_TEXT = ("result_text",)
+
+
+def _is_url(source: str) -> bool:
+    return source.startswith(("http://", "https://"))
+
+
+@raw_fields(*RAW_TEXT)
+@whisper_group.command("extract")
+@click.argument("source")
+@wait_options()
+@spec_options(
+    PRODUCT,
+    "extract",
+    client_method=LLMWhispererClientV2.whisper,
+    # `url` is the SOURCE argument when it looks like one.
+    exclude=("url",),
+)
+@pass_context
+def extract(
+    ctx: Context,
+    source: str,
+    wait: bool,
+    interval: float,
+    wait_timeout: float,
+    save: str | None,
+    **params: Any,
+) -> None:
+    """Extract text from a document, given a file path or a URL.
+
+    With --wait (the default) this returns the extracted text. With --no-wait it
+    returns the whisper_hash, and `whisper status` and `whisper retrieve` take
+    it from there.
+    """
+    client = llmwhisperer(ctx.config)
+    sent = requested(params)
+    if save:
+        preflight(save)
+
+    if sent.get("use_webhook") and wait:
+        raise CLIError(
+            "--wait and --use-webhook are mutually exclusive.",
+            ExitCode.USAGE,
+            hint=(
+                "A webhook delivers the result itself; pass --no-wait to submit "
+                "and return immediately."
+            ),
+        )
+
+    with translated(endpoint="whisper"):
+        # The CLI's own poll loop is used over the client's so that waiting
+        # behaves the same for every product.
+        accepted = client.whisper(
+            **({"url": source} if _is_url(source) else {"file_path": source}),
+            **sent,
+            wait_for_completion=False,
+        )
+
+        if not wait:
+            finish(ctx, accepted)
+            return
+
+        result = wait_for_completion(
+            initial=accepted,
+            spec=EXTRACT_POLL,
+            poll=translating(client.whisper_status, "whisper-status"),
+            retrieve=translating(
+                lambda handle: _extraction(client.whisper_retrieve(handle)),
+                "whisper-retrieve",
+            ),
+            save=save,
+            interval=interval,
+            timeout=wait_timeout,
+            on_status=lambda status: (
+                click.echo(f"status: {status}", err=True) if not ctx.quiet else None
+            ),
+        )
+    # Waiting returns the text, which identifies the job nowhere; the hash is
+    # what a later status, retrieve or highlights call needs.
+    finish(
+        ctx,
+        result,
+        raw_fields=RAW_TEXT,
+        meta={"whisper_hash": accepted.get("whisper_hash")}
+        if accepted.get("whisper_hash")
+        else None,
+    )
+
+
+def _extraction(payload: Any) -> Any:
+    """The extracted result out of a retrieve response.
+
+    A retrieve is the acknowledging read, so an empty result here is a document
+    that was processed, billed and consumed for nothing -- reporting it as a
+    success would hide that.
+    """
+    result = payload.get("extraction", payload) if isinstance(payload, dict) else payload
+    if not result:
+        raise CLIError(
+            "The service returned no extraction for a completed job.",
+            ExitCode.SERVER_ERROR,
+            details=payload,
+            hint=(
+                "The read has been acknowledged, so it cannot be repeated. "
+                "`details` carries the response exactly as it arrived."
+            ),
+        )
+    return result
+
+
+@whisper_group.command("status")
+@click.argument("whisper_hash")
+@pass_context
+def status(ctx: Context, whisper_hash: str) -> None:
+    """Report the state of a submitted extraction."""
+    client = llmwhisperer(ctx.config)
+    with translated(endpoint="whisper-status"):
+        result = client.whisper_status(whisper_hash)
+    # A failed extraction is reported inside an HTTP 200, so the status code
+    # alone would call this a success.
+    if classify(result, EXTRACT_POLL) == "failure":
+        raise CLIError(
+            f"Extraction finished with status {extract_status(result)!r}.",
+            ExitCode.VALIDATION,
+            details=result,
+            endpoint="whisper-status",
+            hint=(
+                "`details` carries the service's own message. An `unknown` status "
+                "means the service no longer holds this hash."
+            ),
+            extra={"whisper_hash": whisper_hash},
+        )
+    finish(ctx, result)
+
+
+@raw_fields(*RAW_TEXT)
+@whisper_group.command("retrieve")
+@click.argument("whisper_hash")
+@click.option(
+    "--save",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Write the result here before printing it.",
+)
+@pass_context
+def retrieve(ctx: Context, whisper_hash: str, save: str | None) -> None:
+    """Fetch a finished extraction.
+
+    A result can be read exactly once, so --save writes it to disk before it is
+    printed: a broken pipe or a full terminal buffer after the read cannot be
+    recovered by asking again.
+    """
+    client = llmwhisperer(ctx.config)
+    if save:
+        preflight(save)
+    with translated(endpoint="whisper-retrieve"):
+        payload = client.whisper_retrieve(whisper_hash)
+    result = _extraction(payload)
+    if save:
+        persist(save, result)
+    finish(ctx, result, raw_fields=RAW_TEXT)
+
+
+@whisper_group.command("detail")
+@click.argument("whisper_hash")
+@pass_context
+def detail(ctx: Context, whisper_hash: str) -> None:
+    """Report processing detail for one extraction."""
+    client = llmwhisperer(ctx.config)
+    with translated(endpoint="whisper-detail"):
+        finish(ctx, client.whisper_detail(whisper_hash))
+
+
+@whisper_group.command("highlights")
+@click.argument("whisper_hash")
+@spec_options(
+    PRODUCT,
+    "highlights",
+    client_method=LLMWhispererClientV2.get_highlight_data,
+    exclude=("whisper_hash",),
+)
+@click.option(
+    "--target-width",
+    type=int,
+    default=None,
+    help="Width of the page as displayed. With --target-height, adds a bounding box per line.",
+)
+@click.option(
+    "--target-height",
+    type=int,
+    default=None,
+    help="Height of the page as displayed.",
+)
+@pass_context
+def highlights(
+    ctx: Context,
+    whisper_hash: str,
+    target_width: int | None,
+    target_height: int | None,
+    **params: Any,
+) -> None:
+    """Fetch line metadata, optionally scaled to a page you are rendering.
+
+    The scaling is arithmetic on the metadata, not a second request, so it is
+    folded in here rather than being a command of its own.
+    """
+    sent = requested(params)
+    if not sent.get("lines") and not sent.get("extract_all_lines"):
+        raise CLIError(
+            "Nothing to fetch: pass --lines, or --extract-all-lines for all of them.",
+            ExitCode.USAGE,
+        )
+    # The client takes `lines` positionally whether or not the request needs it.
+    sent.setdefault("lines", "")
+
+    client = llmwhisperer(ctx.config)
+    try:
+        with translated(endpoint="highlights"):
+            data = client.get_highlight_data(whisper_hash, **sent)
+    except CLIError as exc:
+        if exc.exit_code is ExitCode.VALIDATION:
+            # Line metadata is recorded during extraction or not at all, so the
+            # fix belongs to a call that has already been made and paid for.
+            exc.hint = (
+                "Line metadata exists only for an extraction run with "
+                "--add-line-nos. It cannot be added to this call: re-run "
+                "`whisper extract --add-line-nos` for the document."
+            )
+        raise
+
+    if target_width and target_height:
+        data = {
+            "lines": data,
+            "rects": _bounding_boxes(client, data, target_width, target_height),
+        }
+    finish(ctx, data)
+
+
+def _line_metadata(value: Any) -> list[int] | None:
+    """The `[page, base_y, height, page_height]` list the geometry needs.
+
+    The service returns it as a named object carrying the list under `raw`, and
+    the client's geometry takes the bare list, so both shapes are read.
+    """
+    if isinstance(value, dict):
+        value = value.get("raw")
+    if (
+        isinstance(value, list)
+        and len(value) >= 4
+        and all(isinstance(item, (int, float)) for item in value)
+        # The page height is a divisor in the scaling, and the service reports a
+        # line it has no geometry for as all zeros.
+        and value[3]
+    ):
+        return value
+    return None
+
+
+def _bounding_boxes(
+    client: LLMWhispererClientV2,
+    data: Any,
+    target_width: int,
+    target_height: int,
+) -> dict[str, list[int]]:
+    """(page, x1, y1, x2, y2) per line, for the lines that carry metadata."""
+    if not isinstance(data, dict):
+        return {}
+    lines = {line: _line_metadata(value) for line, value in data.items()}
+    return {
+        str(line): list(client.get_highlight_rect(metadata, target_width, target_height))
+        for line, metadata in lines.items()
+        if metadata is not None
+    }
+
+
+@whisper_group.command("usage")
+@pass_context
+def usage(ctx: Context) -> None:
+    """Report this key's usage and remaining quota."""
+    client = llmwhisperer(ctx.config)
+    with translated(endpoint="get-usage-info"):
+        finish(ctx, client.get_usage_info())
+
+
+@whisper_group.group("webhook")
+def webhook_group() -> None:
+    """Manage the webhooks an extraction can deliver its result to."""
+
+
+@webhook_group.command("create")
+@click.argument("name")
+@click.option("--url", required=True, help="Where the result is delivered.")
+@click.option("--auth-token", required=True, help="Token sent with the delivery.")
+@pass_context
+def webhook_create(ctx: Context, name: str, url: str, auth_token: str) -> None:
+    """Register a webhook."""
+    remember_secret(auth_token)
+    client = llmwhisperer(ctx.config)
+    with translated(endpoint="whisper-manage-callback"):
+        finish(ctx, client.register_webhook(url, auth_token, name))
+
+
+@webhook_group.command("update")
+@click.argument("name")
+@click.option("--url", required=True, help="Where the result is delivered.")
+@click.option("--auth-token", required=True, help="Token sent with the delivery.")
+@pass_context
+def webhook_update(ctx: Context, name: str, url: str, auth_token: str) -> None:
+    """Replace a webhook's URL and token."""
+    remember_secret(auth_token)
+    client = llmwhisperer(ctx.config)
+    with translated(endpoint="whisper-manage-callback"):
+        finish(ctx, client.update_webhook_details(name, url, auth_token))
+
+
+@webhook_group.command("get")
+@click.argument("name")
+@pass_context
+def webhook_get(ctx: Context, name: str) -> None:
+    """Show one webhook's configuration.
+
+    The token is reported as redacted, including for a webhook registered
+    elsewhere: it authenticates deliveries wherever it was set, and this output
+    is as likely to land in a log as on a screen.
+    """
+    client = llmwhisperer(ctx.config)
+    with translated(endpoint="whisper-manage-callback"):
+        details = client.get_webhook_details(name)
+    if isinstance(details, dict):
+        remember_secret(details.get("auth_token"))
+    finish(ctx, details)
+
+
+@webhook_group.command("delete")
+@click.argument("name")
+@pass_context
+def webhook_delete(ctx: Context, name: str) -> None:
+    """Remove a webhook."""
+    client = llmwhisperer(ctx.config)
+    with translated(endpoint="whisper-manage-callback"):
+        finish(ctx, client.delete_webhook(name))
+
+
+__all__ = ["extract", "highlights", "retrieve", "status", "usage", "webhook_group"]

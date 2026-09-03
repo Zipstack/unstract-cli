@@ -1,0 +1,7 @@
+# Per-flag overrides for spec-derived options: [<product>.<operationId>.<param>].
+#
+# Only what the spec cannot express belongs here. Names, types, defaults and
+# allowed values are read from the spec, and help text falls back to the
+# published client's own docstring, so an entry is needed only to add a short
+# flag, narrow a value list on purpose, hide a parameter the CLI owns, or reword
+# help the client states poorly.

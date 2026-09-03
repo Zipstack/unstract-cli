@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # Offline by design: no network, no credentials, sub-second. Live round trips
+  # are a manual pre-release step, not a per-PR gate.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12
+      - run: uv pip install -e '.[dev]'
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+      # `uv run` resolves from uv.lock, whose click sits in the middle of the
+      # range the pin allows. Both ends are what an install in the wild gets,
+      # and discovery is a published contract read out of Click's own objects,
+      # so both ends are run and their answers compared.
+      - run: uv pip install 'click~=8.1.0'
+      - run: .venv/bin/python -m pytest -q
+      - run: .venv/bin/python -m unstract_cli -o json --discover full > floor.json
+      - run: uv pip install -U click
+      - run: .venv/bin/python -m pytest -q
+      - run: .venv/bin/python -m unstract_cli -o json --discover full > latest.json
+      - run: diff floor.json latest.json

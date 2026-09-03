@@ -1,0 +1,172 @@
+name: Release Tag and Publish Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: "Version bump type. `none` publishes the version already in the repo, which is what the first release needs."
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - none
+      pre_release:
+        description: "Publish a release candidate (`<version>rcN`) instead of the version itself. Dispatch again with this off to promote the same version to stable."
+        required: false
+        default: false
+        type: boolean
+      release_notes:
+        description: "Release notes (optional)"
+        required: false
+        type: string
+
+jobs:
+  release-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Publishing is by PyPI Trusted Publisher, so there is no API token.
+      id-token: write
+    steps:
+      - name: Generate GitHub App Token
+        id: generate-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PUSH_TO_MAIN_APP_ID }}
+          private-key: ${{ secrets.PUSH_TO_MAIN_APP_PRIVATE_KEY }}
+          owner: Zipstack
+          repositories: |
+            unstract-cli
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      # The same install as ci.yml, so what the release run lints and tests is
+      # what the PR gate lints and tests.
+      - run: uv venv --python 3.12
+      - run: uv pip install -e '.[dev]'
+
+      # Staged locally only: nothing is committed, tagged or released until the
+      # checks, the build and the publish have all passed, so a failure leaves
+      # main untouched.
+      - name: Compute new version
+        id: version
+        run: |
+          VERSION_FILE=src/unstract_cli/__init__.py
+          CURRENT_VERSION=$(sed -nE 's/^__version__ = "(.*)"/\1/p' "$VERSION_FILE")
+          echo "Current version: $CURRENT_VERSION"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          case "${{ github.event.inputs.version_bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+          NEXT_VERSION="$MAJOR.$MINOR.$PATCH"
+
+          # A pre-release is a candidate for NEXT_VERSION, not a version of its
+          # own, so it never moves the committed one: the file keeps naming the
+          # last stable release, and repeat dispatches count up from the rc tags
+          # already published for that target.
+          if [ "${{ github.event.inputs.pre_release }}" = "true" ]; then
+            HIGHEST_RC=$(git tag -l "v${NEXT_VERSION}rc*" \
+              | sed -nE "s/^v${NEXT_VERSION}rc([0-9]+)$/\1/p" | sort -n | tail -1)
+            NEW_VERSION="${NEXT_VERSION}rc$(( ${HIGHEST_RC:-0} + 1 ))"
+          else
+            NEW_VERSION="$NEXT_VERSION"
+          fi
+
+          echo "New version: $NEW_VERSION"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          sed -i "s/^__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" "$VERSION_FILE"
+
+          if git rev-parse -q --verify "refs/tags/v$NEW_VERSION" >/dev/null; then
+            echo "Tag v$NEW_VERSION already exists. Exiting..."
+            exit 1
+          fi
+
+      - name: Verify version update
+        run: |
+          BUILT_VERSION=$(uv run python -c "import unstract_cli; print(unstract_cli.__version__)")
+          echo "Package version: $BUILT_VERSION"
+          echo "Target version: ${{ steps.version.outputs.version }}"
+          if [ "$BUILT_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "Version mismatch! Exiting..."
+            exit 1
+          fi
+
+      - name: Run linting
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Build package
+        run: uv build
+
+      # Publishing is the only step that cannot be undone, so the git metadata
+      # is written after it: a failure before this point leaves nothing to
+      # unpublish, and one after it is retried by hand against a live artifact.
+      - name: Publish to PyPI
+        run: uv publish
+
+      - name: Commit version bump and create release
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.version }}"
+
+          # A pre-release leaves the committed version alone, and `none`
+          # publishes the version already in the file, so both reach here with
+          # nothing to commit.
+          if [ "${{ github.event.inputs.pre_release }}" = "true" ]; then
+            git checkout -- src/unstract_cli/__init__.py
+          elif ! git diff --quiet; then
+            git add src/unstract_cli/__init__.py
+            git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+            git push origin main
+          fi
+
+          git tag "v$NEW_VERSION"
+          git push origin "v$NEW_VERSION"
+
+          RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
+          if [ -z "$RELEASE_NOTES" ]; then
+            gh release create "v$NEW_VERSION" \
+              --title "Release v$NEW_VERSION" \
+              --generate-notes \
+              ${{ github.event.inputs.pre_release == 'true' && '--prerelease' || '' }}
+          else
+            gh release create "v$NEW_VERSION" \
+              --title "Release v$NEW_VERSION" \
+              --notes "$RELEASE_NOTES" \
+              --generate-notes \
+              ${{ github.event.inputs.pre_release == 'true' && '--prerelease' || '' }}
+          fi
+
+          echo "Created release v$NEW_VERSION"
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+
+      - name: Success message
+        run: |
+          echo "Published ${{ steps.version.outputs.version }} to PyPI with uv publish using Trusted Publishers"
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}"
+          echo "PyPI: https://pypi.org/project/unstract-cli/${{ steps.version.outputs.version }}/"

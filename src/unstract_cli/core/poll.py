@@ -137,6 +137,23 @@ def persist(path: str | Path, payload: Any) -> Path:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        # Re-checked rather than taken on trust from the preflight: the target
+        # can become a link while the request that produced this result is in
+        # flight, and the rename would then destroy it.
+        if target.is_symlink():
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise CLIError(
+                f"{path!r} became a symlink to {os.readlink(target)} while the "
+                "result was being fetched: saving would replace the link rather "
+                "than update what it points at.",
+                ExitCode.SAVE_FAILED,
+                details=payload,
+                hint=(
+                    "`details` carries the result. Save it to the real path -- it "
+                    "has been read already, and will not be served again."
+                ),
+            )
         os.replace(tmp, target)
     except OSError as exc:
         if tmp is not None:

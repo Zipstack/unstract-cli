@@ -256,6 +256,27 @@ def test_a_symlinked_save_target_is_refused_before_anything_is_read(tmp_path):
     assert real.read_text() == "previous"
 
 
+def test_a_target_that_became_a_symlink_is_not_replaced(tmp_path):
+    """The preflight cannot hold the path for the length of the request, so the
+    rename checks again instead of destroying a link planted in between."""
+    real = tmp_path / "results.json"
+    real.write_text("previous")
+    link = tmp_path / "latest.json"
+    link.symlink_to(real)
+
+    with pytest.raises(CLIError) as caught:
+        persist(link, {"result_text": "IRREPLACEABLE"})
+
+    assert caught.value.exit_code is ExitCode.SAVE_FAILED
+    assert caught.value.details == {"result_text": "IRREPLACEABLE"}
+    assert link.is_symlink()
+    assert real.read_text() == "previous"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "latest.json",
+        "results.json",
+    ]
+
+
 def test_persist_writes_text_payloads_unwrapped(tmp_path):
     target = persist(tmp_path / "a.txt", "plain extracted text")
     assert target.read_text() == "plain extracted text"

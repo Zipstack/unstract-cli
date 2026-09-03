@@ -239,6 +239,23 @@ def test_a_planted_temporary_file_is_not_written_through(tmp_path):
     assert victim.read_text() == "do not touch"
 
 
+def test_a_symlinked_save_target_is_refused_before_anything_is_read(tmp_path):
+    """Saving over the link would turn it into a regular file and leave what it
+    stood for behind, so it is rejected while the result can still be re-read."""
+    real = tmp_path / "results.json"
+    real.write_text("previous")
+    link = tmp_path / "latest.json"
+    link.symlink_to(real)
+
+    with pytest.raises(CLIError) as caught:
+        preflight(link)
+
+    assert caught.value.exit_code is ExitCode.USAGE
+    assert "symlink" in str(caught.value)
+    assert link.is_symlink()
+    assert real.read_text() == "previous"
+
+
 def test_persist_writes_text_payloads_unwrapped(tmp_path):
     target = persist(tmp_path / "a.txt", "plain extracted text")
     assert target.read_text() == "plain extracted text"

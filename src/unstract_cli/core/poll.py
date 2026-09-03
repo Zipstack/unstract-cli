@@ -78,6 +78,18 @@ def preflight(path: str | Path) -> Path:
     flag must not have.
     """
     target = Path(path).expanduser()
+    # Saving here would replace the link itself, so it stops being a link and
+    # whatever it stands for stops being updated.
+    if target.is_symlink():
+        raise CLIError(
+            f"--save target {path!r} is a symlink to {os.readlink(target)}: the "
+            "result would replace the link rather than update what it points at.",
+            ExitCode.USAGE,
+            hint=(
+                "Pass the path of the real file; nothing has been read yet, so "
+                "nothing is lost."
+            ),
+        )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         existed = target.exists()

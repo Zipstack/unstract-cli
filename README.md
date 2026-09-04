@@ -18,6 +18,26 @@ instead.
 
 Or run it without installing: `uvx --from git+https://github.com/Zipstack/unstract-cli unstract --discover groups`.
 
+Prefer one file and no Python at all? Every release attaches a standalone binary
+for Linux (x86_64 and arm64) and Apple Silicon:
+
+```bash
+curl -Lo unstract https://github.com/Zipstack/unstract-cli/releases/latest/download/unstract-linux-x86_64
+chmod +x unstract && sudo mv unstract /usr/local/bin/
+```
+
+Substitute `unstract-linux-arm64` or `unstract-macos-arm64`; each asset has a
+`.sha256` beside it. Keep the name `unstract` when you move it into place — the
+CLI reports the name it was invoked as, so a binary left called
+`unstract-macos-arm64` says exactly that in `--version` and in every usage line.
+
+The binaries are unsigned. `curl` does not quarantine what it downloads, so
+macOS runs one as-is; a browser download does get quarantined, and needs
+`xattr -d com.apple.quarantine /usr/local/bin/unstract` once. The Linux binaries
+are built on Ubuntu 22.04, so they need glibc 2.35 or newer — on anything older
+(RHEL 9 and Amazon Linux 2023 are 2.34), the `uv` install above is the way in.
+There is no Windows or Intel-Mac binary; both are `uv tool install`.
+
 ## Output
 
 `unstract` prints a table by default — in a terminal and in a pipe alike, so
@@ -139,3 +159,27 @@ uv venv && uv pip install -e '.[dev]'
 uv run pytest   # offline; no network, no credentials
 uv run ruff check .
 ```
+
+The standalone binaries are built from `unstract.spec`, which is committed and
+hand-edited — `pyinstaller` regenerating it would drop the comments explaining
+why each option is set. Every pull request builds it, and a release builds one
+per platform. To reproduce one locally:
+
+```bash
+python3.12 -m venv .venv-freeze
+./.venv-freeze/bin/python -m pip install . 'pyinstaller==6.22.2'
+./.venv-freeze/bin/pyinstaller --clean --noconfirm unstract.spec
+scripts/smoke-binary.sh dist/unstract
+```
+
+The install is for the dependencies. `unstract_cli` itself is frozen from
+`src/`, because PyInstaller puts the entry script's own tree on the module
+search path ahead of anything installed — so an edit is picked up by a rebuild
+alone, and the spec reads the packaged specs and overlay out of `src/` too
+rather than out of site-packages, so the two cannot drift apart.
+
+`smoke-binary.sh` runs the binary under `env -i` with an empty `PATH`, which is
+the only way to see a missing module: a dev box has a Python that would answer
+the import. `--version` is not a trivial check there — importing the command
+modules derives every flag from the bundled specs, so it fails outright if the
+spec's `datas` came out wrong.

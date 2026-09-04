@@ -15,13 +15,13 @@ import pytest
 from unstract_cli.core.params import SPEC_FILES
 
 PROVENANCE = json.loads(
-    (resources.files("unstract_cli.specs") / "provenance.json").read_text("utf-8")
+    (resources.files("unstract_cli") / "specs" / "provenance.json").read_text("utf-8")
 )
 
 
 @pytest.mark.parametrize("filename", sorted(SPEC_FILES.values()))
 def test_each_vendored_spec_is_the_pinned_one(filename):
-    blob = (resources.files("unstract_cli.specs") / filename).read_bytes()
+    blob = (resources.files("unstract_cli") / "specs" / filename).read_bytes()
     assert hashlib.sha256(blob).hexdigest() == PROVENANCE[filename]["sha256"]
 
 

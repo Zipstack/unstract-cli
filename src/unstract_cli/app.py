@@ -12,6 +12,7 @@ from typing import Any
 
 import click
 
+from unstract_cli import __version__
 from unstract_cli.commands.config_cmd import config_group
 from unstract_cli.config import (
     DOCSTUDIO,
@@ -139,7 +140,10 @@ pass_context = click.make_pass_decorator(Context, ensure=True)
     default=None,
     help="Describe this CLI as JSON instead of running a command, useful for agents.",
 )
-@click.version_option(package_name="unstract-cli")
+# The version is passed rather than looked up: `importlib.metadata` has no
+# distribution to read inside a frozen binary, and `__init__.py` is already the
+# one place the release workflow bumps.
+@click.version_option(__version__, package_name="unstract-cli")
 @click.pass_context
 def cli(
     ctx: click.Context,

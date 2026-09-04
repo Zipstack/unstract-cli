@@ -26,6 +26,10 @@ on:
 jobs:
   release-and-publish:
     runs-on: ubuntu-latest
+    outputs:
+      # Consumed by `build-binaries`, which checks out the tag this run created
+      # rather than whatever the branch has moved on to.
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: write
       # Publishing is by PyPI Trusted Publisher, so there is no API token.
@@ -170,3 +174,81 @@ jobs:
           echo "Published ${{ steps.version.outputs.version }} to PyPI with uv publish using Trusted Publishers"
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}"
           echo "PyPI: https://pypi.org/project/unstract-cli/${{ steps.version.outputs.version }}/"
+
+  # `needs`, not a tag trigger: the release has to exist before anything attaches
+  # an asset to it. A tag-push workflow would race the `gh release create` above,
+  # and the loser is whichever calls POST /releases second -- which for `gh`
+  # means failing after PyPI has already published.
+  #
+  # PyInstaller does not cross-compile, so one runner per OS and architecture.
+  build-binaries:
+    needs: [release-and-publish]
+    permissions:
+      contents: write
+    strategy:
+      # One platform's toolchain breaking is not a reason to lose the other two.
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 rather than 24.04: a binary's glibc floor is its builder's, and
+          # 22.04's 2.35 still covers Ubuntu 22.04 and Debian 12, where 24.04's
+          # 2.39 would drop both.
+          - runner: ubuntu-22.04
+            asset: unstract-linux-x86_64
+          - runner: ubuntu-22.04-arm
+            asset: unstract-linux-arm64
+          - runner: macos-latest # arm64
+            asset: unstract-macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.release-and-publish.outputs.version }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A pre-release reverts `__init__.py` before tagging, so `v0.2.0rc1` is a
+      # tag whose tree still names the last stable version. `--version` reads
+      # that file, so without this the binary attached to an rc would report a
+      # version the release does not have. `-i.bak` because BSD sed on the macOS
+      # runner has no bare `-i`.
+      - name: Stamp the version being released
+        run: |
+          sed -i.bak 's/^__version__ = ".*"/__version__ = "${{ needs.release-and-publish.outputs.version }}"/' \
+            src/unstract_cli/__init__.py
+          rm -f src/unstract_cli/__init__.py.bak
+
+      # The install is for the dependencies: PyInstaller freezes `unstract_cli`
+      # itself from `src/`, which is why the stamp above lands in the binary.
+      - name: Install the CLI and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          python -m pip install 'pyinstaller==6.22.2'
+
+      - run: pyinstaller --clean --noconfirm unstract.spec
+
+      # The same checks ci.yml runs on every pull request, plus the version,
+      # which only a release knows.
+      - name: Check the binary
+        run: |
+          scripts/smoke-binary.sh dist/unstract \
+            "${{ needs.release-and-publish.outputs.version }}"
+
+      - name: Name and checksum
+        run: |
+          mv dist/unstract "${{ matrix.asset }}"
+          chmod +x "${{ matrix.asset }}"
+          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+
+      # The release already exists, so the default token is enough and the App
+      # credential never reaches a job that runs a build. `--clobber` makes a
+      # re-run idempotent.
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "v${{ needs.release-and-publish.outputs.version }}" \
+            "${{ matrix.asset }}" "${{ matrix.asset }}.sha256" --clobber

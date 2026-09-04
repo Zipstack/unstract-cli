@@ -53,7 +53,9 @@ def load_spec(product: str) -> dict[str, Any]:
         filename = SPEC_FILES[product]
     except KeyError:
         raise KeyError(f"No spec vendored for product {product!r}") from None
-    text = (resources.files("unstract_cli.specs") / filename).read_text(encoding="utf-8")
+    text = (resources.files("unstract_cli") / "specs" / filename).read_text(
+        encoding="utf-8"
+    )
     return json.loads(text)
 
 

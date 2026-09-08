@@ -41,10 +41,13 @@ if any of the below is unclear.
    commit — is what `tests/test_contract.py` guards: a spec parameter the pinned
    client has no argument for cannot become a flag.
 
-4. **Update `provenance.json`** for each spec you moved: the upstream `commit`
-   the client recorded, and the `sha256` of the file you just wrote
-   (`sha256sum src/unstract_cli/specs/<file>`). This is the record that lets the
-   next person tell a current copy from a stale one.
+4. **Update `provenance.json`** for each spec you moved. Check all four fields
+   against what that client's `tools/gen_sdk.sh` records — `repo` and `path` as
+   well as `commit` — because an upstream that moved its spec file leaves those
+   two stale and the tests cannot see it: they check the `sha256` and the entry
+   names, nothing about where the file came from. The `sha256` is of the file
+   you just wrote (`sha256sum src/unstract_cli/specs/<file>`). This record is
+   what lets the next person tell a current copy from a stale one.
 
 5. **Run the tests:** `uv run pytest -q`.
 
@@ -86,7 +89,10 @@ Release by dispatching **Release Tag and Publish Package** on `main`:
   first release of a version needs.
 - `pre_release: true` publishes `<next-version>rcN` and deliberately leaves the
   committed version alone, counting N up from the rc tags already published for
-  that target. Dispatch again with it off to promote the same version to stable.
+  that target. To promote to stable, dispatch again with it off **and the same
+  `version_bump`**: the workflow recomputes the target from that input every
+  time, so a different bump publishes a different version than the one the rc
+  tested.
 - It publishes to PyPI **before** it tags and releases, because publishing is the
   only step that cannot be undone: a failure before it leaves nothing to
   unpublish, and one after it is retried by hand against a live artifact.

@@ -55,12 +55,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.6.14"
+          enable-cache: true
 
       # The same install as ci.yml, so what the release run lints and tests is
       # what the PR gate lints and tests.
-      - run: uv venv --python 3.12
-      - run: uv pip install -e '.[dev]'
+      - run: uv sync --extra dev --python 3.12
 
       # Staged locally only: nothing is committed, tagged or released until the
       # checks, the build and the publish have all passed, so a failure leaves

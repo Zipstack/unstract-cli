@@ -1386,8 +1386,57 @@ def test_whoami_refuses_to_invent_a_profile_that_does_not_exist(
 
     code, out, _ = run(capsys, "-p", "cloud-uss", "auth", "whoami")
 
-    assert code == int(ExitCode.USAGE)
-    assert "cloud-uss" in json.dumps(envelope(out)["error"])
+    # SAVE_FAILED, not USAGE: the key resolved and only the note-taking failed,
+    # so the identity comes back in `details` rather than being discarded.
+    error = envelope(out)["error"]
+    assert code == int(ExitCode.SAVE_FAILED)
+    assert "cloud-uss" in json.dumps(error)
+    assert error["details"]["organization_id"] == IDENTITY["organization_id"]
+
+
+def test_whoami_writes_to_the_only_profile_when_no_default_is_named(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """The unknown-profile guard fired on the literal "cloud-us" fallback -- a
+    name the caller never typed -- for any file with profiles and no
+    `default_profile`, and advised creating a third that would shadow theirs.
+    """
+    path = _config_with(
+        tmp_path,
+        monkeypatch,
+        '[profiles.work.docstudio]\norg_id = ""\n',
+    )
+    platform_client(whoami=IDENTITY)
+
+    code, out, _ = run(capsys, "auth", "whoami")
+
+    assert code == 0
+    assert envelope(out)["meta"]["profile"] == "work"
+    written = path.read_text(encoding="utf-8")
+    assert f'org_id = "{IDENTITY["organization_id"]}"' in written
+    assert 'default_profile = "work"' in written
+
+
+def test_whoami_will_not_guess_between_several_unselected_profiles(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """Two profiles and no default: writing into either would be a guess. It
+    says so and hands the identity back, rather than naming `cloud-us`.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        '[profiles.work.docstudio]\norg_id = ""\n[profiles.home.docstudio]\norg_id = ""\n',
+    )
+    platform_client(whoami=IDENTITY)
+
+    code, out, _ = run(capsys, "auth", "whoami")
+    error = envelope(out)["error"]
+
+    assert code == int(ExitCode.SAVE_FAILED)
+    assert "cloud-us" not in json.dumps(error)
+    assert "-p <name>" in json.dumps(error)
+    assert error["details"]["organization_id"] == IDENTITY["organization_id"]
 
 
 def test_whoami_keeps_the_identity_when_the_write_fails(
@@ -1439,11 +1488,89 @@ def test_whoami_does_not_rewrite_a_discovered_project_config(
     monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
     platform_client(whoami=IDENTITY)
 
-    code, out, _ = run(capsys, "auth", "whoami")
+    code, out, envelope_err = run(capsys, "auth", "whoami")
+    body = envelope(out)
 
-    assert code == int(ExitCode.USAGE)
+    # Declining the write is not failing the call: README blesses a committed
+    # `.unstract.toml`, and `auth whoami` is the documented first command, so
+    # exiting 2 broke the quickstart and discarded the identity with it.
+    assert code == 0
+    assert body["data"]["organization_id"] == IDENTITY["organization_id"]
+    assert body["meta"]["saved"] is False
+    assert "project-local" in body["meta"]["reason"]
     assert "# hand written" in (project / ".unstract.toml").read_text()
     assert "org_TEAM" in (project / ".unstract.toml").read_text()
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["auth", "whoami"], None),
+        (["auth", "--transport-timeout", "12.5", "whoami"], 12.5),
+        (["docstudio", "deployment", "ls"], None),
+        (["docstudio", "--transport-timeout", "12.5", "deployment", "ls"], 12.5),
+    ],
+)
+def test_the_transport_timeout_flag_reaches_the_platform_client(
+    capsys, platform_client, monkeypatch, tmp_path, argv, expected
+):
+    """The flag was accepted on both groups and threaded through the factory,
+    but nothing asserted the commands passed it: deleting either call site left
+    the suite green. The fixture recorded the value and no test read it.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    client = platform_client(whoami=IDENTITY, list_api_deployments=_returns([]))
+
+    code, _, _ = run(capsys, *argv)
+
+    assert code == 0
+    assert client.built_with["timeout"] == expected
+
+
+@pytest.mark.parametrize("value", ["0", "0.0", "-1"])
+def test_a_non_positive_transport_timeout_is_a_usage_error_not_a_traceback(
+    capsys, monkeypatch, tmp_path, value
+):
+    """urllib3 raises a bare `ValueError` for a non-positive timeout, which
+    matches no arm in `__main__` -- a traceback and no envelope. The flag is
+    `type=float`, so anything in (0, 1) truncated to that same 0.
+    """
+    _config_with(tmp_path, monkeypatch, "")
+
+    code, out, _ = run(capsys, "auth", "--transport-timeout", value, "whoami")
+
+    assert code == int(ExitCode.USAGE)
+    assert "transport-timeout" in envelope(out)["error"]["message"]
+
+
+def test_a_deployment_key_flag_is_refused_rather_than_ignored_by_ls(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """`--api-key` on the docstudio group is a *deployment* key and `ls`
+    authenticates with a platform key. It was accepted, dropped, and the
+    platform key then reported missing -- which reads as a broken flag rather
+    than the wrong credential.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    platform_client(list_api_deployments=_returns([]))
+
+    code, out, _ = run(
+        capsys, "docstudio", "--api-key", "dk-FROM-FLAG", "deployment", "ls"
+    )
+    error = envelope(out)["error"]
+
+    assert code == int(ExitCode.USAGE)
+    assert "platform key" in error["message"]
+    assert "UNSTRACT_PLATFORM_KEY" in error["hint"]
+    assert "dk-FROM-FLAG" not in json.dumps(envelope(out))
 
 
 def test_the_platform_key_never_reaches_a_stream(

@@ -61,9 +61,10 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (PLATFORM, "api_key"): ("UNSTRACT_PLATFORM_KEY",),
     (PLATFORM, "base_url"): ("UNSTRACT_BASE_URL",),
     # `clone` takes this as --api-prefix because a self-hosted deployment can
-    # mount the Platform API somewhere other than api/v1. Without it, whoami
-    # and `deployment ls` are unreachable on exactly the installs the
-    # onprem-example profile below caters to.
+    # mount the Platform API somewhere other than api/v1. `OrgEndpoint` already
+    # defaults to api/v1, which standard installs serve; this is what reaches
+    # the ones that remount it, where whoami and `deployment ls` are otherwise
+    # unreachable.
     (PLATFORM, "api_prefix"): ("UNSTRACT_API_PREFIX",),
 }
 
@@ -394,7 +395,23 @@ class ResolvedConfig:
             remember_secret(value)
         return value
 
-    def _resolve(self, product: str, key: str, default: Any = None) -> Any:
+    def get_explicit(self, product: str, key: str) -> Any:
+        """Resolve through **flag > env > profile** only, stopping before defaults.
+
+        `get` cannot answer "did anyone actually name this?" -- it returns
+        `DEFAULT_BASE_URLS[product]` for an unset `base_url`, so a caller who
+        deliberately named the default host and one who named nothing come back
+        as the same string. Anything that must treat those two differently asks
+        here instead of comparing the answer against the default, which reads
+        the caller's own choice as silence.
+        """
+        value = self._explicit(product, key)
+        if key == "api_key":
+            remember_secret(value)
+        return value
+
+    def _explicit(self, product: str, key: str) -> Any:
+        """The tiers a human supplied: flag, then environment, then profile."""
         if (value := self.overrides.get(f"{product}.{key}")) is not None:
             return value
         if (value := self.overrides.get(key)) is not None:
@@ -404,7 +421,10 @@ class ResolvedConfig:
             if value := os.environ.get(env_var):
                 return value
 
-        if (value := _deref(self._product_block(product).get(key))) is not None:
+        return _deref(self._product_block(product).get(key))
+
+    def _resolve(self, product: str, key: str, default: Any = None) -> Any:
+        if (value := self._explicit(product, key)) is not None:
             return value
 
         if default is not None:

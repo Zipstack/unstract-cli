@@ -41,7 +41,7 @@ _STATUS_MAP: dict[int, ExitCode] = {
     # the whisper equivalent is a 400 whose body says so, which is prose we do
     # not translate on. A 406 from anywhere else -- DRF returns one on content
     # negotiation failure -- lands on this code too, and reads as a one-shot
-    # read that was already consumed. Narrow it if that ever becomes reachable.
+    # read that was already consumed.
     406: ExitCode.ALREADY_CONSUMED,
     408: ExitCode.TIMEOUT,
     409: ExitCode.VALIDATION,

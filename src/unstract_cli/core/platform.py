@@ -19,7 +19,6 @@ from unstract.clone.client import PlatformClient
 from unstract.clone.context import OrgEndpoint
 
 from unstract_cli.config import (
-    DEFAULT_BASE_URLS,
     DOCSTUDIO,
     PLATFORM,
     ResolvedConfig,
@@ -31,15 +30,6 @@ from unstract_cli.core.errors import CLIError, ExitCode
 #: `OrgEndpoint` requires the field, so it is named rather than left as a bare
 #: empty string at the call site.
 NO_ORGANISATION = ""
-
-#: The built-in default. Used to tell "the caller said nothing" from "the
-#: caller chose this host" -- `ResolvedConfig` returns the default for an
-#: unset `base_url` rather than None, so the two are otherwise identical.
-DEFAULT_PLATFORM_BASE_URL = DEFAULT_BASE_URLS[PLATFORM]
-
-#: The built-in default, used to tell "caller said nothing" from "caller chose
-#: this host" --  returns the default rather than None.
-DEFAULT_PLATFORM_BASE_URL = DEFAULT_BASE_URLS[PLATFORM]
 
 
 class CLIPlatformClient(PlatformClient):
@@ -80,11 +70,16 @@ def platform_base_url(config: ResolvedConfig) -> str:
     Resolving `platform.base_url` alone would ignore that: a profile written
     before the `platform` block existed, and every `docstudio --base-url`, would
     silently fall through to the built-in cloud default and send the key there.
+
+    Both tiers are read with `get_explicit`, which stops before the built-in
+    defaults. Comparing `get`'s answer against the default instead would read a
+    caller who named the SaaS host as one who named nothing -- and `config init`
+    writes that exact host into every generated profile, so that is the common
+    case, not a corner of it.
     """
-    explicit = config.get(PLATFORM, "base_url", default=None)
-    if explicit is not None and explicit != DEFAULT_PLATFORM_BASE_URL:
-        return str(explicit)
-    if (shared := config.get(DOCSTUDIO, "base_url")) is not None:
+    if (named := config.get_explicit(PLATFORM, "base_url")) is not None:
+        return str(named)
+    if (shared := config.get_explicit(DOCSTUDIO, "base_url")) is not None:
         return str(shared)
     return str(config.require(PLATFORM, "base_url"))
 
@@ -112,9 +107,22 @@ def platform_client(
     )
     # `PlatformClient`'s own default is 60s per request, which `_paginate`
     # spends per page. An interactive caller who asked for a bound gets it.
-    if timeout is not None:
-        return CLIPlatformClient(endpoint, timeout=int(timeout))
-    return CLIPlatformClient(endpoint)
+    if timeout is None:
+        return CLIPlatformClient(endpoint)
+    if timeout <= 0:
+        # urllib3 raises a bare ValueError for a non-positive timeout, which
+        # matches no arm in `__main__` -- a traceback and no envelope. Rejected
+        # here, where it is still a usage error about a flag.
+        raise CLIError(
+            f"--transport-timeout must be greater than 0, not {timeout:g}.",
+            ExitCode.USAGE,
+            hint="Omit the flag to use the client's own 60s default.",
+        )
+    # Passed as the float it was parsed as. `PlatformClient` annotates this
+    # `int`, but the annotation is not enforced and `requests` takes floats;
+    # truncating instead would send `--transport-timeout 0.5` as 0, which is
+    # the ValueError above, and silently round 1.9 down to 1.
+    return CLIPlatformClient(endpoint, timeout=timeout)
 
 
 def organisation(config: ResolvedConfig) -> str:

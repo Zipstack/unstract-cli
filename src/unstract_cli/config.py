@@ -61,12 +61,6 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
     (PLATFORM, "api_key"): ("UNSTRACT_PLATFORM_KEY",),
     (PLATFORM, "base_url"): ("UNSTRACT_BASE_URL",),
-    # `clone` takes this as --api-prefix because a self-hosted deployment can
-    # mount the Platform API somewhere other than api/v1. `OrgEndpoint` already
-    # defaults to api/v1, which standard installs serve; this is what reaches
-    # the ones that remount it, where whoami and `deployment ls` are otherwise
-    # unreachable.
-    (PLATFORM, "api_prefix"): ("UNSTRACT_API_PREFIX",),
 }
 
 

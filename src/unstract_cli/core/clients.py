@@ -13,6 +13,7 @@ than in each command.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -28,6 +29,7 @@ from requests.exceptions import (
 from unstract.api_deployments.client import (
     APIDeploymentsClient,
     APIDeploymentsClientException,
+    PlatformClientError,
 )
 from unstract.clone.exceptions import PlatformAPIError
 from unstract.llmwhisperer.client_v2 import (
@@ -129,6 +131,12 @@ def _unresolved_host(exc: BaseException) -> str | None:
     return getattr(getattr(reason, "conn", None), "host", "") or ""
 
 
+#: The status inside a `PlatformClientError` message. The released client embeds
+#: it in prose rather than carrying it, so this is the only route from a refused
+#: platform call to the right exit code. Deletable once the exception carries one.
+_PLATFORM_STATUS = re.compile(r"failed with (\d{3})\b")
+
+
 @contextmanager
 def translated(endpoint: str | None = None) -> Iterator[None]:
     """Turn a client failure into a CLIError with an exit code and a hint."""
@@ -144,6 +152,26 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
                 int(status), message, details=details, endpoint=endpoint
             ) from exc
         raise CLIError(message, details=details, endpoint=endpoint) from exc
+    except PlatformClientError as exc:
+        # Ordered before `APIDeploymentsClientException`, which it derives from:
+        # caught there, every platform failure would exit USAGE, and a rejected
+        # key has to exit AUTH -- the exit-code table in the README promises it
+        # and a setup script branches on it.
+        #
+        # The status is recovered from the message because the released client
+        # does not carry one: `PlatformKeyClient._read_or_raise` raises
+        # `PlatformClientError(f"{what} failed with {status}: {reason}")` and
+        # nothing else. Asked upstream to put `status_code` on the exception; the
+        # day it lands this parse should be deleted rather than kept as a
+        # fallback. Until then a wording change upstream silently costs the
+        # mapping, which is what the `_PLATFORM_STATUS` test pins.
+        if match := _PLATFORM_STATUS.search(str(exc)):
+            raise error_from_status(
+                int(match.group(1)), str(exc), endpoint=endpoint
+            ) from exc
+        # Unparseable: the failure is real and the status is unknown, so report
+        # it as a server-side failure rather than blaming the caller's usage.
+        raise CLIError(str(exc), ExitCode.SERVER_ERROR, endpoint=endpoint) from exc
     except APIDeploymentsClientException as exc:
         raise CLIError(str(exc), ExitCode.USAGE, endpoint=endpoint) from exc
     except PlatformAPIError as exc:

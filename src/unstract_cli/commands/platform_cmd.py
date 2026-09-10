@@ -229,17 +229,32 @@ def ls(ctx: Context, api_name: str | None, full: bool) -> None:
             "key runs a deployment; a platform key describes the account.",
         )
 
+    org_id = organisation(ctx.config)
     client = platform_client(
         ctx.config,
-        organisation(ctx.config),
+        org_id,
         timeout=getattr(ctx, "transport_timeout", None),
     )
     with translated(endpoint="api/deployment/"):
-        rows = client.list_api_deployments(api_name=api_name)
+        page = client.list_deployments(org_id, api_name=api_name)
 
+    rows = page.get("results") or []
     if not full:
         rows = [{field: row.get(field) for field in LISTING_FIELDS} for row in rows]
-    finish(ctx, {"results": rows}, meta={"count": len(rows)})
+    # `count` is the server's total across pages, which is not `len(rows)` once
+    # the account has more deployments than fit one page. Both are reported
+    # rather than one standing in for the other, and `next` says whether asking
+    # again would return more -- this command does not paginate on the caller's
+    # behalf, so saying so is the honest surface.
+    finish(
+        ctx,
+        {"results": rows},
+        meta={
+            "shown": len(rows),
+            "count": page.get("count"),
+            "more": bool(page.get("next")),
+        },
+    )
 
 
 __all__ = ["SaveDeclinedError", "ls", "whoami"]

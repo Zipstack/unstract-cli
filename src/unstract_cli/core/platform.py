@@ -1,22 +1,17 @@
-"""The Platform API client, and the one call the published client lacks.
+"""Where the platform API lives, and the client that talks to it.
 
-`PlatformClient` ships in `unstract-client` for the clone subpackage, and its
-list endpoints are exactly what `deployment ls` needs. It builds every URL as
-``{base_url}/{prefix}/unstract/{organization_id}/<entity>/``, which is right for
-every call that acts inside an organisation and wrong for the one call made
-before the organisation is known.
-
-`whoami` is that call, so it is added here rather than in the published client:
-it needs no release to land, and the organisation-less shape is a CLI concern
-until something else wants it.
+Both platform-key operations -- `whoami` and the deployment listing -- are
+published in the OpenAPI spec and generated into `unstract-client`, so this
+module only resolves configuration and builds `PlatformKeyClient`. Earlier
+revisions subclassed `unstract.clone.PlatformClient`, the org-cloning tool's
+hand-written admin client, and hand-built the whoami URL; that bypassed the
+generated surface entirely, which is why neither command was covered by the
+spec-derived contract tests.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-from unstract.clone.client import PlatformClient
-from unstract.clone.context import OrgEndpoint
+from unstract.api_deployments.client import PlatformKeyClient
 
 from unstract_cli.config import (
     DOCSTUDIO,
@@ -24,42 +19,6 @@ from unstract_cli.config import (
     ResolvedConfig,
 )
 from unstract_cli.core.errors import CLIError, ExitCode
-
-#: The organisation `whoami` is called with. The endpoint carries no
-#: organisation segment -- resolving it is the point of the call -- and
-#: `OrgEndpoint` requires the field, so it is named rather than left as a bare
-#: empty string at the call site.
-NO_ORGANISATION = ""
-
-
-class CLIPlatformClient(PlatformClient):
-    """`PlatformClient` plus the organisation-less identity read."""
-
-    def whoami(self) -> dict[str, Any]:
-        """Describe the key: which organisation it belongs to, and its tier.
-
-        The URL is built here instead of through ``_url`` because that method
-        inserts the organisation this call exists to discover.
-        """
-        base = self.endpoint.base_url.rstrip("/")
-        prefix = self.endpoint.api_path_prefix.strip("/")
-        body = self._send("GET", f"{base}/{prefix}/unstract/whoami/", "whoami/")
-        if not isinstance(body, dict):
-            # `_send` returns None on a 204 or an empty 2xx body, and whatever
-            # `resp.json()` decoded otherwise -- a list, for a misrouted host.
-            # Guarded here, where the shape is known, rather than at each
-            # consumer: unguarded, `body.get(...)` raises an AttributeError that
-            # matches no arm in `__main__`, so the caller gets a traceback and
-            # no envelope at all.
-            raise CLIError(
-                "The platform API did not return an identity.",
-                ExitCode.SERVER_ERROR,
-                details=body,
-                endpoint="whoami",
-                hint="Check that `base_url` names an Unstract deployment that "
-                "serves /unstract/whoami/.",
-            )
-        return body
 
 
 def platform_base_url(config: ResolvedConfig) -> str:
@@ -102,40 +61,29 @@ def platform_client(
     org_id: str | None = None,
     *,
     timeout: float | None = None,
-) -> CLIPlatformClient:
+) -> PlatformKeyClient:
     """Build a Platform API client from the resolved configuration.
 
-    ``org_id`` is optional because `whoami` runs before one is known. Every
-    other call needs it, and asks for it explicitly.
+    ``org_id`` is accepted and ignored: the generated operations take it per
+    call, not per client. It stays in the signature because every command site
+    already passes it and the parameter documents which calls need one --
+    `whoami` runs before an organisation is known, everything else does not.
     """
-    endpoint = OrgEndpoint(
-        base_url=platform_base_url(config),
-        organization_id=org_id if org_id is not None else NO_ORGANISATION,
-        platform_key=config.require(PLATFORM, "api_key"),
-        **(
-            {"api_path_prefix": prefix}
-            if (prefix := config.get(PLATFORM, "api_prefix")) is not None
-            else {}
-        ),
-    )
-    # `PlatformClient`'s own default is 60s per request, which `_paginate`
-    # spends per page. An interactive caller who asked for a bound gets it.
-    if timeout is None:
-        return CLIPlatformClient(endpoint)
-    if timeout <= 0:
-        # urllib3 raises a bare ValueError for a non-positive timeout, which
-        # matches no arm in `__main__` -- a traceback and no envelope. Rejected
-        # here, where it is still a usage error about a flag.
+    if timeout is not None and timeout <= 0:
+        # httpx rejects a non-positive timeout deep in the connection layer,
+        # with an error that matches no arm in `__main__` -- a traceback and no
+        # envelope. Refused here, where it is still a usage error about a flag.
         raise CLIError(
             f"--transport-timeout must be greater than 0, not {timeout:g}.",
             ExitCode.USAGE,
-            hint="Omit the flag to use the client's own 60s default.",
+            hint="Omit the flag to leave the connection unbounded.",
         )
-    # Passed as the float it was parsed as. `PlatformClient` annotates this
-    # `int`, but the annotation is not enforced and `requests` takes floats;
-    # truncating instead would send `--transport-timeout 0.5` as 0, which is
-    # the ValueError above, and silently round 1.9 down to 1.
-    return CLIPlatformClient(endpoint, timeout=timeout)
+    return PlatformKeyClient(
+        base_url=platform_base_url(config),
+        api_key=config.require(PLATFORM, "api_key"),
+        transport_timeout=timeout,
+        logging_level="ERROR",
+    )
 
 
 def organisation(config: ResolvedConfig) -> str:
@@ -157,7 +105,6 @@ def organisation(config: ResolvedConfig) -> str:
 
 
 __all__ = [
-    "CLIPlatformClient",
     "organisation",
     "platform_base_url",
     "platform_client",

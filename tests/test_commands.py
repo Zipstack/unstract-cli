@@ -12,7 +12,7 @@ import socket
 
 import pytest
 from requests.exceptions import ConnectionError
-from unstract.clone.exceptions import PlatformAPIError
+from unstract.api_deployments.client import PlatformClientError
 from unstract.clone.report import CloneReport, Endpoint, PhaseResult
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
@@ -1225,7 +1225,7 @@ def test_a_rejected_platform_key_exits_on_the_auth_code(
     """A traceback here would mean the Platform API's own exception type never
     reached the translator."""
     _platform_env(monkeypatch, tmp_path)
-    platform_client(whoami=PlatformAPIError("nope", status_code=401, body="{}"))
+    platform_client(whoami=PlatformClientError("whoami failed with 401: nope"))
 
     code, out, _ = run(capsys, "auth", "whoami")
 
@@ -1244,6 +1244,22 @@ def test_whoami_without_a_key_is_a_usage_error(capsys, monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # docstudio deployment ls
 # --------------------------------------------------------------------------- #
+
+
+def _page(*rows, count=None, next_url=None) -> dict:
+    """The paginated envelope `list_deployments` returns.
+
+    The old `list_api_deployments` returned a flat list; the generated operation
+    returns `{count, next, previous, results}`, and `ls` reports the server's
+    total separately from what it shows.
+    """
+    return {
+        "count": count if count is not None else len(rows),
+        "next": next_url,
+        "previous": None,
+        "results": list(rows),
+    }
+
 
 DEPLOYMENT_ROW = {
     "api_name": "invoice-parser",
@@ -1275,7 +1291,7 @@ def test_ls_narrows_the_row_to_what_a_caller_can_read(
     capsys, platform_client, monkeypatch, tmp_path
 ):
     _listing_env(monkeypatch, tmp_path)
-    platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+    platform_client(list_deployments=_returns(_page(DEPLOYMENT_ROW)))
 
     _, out, _ = run(capsys, "docstudio", "deployment", "ls")
 
@@ -1288,12 +1304,76 @@ def test_ls_can_return_every_field_the_server_sent(
     capsys, platform_client, monkeypatch, tmp_path
 ):
     _listing_env(monkeypatch, tmp_path)
-    platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+    platform_client(list_deployments=_returns(_page(DEPLOYMENT_ROW)))
 
     _, out, _ = run(capsys, "docstudio", "deployment", "ls", "--full")
 
     (row,) = envelope(out)["data"]["results"]
     assert row == DEPLOYMENT_ROW
+
+
+def test_ls_reports_the_servers_total_apart_from_what_it_shows(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """The listing is paginated and this command does not follow the pages, so
+    `count` (the server's total) and `shown` (this page) are different numbers.
+    Reporting one as the other would tell a caller with more deployments than a
+    page that they had seen everything.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    platform_client(
+        list_deployments=_returns(
+            _page(DEPLOYMENT_ROW, count=37, next_url="https://h/next?page=2")
+        )
+    )
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "ls")
+    meta = envelope(out)["meta"]
+
+    assert code == 0
+    assert meta["shown"] == 1
+    assert meta["count"] == 37
+    assert meta["more"] is True
+
+
+def test_ls_says_there_is_no_more_when_the_page_is_the_whole_set(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    platform_client(list_deployments=_returns(_page(DEPLOYMENT_ROW)))
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "ls")
+    meta = envelope(out)["meta"]
+
+    assert code == 0
+    assert (meta["shown"], meta["count"], meta["more"]) == (1, 1, False)
+
+
+def test_ls_survives_a_page_with_no_results_key(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """`results` is declared required, but the facade returns whatever JSON the
+    server sent. Absent, the projection used to raise `TypeError` on `None`.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    platform_client(list_deployments=_returns({"count": 0, "next": None}))
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "ls")
+
+    assert code == 0
+    assert envelope(out)["data"]["results"] == []
 
 
 def test_ls_passes_the_name_filter_to_the_server(
@@ -1302,18 +1382,18 @@ def test_ls_passes_the_name_filter_to_the_server(
     """Filtering here rather than locally: the server has the exact-match
     filter, and a local one would still page the whole organisation."""
     _listing_env(monkeypatch, tmp_path)
-    client = platform_client(list_api_deployments=_returns([DEPLOYMENT_ROW]))
+    client = platform_client(list_deployments=_returns(_page(DEPLOYMENT_ROW)))
 
     run(capsys, "docstudio", "deployment", "ls", "--api-name", "invoice-parser")
 
-    assert client.kwargs_for("list_api_deployments") == {"api_name": "invoice-parser"}
+    assert client.kwargs_for("list_deployments") == {"api_name": "invoice-parser"}
 
 
 def test_ls_runs_inside_the_configured_organisation(
     capsys, platform_client, monkeypatch, tmp_path
 ):
     _listing_env(monkeypatch, tmp_path)
-    client = platform_client(list_api_deployments=_returns([]))
+    client = platform_client(list_deployments=_returns(_page()))
 
     run(capsys, "docstudio", "deployment", "ls")
 
@@ -1325,7 +1405,7 @@ def test_ls_without_an_organisation_says_how_to_get_one(
 ):
     monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
     monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
-    platform_client(list_api_deployments=_returns([]))
+    platform_client(list_deployments=_returns(_page()))
 
     code, out, _ = run(capsys, "docstudio", "deployment", "ls")
 
@@ -1523,7 +1603,7 @@ def test_the_transport_timeout_flag_reaches_the_platform_client(
         monkeypatch,
         'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
     )
-    client = platform_client(whoami=IDENTITY, list_api_deployments=_returns([]))
+    client = platform_client(whoami=IDENTITY, list_deployments=_returns(_page()))
 
     code, _, _ = run(capsys, *argv)
 
@@ -1560,7 +1640,7 @@ def test_a_deployment_key_flag_is_refused_rather_than_ignored_by_ls(
         monkeypatch,
         'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
     )
-    platform_client(list_api_deployments=_returns([]))
+    platform_client(list_deployments=_returns(_page()))
 
     code, out, _ = run(
         capsys, "docstudio", "--api-key", "dk-FROM-FLAG", "deployment", "ls"
@@ -1576,17 +1656,18 @@ def test_a_deployment_key_flag_is_refused_rather_than_ignored_by_ls(
 def test_the_platform_key_never_reaches_a_stream(
     capsys, platform_client, monkeypatch, tmp_path
 ):
-    """`translated()` attaches `PlatformAPIError.body` -- the server's own
-    response -- as `details`. If the far end echoes the key, that is the path it
-    would travel to stdout.
+    """A refusal's reason comes from the server, so if the far end echoes the key
+    back it travels to stdout inside `error.message`.
+
+    `PlatformClientError` carries no body attribute -- the released client folds
+    the reason into its message -- so that is now the only path, and the scrubber
+    is the only thing standing on it.
     """
     _config_with(tmp_path, monkeypatch, 'default_profile = "cloud-us"\n')
     monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-SUPERSECRET-0987654321")
     platform_client(
-        whoami=PlatformAPIError(
-            "GET whoami/ returned 401",
-            status_code=401,
-            body='{"echoed": "pk-SUPERSECRET-0987654321"}',
+        whoami=PlatformClientError(
+            'whoami failed with 401: {"echoed": "pk-SUPERSECRET-0987654321"}'
         )
     )
 
@@ -1596,22 +1677,49 @@ def test_the_platform_key_never_reaches_a_stream(
     assert "pk-SUPERSECRET-0987654321" not in err
 
 
-def test_a_rejected_key_keeps_its_message_on_one_line(
+def test_a_rejected_key_exits_auth_not_usage(
     capsys, platform_client, monkeypatch, tmp_path
 ):
-    """`PlatformAPIError` folds the body into its own string, so `str(exc)` put
-    up to 2KB of server response into `error.message` -- which `emit_error`
-    documents as a one-line summary -- and duplicated it into `details`.
+    """`PlatformClientError` derives from `APIDeploymentsClientException`, whose
+    arm maps everything to USAGE, and the released client carries no status --
+    only the prose `"whoami failed with 401: ..."`. Caught by the base arm a
+    rejected key would exit 2, contradicting the README's exit-code table and any
+    setup script branching on 3.
     """
     _config_with(tmp_path, monkeypatch, 'default_profile = "cloud-us"\n')
-    platform_client(
-        whoami=PlatformAPIError(
-            "GET whoami/ returned 401", status_code=401, body='{"m": "x"}'
-        )
-    )
+    platform_client(whoami=PlatformClientError("whoami failed with 401: nope"))
 
-    _, out, _ = run(capsys, "auth", "whoami")
+    code, out, _ = run(capsys, "auth", "whoami")
     error = envelope(out)["error"]
 
+    assert code == int(ExitCode.AUTH)
+    assert error["exit_code"] == int(ExitCode.AUTH)
     assert "\n" not in error["message"]
-    assert error["details"] == '{"m": "x"}'
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("whoami failed with 401: bad key", ExitCode.AUTH),
+        ("whoami failed with 403: not yours", ExitCode.AUTH),
+        ("list_deployments failed with 404: gone", ExitCode.NOT_FOUND),
+        ("list_deployments failed with 429: slow down", ExitCode.RATE_LIMITED),
+        ("whoami failed with 500: boom", ExitCode.SERVER_ERROR),
+        # No status in the message: the failure is real and its status unknown,
+        # so it is reported as server-side rather than as the caller's mistake.
+        ("whoami returned something unreadable", ExitCode.SERVER_ERROR),
+    ],
+)
+def test_the_platform_status_is_recovered_from_the_message(
+    capsys, platform_client, monkeypatch, tmp_path, message, expected
+):
+    """Pins the parse. The released client embeds the status in prose, so an
+    upstream wording change silently costs every one of these mappings -- this
+    is what would catch it.
+    """
+    _config_with(tmp_path, monkeypatch, 'default_profile = "cloud-us"\n')
+    platform_client(whoami=PlatformClientError(message))
+
+    code, _, _ = run(capsys, "auth", "whoami")
+
+    assert code == int(expected), message

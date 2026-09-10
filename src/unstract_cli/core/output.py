@@ -27,9 +27,15 @@ import textwrap
 from collections.abc import Mapping
 from enum import StrEnum
 from fnmatch import fnmatch
-from typing import Any
+from typing import Any, TypedDict
 
-from unstract_cli.core.errors import CLIError, ExitCode, known_secrets, scrub
+from unstract_cli.core.errors import (
+    CLIError,
+    ExitCode,
+    known_secrets,
+    scrub,
+    scrub_structure,
+)
 
 #: Major version of the stdout envelope, published in every ``meta``.
 CONTRACT_VERSION = 1
@@ -51,11 +57,18 @@ class AgentMode(StrEnum):
     NO = "no"
 
 
+#: Values a tool uses to say "set, but not on". Treating these as present would
+#: read `CLAUDECODE=0` as the opposite of what it says.
+_DISABLED_VALUES = {"", "0", "false", "no", "off"}
+
+
 def agent_detected(env: Mapping[str, str] | None = None) -> bool:
     """Whether the environment looks like a coding agent's."""
     names = os.environ if env is None else env
     return any(
-        names[name] and fnmatch(name, pattern) for name in names for pattern in AGENT_ENV
+        fnmatch(name, pattern) and names[name].strip().lower() not in _DISABLED_VALUES
+        for name in names
+        for pattern in AGENT_ENV
     )
 
 
@@ -71,10 +84,26 @@ def resolve_format(
     bytes, which is the property a script is relying on.
     """
     if explicit:
-        return OutputFormat(explicit)
+        try:
+            return OutputFormat(explicit)
+        except ValueError:
+            raise CLIError(
+                f"Unknown output format {explicit!r}.",
+                ExitCode.USAGE,
+                hint=f"Pick one of: {', '.join(f.value for f in OutputFormat)}.",
+            ) from None
     if agent == AgentMode.YES or (agent == AgentMode.AUTO and agent_detected(env)):
         return OutputFormat.JSON
     return OutputFormat.TABLE
+
+
+class Envelope(TypedDict):
+    """The one object `-o json` writes to stdout, success or failure alike."""
+
+    ok: bool
+    data: Any
+    error: dict[str, Any] | None
+    meta: dict[str, Any]
 
 
 def envelope(
@@ -82,7 +111,7 @@ def envelope(
     data: Any = None,
     error: dict[str, Any] | None = None,
     meta: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> Envelope:
     """Build the stdout envelope. ``ok`` is derived, never passed in."""
     return {
         "ok": error is None,
@@ -144,8 +173,12 @@ def _rows_and_columns(
 def _terminal_width(default: int = 100) -> int:
     try:
         return max(shutil.get_terminal_size((default, 24)).columns, 40)
-    except Exception:  # pragma: no cover - detached terminal
+    except (OSError, ValueError):  # pragma: no cover - detached terminal
         return default
+
+
+#: No column shrinks below this: past it a wrapped cell is unreadable anyway.
+_MIN_COLUMN = 8
 
 
 def render_table(
@@ -179,9 +212,17 @@ def render_table(
     # so a narrow column is never squeezed on behalf of a wide neighbour.
     widths = list(natural)
     budget = total_width - gutter * (len(headers) - 1)
-    while sum(widths) > budget and max(widths) > 8:
-        widest = widths.index(max(widths))
-        widths[widest] -= 1
+    if sum(widths) > budget:
+        # Cap the widest columns at a common ceiling -- the same result as
+        # shaving the widest one character at a time, without the O(width) walk.
+        floor, ceiling = _MIN_COLUMN, max(widths)
+        while floor < ceiling:
+            cap = (floor + ceiling + 1) // 2
+            if sum(min(w, cap) for w in widths) <= budget:
+                floor = cap
+            else:
+                ceiling = cap - 1
+        widths = [min(w, floor) for w in widths]
 
     def fmt(cells: list[str]) -> list[str]:
         """Lay one logical row out over as many physical lines as it needs."""
@@ -207,7 +248,16 @@ def render_table(
     return "\n".join(out)
 
 
-def raw_value(env: dict[str, Any], fields: tuple[str, ...]) -> Any:
+def _payload(env: Envelope) -> Any:
+    """The half of an envelope that carries the answer.
+
+    Read off `error` rather than `ok`: were the two ever to disagree, trusting
+    `ok` would drop the error and render a null as data.
+    """
+    return env["data"] if env["error"] is None else env["error"]
+
+
+def raw_value(env: Envelope, fields: tuple[str, ...]) -> Any:
     """The first declared field this answer actually carries.
 
     Commands declare several because one call has several shapes: a queued run
@@ -224,13 +274,18 @@ def raw_value(env: dict[str, Any], fields: tuple[str, ...]) -> Any:
     field's own ``null`` is worse, because a caller polling for a result cannot
     tell it apart from a finished job that produced nothing.
     """
-    payload = env["data"] if env["ok"] else env["error"]
+    payload = _payload(env)
     if not fields or not isinstance(payload, dict):
         return payload
     for name in fields:
         for source in (payload, env.get("meta") or {}):
-            if isinstance(source, dict) and source.get(name) is not None:
-                return source[name]
+            if not isinstance(source, dict):
+                continue
+            # Only `None` counts as absent: an empty result is a real answer,
+            # and skipping it would print the next field -- a handle where the
+            # caller expects text -- rather than nothing.
+            if (value := source.get(name)) is not None:
+                return value
     raise CLIError(
         f"This answer carries none of {', '.join(fields)}, so there is nothing "
         "to print as raw output.",
@@ -240,7 +295,7 @@ def raw_value(env: dict[str, Any], fields: tuple[str, ...]) -> Any:
 
 
 def render(
-    env: dict[str, Any],
+    env: Envelope,
     fmt: OutputFormat = OutputFormat.JSON,
     *,
     columns: tuple[str, ...] = (),
@@ -250,7 +305,7 @@ def render(
     if fmt is OutputFormat.JSON:
         return json.dumps(env, indent=2, default=str)
 
-    payload = env["data"] if env["ok"] else env["error"]
+    payload = _payload(env)
     if fmt is OutputFormat.TABLE:
         return render_table(payload, columns)
 
@@ -262,8 +317,13 @@ def render(
     return json.dumps(payload, indent=2, default=str)
 
 
+def _to_hide(secrets: list[str] | None) -> list[str]:
+    """Every credential to keep off a stream, each named once."""
+    return list(dict.fromkeys([*(secrets or []), *known_secrets()]))
+
+
 def emit(
-    env: dict[str, Any],
+    env: Envelope,
     fmt: OutputFormat = OutputFormat.JSON,
     *,
     columns: tuple[str, ...] = (),
@@ -276,6 +336,7 @@ def emit(
     caller passed one: an emitter that has to remember is an emitter that
     eventually forgets.
     """
+    env = scrub_structure(env, _to_hide(secrets))
     emit_text(render(env, fmt, columns=columns, raw_fields=raw_fields), secrets=secrets)
 
 
@@ -286,7 +347,7 @@ def emit_text(text: str, *, secrets: list[str] | None = None) -> None:
     credential may reach, and scrubbing it by hand is the arrangement that
     eventually forgets.
     """
-    if to_hide := [*(secrets or []), *known_secrets()]:
+    if to_hide := _to_hide(secrets):
         text = scrub(text, to_hide)
     print(text)
 
@@ -323,7 +384,7 @@ def emit_error(
     """
     emit(envelope(error=error.to_dict(), meta=meta), fmt, secrets=secrets)
     summary = error.message
-    if to_hide := [*(secrets or []), *known_secrets()]:
+    if to_hide := _to_hide(secrets):
         summary = scrub(summary, to_hide)
     print(f"error: {summary}", file=sys.stderr)
     return error.exit_code
@@ -336,9 +397,14 @@ def diagnostic(
 
     ``level`` is the minimum ``-v`` count required: 0 always shows (unless
     ``--quiet``), 1 needs ``-v``, 2 needs ``-vv``.
+
+    Scrubbed like stdout: a note can carry server-authored text, and a
+    credential is no less leaked for arriving on the other stream.
     """
     if quiet or verbosity < level:
         return
+    if to_hide := known_secrets():
+        message = scrub(message, to_hide)
     print(message, file=sys.stderr)
 
 
@@ -346,6 +412,7 @@ __all__ = [
     "AGENT_ENV",
     "CONTRACT_VERSION",
     "AgentMode",
+    "Envelope",
     "OutputFormat",
     "agent_detected",
     "diagnostic",

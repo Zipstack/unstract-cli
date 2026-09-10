@@ -13,8 +13,9 @@ Two rules make the derivation safe to hand to a caller:
 * **A falsy value is a choice, not an absence.** ``0``, ``false`` and ``""`` all
   travel; only ``None`` is filtered.
 
-What the spec cannot express -- allowed values, short flags, wording -- comes
-from the overlay, never from a guess made here.
+What the spec does not express for a CLI -- short flags, wording aimed at
+someone typing, a narrowed value list, and whether a parameter is hidden --
+comes from the overlay, never from a guess made here.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from typing import Any
 
 import click
 
+from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.overlay import overlay_for
 
 #: Spec file per product, vendored so flags derive with no network and no
@@ -180,12 +182,32 @@ def client_params(method: Callable[..., Any]) -> dict[str, inspect.Parameter]:
 
 #: Python annotation -> OpenAPI type. A source-derived spec describes the wire,
 #: which can differ from what the client method takes.
-_ANNOTATIONS: dict[Any, str] = {
-    bool: "boolean",
-    int: "integer",
-    float: "number",
-    str: "string",
+_ANNOTATIONS: dict[str, str] = {
+    "bool": "boolean",
+    "int": "integer",
+    "float": "number",
+    "str": "string",
 }
+
+
+def _annotation_type(annotation: Any) -> str | None:
+    """The OpenAPI type an annotation names, or ``None`` if it names none.
+
+    Read as text rather than by identity: the clients spell an optional
+    parameter `bool | Unset`, and under PEP 563 every annotation arrives as a
+    string, so comparing objects would see through neither.
+    """
+    if annotation is inspect.Parameter.empty:
+        return None
+    text = (
+        annotation
+        if isinstance(annotation, str)
+        else getattr(annotation, "__name__", None) or str(annotation)
+    )
+    for part in text.split("|"):
+        if mapped := _ANNOTATIONS.get(part.strip().rsplit(".", 1)[-1]):
+            return mapped
+    return None
 
 
 def _is_unset(value: Any) -> bool:
@@ -200,7 +222,7 @@ def _is_unset(value: Any) -> bool:
 def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
     """Reconcile a spec parameter with the client signature that will carry it."""
     updates: dict[str, Any] = {}
-    if (mapped := _ANNOTATIONS.get(signature.annotation)) is not None:
+    if (mapped := _annotation_type(signature.annotation)) is not None:
         updates["type"] = mapped
     # Whether a flag is mandatory is the spec's answer, not the signature's: a
     # signature with no default says only that the *call* cannot omit the
@@ -318,12 +340,40 @@ def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
         decls.insert(0, short)
     return click.Option(
         decls,
-        type=click.Choice(choices) if choices else _TYPES.get(param.type, click.STRING),
+        type=click.Choice(choices) if choices else _click_type(param),
         required=param.required,
         multiple=param.array,
         help=help_text,
         **absent,
     )
+
+
+class Diverged(click.ParamType):
+    """A flag whose spec type this CLI has no mapping for.
+
+    The refusal is deferred to conversion rather than raised while the option is
+    built: options are built at import time, so raising there would take down
+    `--help`, `--discover` and every unrelated command with a traceback, on the
+    one stream that is contracted to always carry an envelope.
+    """
+
+    def __init__(self, spec_type: str) -> None:
+        self.name = spec_type
+
+    def convert(self, value: Any, param: Any, ctx: Any) -> Any:
+        raise CLIError(
+            f"The spec declares {getattr(param, 'name', '?')} as type "
+            f"{self.name!r}, which this CLI has no flag type for.",
+            ExitCode.GENERIC,
+            hint="The spec and the CLI have diverged; this needs a code change.",
+        )
+
+
+def _click_type(param: Param) -> click.ParamType:
+    """The click type for a spec type, refusing to guess at an unknown one."""
+    if (mapped := _TYPES.get(param.type)) is not None:
+        return mapped
+    return Diverged(param.type)
 
 
 def derive_params(
@@ -396,7 +446,7 @@ def spec_options(
     return decorate
 
 
-def requested(values: dict[str, Any], *, drop: tuple[str, ...] = ()) -> dict[str, Any]:
+def requested(values: dict[str, Any]) -> dict[str, Any]:
     """Keep the parameters the caller actually passed.
 
     ``None`` is the only absence. An empty tuple from a repeatable option is one
@@ -406,11 +456,12 @@ def requested(values: dict[str, Any], *, drop: tuple[str, ...] = ()) -> dict[str
     return {
         name: list(value) if isinstance(value, tuple) else value
         for name, value in values.items()
-        if name not in drop and value is not None and value != ()
+        if value is not None and value != ()
     }
 
 
 __all__ = [
+    "Diverged",
     "SPEC_FILES",
     "Param",
     "click_option",

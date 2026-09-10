@@ -8,6 +8,8 @@ failure.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import sys
 
 import click
@@ -40,9 +42,11 @@ def _format_from_argv(argv: list[str]) -> OutputFormat:
             _option_from_argv(argv, "--output", "-o"),
             _option_from_argv(argv, "--agent") or AgentMode.AUTO,
         )
-    except ValueError:
+    except CLIError:
         # An unusable value here is Click's error to report, not ours to guess
-        # around; render the failure in the default and let it through.
+        # around: this runs outside the handler that renders an envelope, so
+        # raising would lose the stream contract entirely. Fall back to the
+        # default and let Click's own Choice reject the value downstream.
         return resolve_format(None)
 
 
@@ -62,6 +66,13 @@ def main(argv: list[str] | None = None) -> int:
                 fmt,
             )
         )
+    except BrokenPipeError:
+        # The reader is gone, so there is nowhere to render the envelope. Point
+        # stdout at devnull first: Python flushes it at exit and would otherwise
+        # raise this again on the way out.
+        with contextlib.suppress(OSError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return int(ExitCode.GENERIC)
     except OSError as exc:
         # Not a crash worth a traceback: a full disk or an unwritable path is
         # the caller's to fix, and they still need a parseable envelope.

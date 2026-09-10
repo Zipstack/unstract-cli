@@ -20,8 +20,9 @@ from typing import Any
 
 import click
 
-from unstract_cli.core.errors import _ERROR_CODES, ExitCode
+from unstract_cli.core.errors import CLIError, ExitCode, error_code_for
 from unstract_cli.core.output import CONTRACT_VERSION
+from unstract_cli.core.params import Diverged
 
 TIERS = ("groups", "summary", "full")
 
@@ -30,9 +31,9 @@ TIERS = ("groups", "summary", "full")
 #: is installed -- serialised, it would publish a string that reads as a value.
 _NO_DEFAULT = click.Option(["--unset"]).default
 
-#: The same question for a paired on/off flag, which answers it differently:
-#: given no default, some versions report `False` and others their own sentinel.
-#: Read the same way, so neither is mistaken for a default the flag really has.
+#: The same question for a paired on/off flag declared with `default=None`, the
+#: way this CLI declares one it does not send unless asked: some versions report
+#: `False` here and others their own sentinel, and neither is a real default.
 _NO_FLAG_DEFAULT = click.Option(["--unset/--no-unset"], default=None).default
 
 
@@ -66,7 +67,7 @@ def exit_codes() -> list[dict[str, Any]]:
         {
             "code": int(code),
             "name": code.name.lower(),
-            "error_code": _ERROR_CODES.get(code, ""),
+            "error_code": "" if code is ExitCode.SUCCESS else error_code_for(code),
         }
         for code in ExitCode
     ]
@@ -86,6 +87,10 @@ def _param(param: click.Parameter) -> dict[str, Any]:
         entry["repeatable"] = bool(param.multiple)
     if isinstance(param.type, click.Choice):
         entry["choices"] = list(param.type.choices)
+    if isinstance(param.type, Diverged):
+        # Otherwise a flag the CLI cannot convert reads exactly like one it can,
+        # and the caller only finds out by passing it.
+        entry["unsupported"] = True
     # What omitting the flag actually gets you, which is not what Click reports:
     # the same declaration answers differently across the supported range, so
     # reading `param.default` straight publishes a contract per version.
@@ -108,7 +113,7 @@ def _params(command: click.Command) -> list[dict[str, Any]]:
     A group carries the connection settings for everything beneath it, so
     describing only the leaves describes a call nobody can make.
     """
-    return [_param(p) for p in command.params if p.name not in ("help", "discover")]
+    return [_param(p) for p in command.params if p.name != "help"]
 
 
 def _describe(command: click.Command, tier: str) -> dict[str, Any]:
@@ -135,7 +140,11 @@ def discover(root: click.Group, tier: str) -> dict[str, Any]:
     needs to.
     """
     if tier not in TIERS:
-        raise ValueError(f"Unknown discovery tier {tier!r}. One of: {', '.join(TIERS)}")
+        raise CLIError(
+            f"Unknown discovery tier {tier!r}.",
+            ExitCode.USAGE,
+            hint=f"One of: {', '.join(TIERS)}.",
+        )
 
     if tier == "groups":
         top = sorted(root.commands.items())

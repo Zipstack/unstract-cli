@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import os
 import stat
+import sys
 import tempfile
 import tomllib
 from copy import deepcopy
@@ -52,8 +53,9 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
 }
 
 
-#: Where the two credentials are minted. Quoted wherever the CLI reports one as
-#: missing: knowing a key is unset is no help without knowing where one is made.
+#: Where the two credentials are minted. Quoted by `config doctor` and by the
+#: starter file `config init` writes: knowing a key is unset is no help without
+#: knowing where one is made.
 KEY_SOURCES = (
     "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
     "shown on the API deployment's own page in the Unstract UI, and a key "
@@ -146,7 +148,7 @@ def _resolve_config_path() -> tuple[Path, bool]:
     return HOME_CONFIG.expanduser(), False
 
 
-def _deref(value: Any) -> Any:
+def _deref(value: Any, *, allow_env: bool) -> Any:
     """Resolve ``env:VAR_NAME`` indirection so config files hold no secrets.
 
     An unset variable resolves to ``None`` rather than the literal string, so a
@@ -155,17 +157,24 @@ def _deref(value: Any) -> Any:
 
     An empty string resolves the same way: the placeholders a generated config
     carries must not satisfy `require`.
+
+    ``allow_env`` is the trust boundary, and has no default: the permissive
+    branch is the one that splices an attacker-chosen variable into a request
+    URL, so a caller has to ask for it. A discovered project-local file may not
+    name the variable to read, because whatever it names is then spliced into a
+    request URL and echoed back in any error about it.
     """
     if isinstance(value, str):
         if value.startswith("env:"):
-            return os.environ.get(value[4:].strip()) or None
+            return os.environ.get(value[4:].strip()) or None if allow_env else None
         return value or None
     return value
 
 
-#: Settings a *discovered* project-local file may not supply: a checkout the
-#: user did not write must not choose the host their key is sent to. Everything
-#: else -- org_id, profile selection, deployment aliases -- is still honoured.
+#: Settings a *discovered* project-local file may not supply as literals: a
+#: checkout the user did not write must not choose the host their key is sent
+#: to. Separately, and for every key, such a file may not name an environment
+#: variable to read either -- see `ResolvedConfig._env_refused`.
 UNTRUSTED_PROJECT_KEYS = frozenset({"api_key", "base_url"})
 
 
@@ -364,6 +373,8 @@ class ResolvedConfig:
     file: ConfigFile
     profile_name: str | None = None
     overrides: dict[str, Any] = field(default_factory=dict)
+    #: `env:` references already refused, so one is reported once per run.
+    _reported: set[str] = field(default_factory=set, repr=False, init=False)
 
     @property
     def active_profile(self) -> str | None:
@@ -405,14 +416,13 @@ class ResolvedConfig:
     def _resolve(self, product: str, key: str, default: Any = None) -> Any:
         if (value := self.overrides.get(f"{product}.{key}")) is not None:
             return value
-        if (value := self.overrides.get(key)) is not None:
-            return value
 
         for env_var in ENV_VARS.get((product, key), ()):
             if value := os.environ.get(env_var):
                 return value
 
-        if (value := _deref(self._product_block(product).get(key))) is not None:
+        raw = self._product_block(product).get(key)
+        if (value := _deref(raw, allow_env=self._env_allowed(raw))) is not None:
             return value
 
         if default is not None:
@@ -420,6 +430,39 @@ class ResolvedConfig:
         if key == "base_url":
             return DEFAULT_BASE_URLS.get(product)
         return None
+
+    def _env_refused(self, raw: Any) -> bool:
+        """Whether this value names an environment variable this file may not read.
+
+        Pure, so a report can ask the same question `_resolve` does without the
+        side effect of warning about a value it is only describing.
+        """
+        return self.file.is_project_local and (
+            isinstance(raw, str) and raw.startswith("env:")
+        )
+
+    def _env_allowed(self, raw: Any) -> bool:
+        """Whether this value may name an environment variable to read."""
+        if not self._env_refused(raw):
+            return True
+        # Straight to stderr rather than onto `file.warnings`: those are
+        # reported when the file is loaded, and this is found while resolving.
+        if raw not in self._reported:
+            self._reported.add(raw)
+            print(
+                f"warning: ignoring {raw!r} in the project-local "
+                f"{self.file.path}: a config file found by searching upwards "
+                "may not choose which environment variable is read.",
+                file=sys.stderr,
+            )
+        return False
+
+    def _env_refusal_detail(self, raw: Any) -> str:
+        """Why an `env:` reference was not followed."""
+        return (
+            f"{self.file.path} is a discovered {PROJECT_CONFIG_NAME}, which may "
+            f"not choose which environment variable is read, so {raw!r} is ignored"
+        )
 
     def require(self, product: str, key: str) -> Any:
         """Resolve a setting, or raise a message naming exactly how to supply it."""
@@ -476,11 +519,15 @@ class ResolvedConfig:
         """
         raw = entry.get(key)
         if isinstance(raw, str) and raw.startswith("env:"):
-            if value := _deref(raw):
+            if value := _deref(raw, allow_env=self._env_allowed(raw)):
                 return value
+            reason = (
+                self._env_refusal_detail(raw)
+                if self._env_refused(raw)
+                else f"${raw[4:].strip()} is not set in this process's environment"
+            )
             raise ConfigError(
-                f"Deployment alias {alias!r} sets {key} to {raw!r}, and "
-                f"${raw[4:].strip()} is not set in this process's environment."
+                f"Deployment alias {alias!r} sets {key} to {raw!r}, and {reason}."
             )
         return raw or self.get(DOCSTUDIO, key)
 
@@ -496,10 +543,7 @@ class ResolvedConfig:
         time: "the CLI says the key is not configured, but I set it -- where is
         it looking?"
         """
-        if (
-            self.overrides.get(f"{product}.{key}") is not None
-            or self.overrides.get(key) is not None
-        ):
+        if self.overrides.get(f"{product}.{key}") is not None:
             return {"resolved": True, "source": "flag/override"}
 
         for env_var in ENV_VARS.get((product, key), ()):
@@ -509,6 +553,12 @@ class ResolvedConfig:
         raw = self._product_block(product).get(key)
         if isinstance(raw, str) and raw.startswith("env:"):
             var = raw[4:].strip()
+            if self._env_refused(raw):
+                return {
+                    "resolved": False,
+                    "source": f"profile -> env:{var} (refused)",
+                    "detail": self._env_refusal_detail(raw),
+                }
             present = bool(os.environ.get(var))
             return {
                 "resolved": present,

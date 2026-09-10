@@ -461,3 +461,82 @@ def test_starter_profiles_hold_no_literal_secrets():
         for settings in blocks.values():
             key = settings.get("api_key")
             assert key is None or key.startswith("env:")
+
+
+def test_a_discovered_file_cannot_choose_which_env_var_is_read(
+    tmp_path, monkeypatch, capsys
+):
+    """`org_id` is not withheld from a project file, and it is spliced into the
+    deployment URL and echoed back in any error about it. Letting a checkout
+    the user did not write name the variable makes that an exfiltration path."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / PROJECT_CONFIG_NAME).write_text(
+        '[profiles.p.docstudio]\norg_id = "env:CI_DEPLOY_TOKEN"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CI_DEPLOY_TOKEN", "tkn-should-never-be-read")
+
+    cfg = ResolvedConfig(file=load_config(), profile_name="p")
+
+    assert cfg.get(DOCSTUDIO, "org_id") is None
+    assert "may not choose which environment variable" in capsys.readouterr().err
+
+
+def test_a_named_file_may_still_use_env_indirection(tmp_path, monkeypatch):
+    path = tmp_path / "named.toml"
+    path.write_text('[profiles.p.docstudio]\norg_id = "env:MY_ORG"\n', encoding="utf-8")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(path))
+    monkeypatch.setenv("MY_ORG", "org_ABC")
+
+    cfg = ResolvedConfig(file=load_config(), profile_name="p")
+    assert cfg.get(DOCSTUDIO, "org_id") == "org_ABC"
+
+
+def test_doctor_reports_a_refused_env_reference_as_unresolved(tmp_path, monkeypatch):
+    """Doctor exists to answer "I set it -- where is it looking?", so reporting
+    a value the resolver refuses as resolved is the one answer it must not give."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / PROJECT_CONFIG_NAME).write_text(
+        '[profiles.p.docstudio]\norg_id = "env:MY_ORG"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("MY_ORG", "org_ABC")
+
+    cfg = ResolvedConfig(file=load_config(), profile_name="p")
+    report = cfg.resolution_source(DOCSTUDIO, "org_id")
+
+    assert cfg.get(DOCSTUDIO, "org_id") is None
+    assert report["resolved"] is False
+    assert "may not choose which environment variable" in report["detail"]
+
+
+def test_a_refused_alias_reference_names_the_trust_rule_not_a_missing_var(
+    tmp_path, monkeypatch
+):
+    """Blaming an unset variable sends the user to export one that is set."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / PROJECT_CONFIG_NAME).write_text(
+        '[profiles.p.docstudio]\napi_key = "k"\n'
+        '[profiles.p.deployments.inv]\napi_name = "n"\norg_id = "env:MY_ORG"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("MY_ORG", "org_ABC")
+
+    cfg = ResolvedConfig(file=load_config(), profile_name="p")
+    with pytest.raises(ConfigError) as caught:
+        cfg.deployment("inv")
+    assert "may not choose which environment variable" in str(caught.value)
+
+
+def test_an_override_is_only_read_under_the_key_it_is_written_with(tmp_path):
+    """`resolution_source` and `get` have to look in the same place, or doctor
+    reports a value resolved that the CLI never reads."""
+    cfg = ResolvedConfig(
+        file=load_config(), profile_name="p", overrides={"org_id": "bare"}
+    )
+    assert cfg.get(DOCSTUDIO, "org_id") is None
+    assert cfg.resolution_source(DOCSTUDIO, "org_id")["resolved"] is False

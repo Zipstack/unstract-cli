@@ -115,7 +115,8 @@ pass_context = click.make_pass_decorator(Context, ensure=True)
     "-o",
     default=None,
     type=click.Choice([f.value for f in OutputFormat]),
-    help="Output format. Defaults to table; pass json to parse the output.",
+    help="Output format. Defaults to table, or to json when --agent resolves "
+    "to yes; pass it explicitly to parse the output.",
 )
 @click.option(
     "--agent",

@@ -23,6 +23,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release-and-publish:
     runs-on: ubuntu-latest
@@ -132,6 +136,8 @@ jobs:
         run: uv publish
 
       - name: Commit version bump and create release
+        env:
+          RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
         run: |
           NEW_VERSION="${{ steps.version.outputs.version }}"
 
@@ -149,7 +155,6 @@ jobs:
           git tag "v$NEW_VERSION"
           git push origin "v$NEW_VERSION"
 
-          RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
           if [ -z "$RELEASE_NOTES" ]; then
             gh release create "v$NEW_VERSION" \
               --title "Release v$NEW_VERSION" \

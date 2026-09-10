@@ -19,6 +19,7 @@ from unstract_cli.config import (
     KEY_SOURCES,
     LLMWHISPERER,
     PRODUCTS,
+    UNTRUSTED_PROJECT_KEYS,
     ConfigError,
     ConfigFile,
     ResolvedConfig,
@@ -185,12 +186,28 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
         cfg.default_profile = name
     written = save_config(cfg)
 
-    warning = None
+    warnings = []
     if _is_secret(key) and not value.startswith("env:"):
-        warning = (
+        warnings.append(
             "Value stored literally. Prefer `env:VAR_NAME` so the config file holds "
             "a reference rather than the secret itself."
         )
+    if cfg.is_project_local and key in UNTRUSTED_PROJECT_KEYS:
+        warnings.append(
+            f"{written} was found by searching upwards rather than named, so "
+            f"`{key}` written there is withheld when the config is loaded. Pass "
+            f"--config {written} to use it, or write it to the home config."
+        )
+    if cfg.is_project_local and value.startswith("env:"):
+        # Refused for every key, not only the withheld ones, so writing it
+        # without a word would report success for a setting that never resolves.
+        warnings.append(
+            f"{written} was found by searching upwards rather than named, so it "
+            f"may not choose which environment variable is read and `{value}` is "
+            f"ignored when the config is loaded. Pass --config {written} to use "
+            f"it, or write it to the home config."
+        )
+    warning = " ".join(warnings) or None
 
     emit_result(
         {
@@ -348,10 +365,9 @@ def config_doctor(obj: Any, probe: bool) -> None:
 def _loaded(obj: Any) -> ConfigFile:
     """The config file, with its warnings reported.
 
-    These commands load the file themselves rather than through the root
-    context, and they are the two a user runs *to understand* their config --
-    reading it here without repeating what it warned about would make them the
-    quietest commands in the CLI about their own subject.
+    A `config` subcommand may run with no root context to have loaded the file,
+    so it reports here what the file warned about -- reading it silently would
+    make these the quietest commands in the CLI about their own subject.
     """
     cfg = load_config()
     for warning in cfg.warnings:

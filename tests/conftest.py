@@ -6,6 +6,7 @@ from fnmatch import fnmatch
 import pytest
 
 from unstract_cli import config as config_mod
+from unstract_cli.core.errors import forget_secrets
 from unstract_cli.core.output import AGENT_ENV
 
 #: Every variable the loader consults. Cleared per test so a developer's real
@@ -33,8 +34,10 @@ def clean_env(monkeypatch, tmp_path):
     # from a real cwd could otherwise find a developer's own .unstract.toml.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(config_mod, "HOME_CONFIG", tmp_path / "home" / "config.toml")
+    forget_secrets()
     yield
     config_mod.set_config_path(None)
+    forget_secrets()
 
 
 @pytest.fixture

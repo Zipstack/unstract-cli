@@ -16,9 +16,11 @@ from unstract_cli.app import Context, pass_context, whisper_group
 from unstract_cli.commands.common import finish, raw_fields, wait_options
 from unstract_cli.core.clients import llmwhisperer, translated, translating
 from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
+from unstract_cli.core.output import diagnostic
 from unstract_cli.core.params import requested, spec_options
 from unstract_cli.core.poll import (
     PollSpec,
+    PollState,
     classify,
     extract_status,
     persist,
@@ -75,6 +77,15 @@ def extract(
     """
     client = llmwhisperer(ctx.config)
     sent = requested(params)
+    if save and not wait:
+        raise CLIError(
+            "--save has nothing to write with --no-wait.",
+            ExitCode.USAGE,
+            hint=(
+                "Drop --no-wait, or submit now and save later with "
+                "`whisper retrieve --save`."
+            ),
+        )
     if save:
         preflight(save)
 
@@ -112,8 +123,14 @@ def extract(
             save=save,
             interval=interval,
             timeout=wait_timeout,
-            on_status=lambda status: (
-                click.echo(f"status: {status}", err=True) if not ctx.quiet else None
+            on_status=lambda status: diagnostic(
+                f"status: {status}", quiet=ctx.quiet, verbosity=ctx.verbosity
+            ),
+            on_retry=lambda exc: diagnostic(
+                f"retrying: {exc.message}", quiet=ctx.quiet, verbosity=ctx.verbosity
+            ),
+            on_saved=lambda path: diagnostic(
+                f"saved: {path}", quiet=ctx.quiet, verbosity=ctx.verbosity
             ),
         )
     # Waiting returns the text, which identifies the job nowhere; the hash is
@@ -159,7 +176,7 @@ def status(ctx: Context, whisper_hash: str) -> None:
         result = client.whisper_status(whisper_hash)
     # A failed extraction is reported inside an HTTP 200, so the status code
     # alone would call this a success.
-    if classify(result, EXTRACT_POLL) == "failure":
+    if classify(result, EXTRACT_POLL) is PollState.FAILURE:
         raise CLIError(
             f"Extraction finished with status {extract_status(result)!r}.",
             ExitCode.VALIDATION,
@@ -198,7 +215,8 @@ def retrieve(ctx: Context, whisper_hash: str, save: str | None) -> None:
         payload = client.whisper_retrieve(whisper_hash)
     result = _extraction(payload)
     if save:
-        persist(save, result)
+        written = persist(save, result)
+        diagnostic(f"saved: {written}", quiet=ctx.quiet, verbosity=ctx.verbosity)
     finish(ctx, result, raw_fields=RAW_TEXT)
 
 
@@ -331,7 +349,12 @@ def webhook_group() -> None:
 @webhook_group.command("create")
 @click.argument("name")
 @click.option("--url", required=True, help="Where the result is delivered.")
-@click.option("--auth-token", required=True, help="Token sent with the delivery.")
+@click.option(
+    "--auth-token",
+    envvar="UNSTRACT_WEBHOOK_AUTH_TOKEN",
+    required=True,
+    help="Token sent with the delivery (or env UNSTRACT_WEBHOOK_AUTH_TOKEN).",
+)
 @pass_context
 def webhook_create(ctx: Context, name: str, url: str, auth_token: str) -> None:
     """Register a webhook."""
@@ -344,7 +367,12 @@ def webhook_create(ctx: Context, name: str, url: str, auth_token: str) -> None:
 @webhook_group.command("update")
 @click.argument("name")
 @click.option("--url", required=True, help="Where the result is delivered.")
-@click.option("--auth-token", required=True, help="Token sent with the delivery.")
+@click.option(
+    "--auth-token",
+    envvar="UNSTRACT_WEBHOOK_AUTH_TOKEN",
+    required=True,
+    help="Token sent with the delivery (or env UNSTRACT_WEBHOOK_AUTH_TOKEN).",
+)
 @pass_context
 def webhook_update(ctx: Context, name: str, url: str, auth_token: str) -> None:
     """Replace a webhook's URL and token."""
@@ -360,9 +388,10 @@ def webhook_update(ctx: Context, name: str, url: str, auth_token: str) -> None:
 def webhook_get(ctx: Context, name: str) -> None:
     """Show one webhook's configuration.
 
-    The token is reported as redacted, including for a webhook registered
+    The token is registered for redaction, including for a webhook created
     elsewhere: it authenticates deliveries wherever it was set, and this output
-    is as likely to land in a log as on a screen.
+    is as likely to land in a log as on a screen. A token too short to scrub for
+    is reported as such on stderr rather than silently printed.
     """
     client = llmwhisperer(ctx.config)
     with translated(endpoint="whisper-manage-callback"):

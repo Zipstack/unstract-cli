@@ -7,26 +7,62 @@ than from a profile: a profile describes one connection.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import click
-
-# The size grammar and the list syntax come from the client rather than a copy
-# here, so both spellings of this command accept the same strings.
-from unstract.clone.cli import _parse_size, _split_csv
+from requests.exceptions import InvalidHeader, RequestException
 from unstract.clone.context import (
     DEFAULT_CONCURRENCY,
     CloneOptions,
     OrgEndpoint,
 )
-from unstract.clone.exceptions import CloneError
+from unstract.clone.exceptions import CloneError, PlatformAPIError
 from unstract.clone.orchestrator import clone as run_clone
 from unstract.clone.report import CloneReport
 
 from unstract_cli.app import Context, cli, pass_context
 from unstract_cli.commands.common import finish
-from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
+from unstract_cli.core.clients import UNSENDABLE
+from unstract_cli.core.errors import (
+    CLIError,
+    ExitCode,
+    error_from_status,
+    remember_secret,
+)
 from unstract_cli.core.output import OutputFormat, emit_text
+
+# Mirrors the table and grammar `unstract.clone.cli` uses, single-letter
+# spellings included, so both spellings of this command accept the same strings.
+_SIZE_UNITS = {
+    "B": 1,
+    "K": 1024,
+    "KB": 1024,
+    "M": 1024**2,
+    "MB": 1024**2,
+    "G": 1024**3,
+    "GB": 1024**3,
+}
+_SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$")
+
+
+def _parse_size(value: str) -> int:
+    """Accept ``25``, ``25MB``, ``1.5GB`` etc. Returns bytes."""
+    match = _SIZE_RE.match(value)
+    if not match:
+        raise click.BadParameter(f"can't parse size {value!r}")
+    number, unit = match.group(1), match.group(2).upper() or "B"
+    if unit not in _SIZE_UNITS:
+        raise click.BadParameter(
+            f"unknown size unit {unit!r}; use one of {sorted(_SIZE_UNITS)}"
+        )
+    return int(float(number) * _SIZE_UNITS[unit])
+
+
+def _split_csv(value: str | None) -> tuple[str, ...] | None:
+    if not value:
+        return None
+    return tuple(part.strip() for part in value.split(",") if part.strip())
 
 
 @cli.command("clone")
@@ -143,11 +179,51 @@ def clone(
             endpoint(target_url, target_org, target_key),
             options,
         )
+    except PlatformAPIError as exc:
+        if exc.status_code:
+            raise error_from_status(
+                int(exc.status_code), str(exc), details=exc.body
+            ) from exc
+        raise CLIError(
+            str(exc),
+            ExitCode.SERVER_ERROR,
+            details=exc.body,
+            retryable=True,
+            hint="The Platform API did not answer. Check the URLs and connectivity.",
+        ) from exc
     except CloneError as exc:
         raise CLIError(
             str(exc),
             ExitCode.USAGE,
             hint="The clone could not start. Check the URLs, orgs and keys.",
+        ) from exc
+    except InvalidHeader as exc:
+        # The message quotes the offending header value, and that value is the
+        # platform key. It arrives `repr`-escaped, so the literal scrub cannot
+        # match it either -- say what happened instead of quoting it.
+        raise CLIError(
+            "A request header could not be built.",
+            ExitCode.USAGE,
+            hint=(
+                "A platform key most likely carries a newline or a control "
+                "character. Check how it is stored."
+            ),
+        ) from exc
+    except UNSENDABLE as exc:
+        raise CLIError(
+            str(exc) or type(exc).__name__,
+            ExitCode.USAGE,
+            hint=(
+                "The request could not be built. Check the URLs, and any proxy "
+                "variables, for a typo."
+            ),
+        ) from exc
+    except RequestException as exc:
+        raise CLIError(
+            str(exc) or type(exc).__name__,
+            ExitCode.SERVER_ERROR,
+            retryable=True,
+            hint="The request failed in transit rather than being answered.",
         ) from exc
 
     _finish(ctx, report)

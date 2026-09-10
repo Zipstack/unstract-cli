@@ -335,6 +335,7 @@ source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "llmwhisperer-client" },
+    { name = "requests" },
     { name = "tomli-w" },
     { name = "unstract-client" },
 ]
@@ -350,6 +351,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1,<9" },
     { name = "llmwhisperer-client", specifier = "==2.9.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "requests", specifier = ">=2.32.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "tomli-w", specifier = ">=1.0" },
     { name = "unstract-client", specifier = "==1.6.0" },

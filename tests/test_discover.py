@@ -13,7 +13,9 @@ import click
 import pytest
 
 from unstract_cli.__main__ import main
+from unstract_cli.app import cli
 from unstract_cli.commands import config_cmd
+from unstract_cli.core.discover import discover, exit_codes
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import CONTRACT_VERSION
 
@@ -225,3 +227,52 @@ def test_the_deployment_probe_says_it_verified_nothing(capsys, probe_client, mon
     assert entry["checked"] is False and entry["ok"] is None
     assert entry["resolved"] is True
     assert "NOT verified" in entry["detail"]
+
+
+def test_an_unknown_tier_is_a_usage_error_rather_than_a_traceback():
+    with pytest.raises(CLIError) as caught:
+        discover(cli, "everything")
+    assert caught.value.exit_code is ExitCode.USAGE
+
+
+def test_success_publishes_no_error_code():
+    table = {entry["name"]: entry["error_code"] for entry in exit_codes()}
+    assert table["success"] == ""
+    assert all(code for name, code in table.items() if name != "success")
+
+
+def test_doctor_reports_an_alias_whose_settings_do_not_arrive(
+    capsys, write_config, monkeypatch
+):
+    """A listed alias says nothing about whether the settings behind it
+    resolve, and the failure only shows up when a run is attempted."""
+    write_config(
+        """
+        default_profile = "p"
+        [profiles.p.docstudio]
+        api_key = "dk-configured-key"
+        org_id = "org_ABC"
+        [profiles.p.deployments.invoices]
+        api_name = "invoice-parser"
+        [profiles.p.deployments.broken]
+        api_name = "no-key"
+        api_key = "env:NOT_SET_ANYWHERE"
+        """
+    )
+    monkeypatch.delenv("NOT_SET_ANYWHERE", raising=False)
+
+    code = main(["-o", "json", "config", "doctor"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code != int(ExitCode.SUCCESS)
+    report = payload["error"]["details"]
+    assert set(report["deployment_aliases"]) == {"invoices", "broken"}
+    assert any("broken" in problem for problem in report["problems"])
+
+
+def test_a_malformed_config_file_is_a_usage_error(capsys, write_config):
+    write_config("[profiles.p\nthis is not toml")
+
+    code, _ = run(capsys, "config", "list")
+
+    assert code == int(ExitCode.USAGE)

@@ -11,9 +11,10 @@ import json
 import os
 import socket
 
+import click
 import httpx
 import pytest
-from requests.exceptions import ConnectionError
+from requests.exceptions import ConnectionError, InvalidHeader, MissingSchema
 from unstract.clone.report import CloneReport, Endpoint, PhaseResult
 from unstract.llmwhisperer import client_v2
 from unstract.llmwhisperer.client_v2 import (
@@ -1271,3 +1272,328 @@ def test_a_key_quoted_in_a_clone_report_does_not_survive_the_table(capsys, monke
     assert code == int(ExitCode.SUCCESS)
     assert "adapters" in captured.out
     assert key not in captured.out and key not in captured.err
+
+
+# --------------------------------------------------------------------------- #
+# --save: the flag that exists to protect a one-shot read
+# --------------------------------------------------------------------------- #
+
+
+def test_save_with_no_wait_is_a_usage_error(capsys, whisper_client, tmp_path):
+    """--no-wait returns before there is a result, so --save would write
+    nothing while reporting success."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(whisper={"whisper_hash": "h1", "status_code": 202})
+
+    code, out, _ = run(
+        capsys,
+        "whisper",
+        "extract",
+        str(doc),
+        "--no-wait",
+        "--save",
+        str(tmp_path / "out.json"),
+    )
+
+    assert code == int(ExitCode.USAGE)
+    assert not (tmp_path / "out.json").exists()
+    assert "retrieve" in envelope(out)["error"]["hint"]
+
+
+def test_deployment_status_can_save_the_result(capsys, deployment_client, tmp_path):
+    """`deployment status` is the documented way to resume after a timeout, so
+    it is where a result has to be savable."""
+    target = tmp_path / "result.json"
+    deployment_client(
+        check_execution_status={
+            "status_code": 200,
+            "execution_status": "COMPLETED",
+            "extraction_result": {"text": "done"},
+        }
+    )
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "status",
+        "my-api",
+        "e-1",
+        "--save",
+        str(target),
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert json.loads(target.read_text())["execution_status"] == "COMPLETED"
+    assert envelope(out)["ok"] is True
+
+
+def test_an_execution_id_cannot_carry_query_syntax(capsys, deployment_client):
+    client = deployment_client(
+        check_execution_status={"status_code": 200, "execution_status": "COMPLETED"}
+    )
+    run(capsys, "docstudio", "deployment", "status", "my-api", "e-1&admin=1")
+    endpoint = client.calls[0][1][0]
+    assert endpoint.endswith("?execution_id=e-1%26admin%3D1")
+
+
+# --------------------------------------------------------------------------- #
+# whisper status: a failure inside an HTTP 200
+# --------------------------------------------------------------------------- #
+
+
+def test_whisper_status_fails_on_a_failed_extraction(capsys, whisper_client):
+    whisper_client(whisper_status={"status": "error", "message": "bad scan"})
+
+    code, out, _ = run(capsys, "whisper", "status", "h1")
+
+    assert code == int(ExitCode.VALIDATION)
+    error = envelope(out)["error"]
+    assert error["details"]["message"] == "bad scan"
+    assert error["whisper_hash"] == "h1"
+
+
+def test_whisper_status_reports_a_hash_the_service_forgot(capsys, whisper_client):
+    """`unknown` is terminal: the service no longer holds the hash, and no
+    amount of polling changes that."""
+    whisper_client(whisper_status={"status": "unknown"})
+
+    code, _, _ = run(capsys, "whisper", "status", "h1")
+
+    assert code == int(ExitCode.VALIDATION)
+
+
+def test_whisper_status_passes_a_running_extraction_through(capsys, whisper_client):
+    whisper_client(whisper_status={"status": "processing"})
+
+    code, out, _ = run(capsys, "whisper", "status", "h1")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["status"] == "processing"
+
+
+def test_a_webhook_token_is_not_printed_back(capsys, whisper_client):
+    token = "wh-secret-abcdefghijklmnop"
+    whisper_client(get_webhook_details={"name": "n", "auth_token": token, "url": "u"})
+
+    code, out, _ = run(capsys, "whisper", "webhook", "get", "n")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert token not in out
+
+
+def test_a_rate_limited_call_exits_six(capsys, whisper_client):
+    whisper_client(
+        get_usage_info=LLMWhispererClientException("slow down", status_code=429)
+    )
+
+    code, out, _ = run(capsys, "whisper", "usage")
+
+    assert code == int(ExitCode.RATE_LIMITED) == 6
+    assert envelope(out)["error"]["retryable"] is True
+
+
+def test_a_wait_that_runs_out_exits_seven_naming_the_handle(
+    capsys, whisper_client, tmp_path, monkeypatch
+):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1", "status_code": 202},
+        whisper_status={"status": "processing"},
+    )
+    monkeypatch.setattr("unstract_cli.core.poll.time.sleep", lambda _seconds: None)
+
+    code, out, _ = run(
+        capsys, "whisper", "extract", str(doc), "--interval", "0", "--timeout", "0"
+    )
+
+    assert code == int(ExitCode.TIMEOUT) == 7
+    error = envelope(out)["error"]
+    assert error["whisper_hash"] == "h1"
+    assert error["retryable"] is True
+
+
+def test_deployment_save_with_no_wait_is_a_usage_error(
+    capsys, deployment_client, tmp_path
+):
+    """The deployment path needs the same guard as the whisper one: --no-wait
+    returns before there is a result, so --save would write nothing."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file={"status_code": 200, "pending": True, "execution_status": "P"}
+    )
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--no-wait",
+        "--save",
+        str(tmp_path / "out.json"),
+    )
+
+    assert code == int(ExitCode.USAGE)
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_a_webhook_token_can_come_from_the_environment(
+    capsys, whisper_client, monkeypatch
+):
+    """Passing a credential as an argument puts it in the process list, so the
+    envvar is the supported way to supply it."""
+    monkeypatch.setenv("UNSTRACT_WEBHOOK_AUTH_TOKEN", "wh-token-0123456789")
+    client = whisper_client(register_webhook={"status_code": 201, "message": "ok"})
+
+    code, _, _ = run(
+        capsys,
+        "whisper",
+        "webhook",
+        "create",
+        "hook1",
+        "--url",
+        "https://example.com/hook",
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "wh-token-0123456789" in client.calls[0][1]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("25", 25), ("2K", 2048), ("500M", 500 * 1024**2), ("1.5GB", int(1.5 * 1024**3))],
+)
+def test_clone_accepts_every_size_spelling_the_client_does(value, expected):
+    """Both spellings of this command have to accept the same strings."""
+    assert clone_cmd._parse_size(value) == expected
+
+
+@pytest.mark.parametrize("value", ["1.2.3", ".", "5X", ""])
+def test_a_malformed_size_is_a_usage_error_not_a_crash(value):
+    """`float()` raising here would escape as a traceback with no envelope."""
+    with pytest.raises(click.BadParameter):
+        clone_cmd._parse_size(value)
+
+
+def test_splitting_a_csv_drops_blanks_and_trims():
+    assert clone_cmd._split_csv(" a , b ,, c ") == ("a", "b", "c")
+    assert clone_cmd._split_csv("") is None
+    assert clone_cmd._split_csv(None) is None
+
+
+def test_an_unusable_output_format_is_still_reported_as_an_envelope(capsys):
+    """The format is resolved before the handler that renders envelopes exists,
+    so a failure there has to fall back rather than raise past it."""
+    code = main(["-o", "bogus", "whisper", "status", "h1"])
+    out = capsys.readouterr().out
+    assert code == int(ExitCode.USAGE)
+    # Rendered in whatever the fallback resolves to, but on stdout and shaped
+    # like a report: raising here would leave stdout empty instead.
+    assert "bogus" in out
+
+
+def test_a_base_url_without_a_scheme_is_a_usage_error(capsys, whisper_client):
+    """The request was never sendable, so the fault is the caller's config and
+    retrying it is the wrong advice."""
+    whisper_client(get_usage_info=MissingSchema("Invalid URL 'example.com'"))
+    code, out, _ = run(capsys, "whisper", "usage")
+    assert code == int(ExitCode.USAGE)
+    assert envelope(out)["error"]["retryable"] is False
+
+
+def test_a_clone_url_without_a_scheme_is_a_usage_error(capsys, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise MissingSchema("Invalid URL 'dev.example.com'")
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fail)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+    code, out, _ = run(
+        capsys,
+        "clone",
+        "--source-url",
+        "dev.example.com",
+        "--source-org",
+        "a",
+        "--target-url",
+        "https://prod.example.com",
+        "--target-org",
+        "b",
+    )
+    assert code == int(ExitCode.USAGE)
+    assert envelope(out)["error"]["retryable"] is False
+
+
+def test_the_clone_size_grammar_matches_the_client_it_mirrors():
+    """Both spellings of this command have to accept the same strings, and the
+    table is copied rather than imported, so nothing else notices a drift."""
+    from unstract.clone import cli as upstream
+
+    assert clone_cmd._SIZE_UNITS == upstream._SIZE_UNITS
+    assert clone_cmd._SIZE_RE.pattern == upstream._SIZE_RE.pattern
+
+
+def test_setting_an_env_reference_in_a_discovered_file_says_it_is_ignored(
+    capsys, tmp_path, monkeypatch
+):
+    """The refusal applies to every key, not only the withheld ones, so writing
+    one without a word would report success for a setting that never resolves."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / ".unstract.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(work)
+    _, out, _ = run(capsys, "config", "set", "docstudio", "org_id", "env:MY_ORG")
+    assert "ignored when the config is loaded" in envelope(out)["data"]["warning"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "setup"),
+    [
+        (("whisper", "usage"), "whisper"),
+        (
+            (
+                "clone",
+                "--source-url",
+                "https://dev.example.com",
+                "--source-org",
+                "a",
+                "--target-url",
+                "https://prod.example.com",
+                "--target-org",
+                "b",
+            ),
+            "clone",
+        ),
+    ],
+)
+def test_a_header_that_will_not_build_does_not_quote_the_credential(
+    capsys, monkeypatch, whisper_client, argv, setup
+):
+    """The only way to reach this is a credential carrying a control character,
+    and the exception quotes it `repr`-escaped -- past what the scrub matches."""
+    # The control character sits inside the key, not after it: `repr` then
+    # splits the literal, which is precisely what the scrub cannot match.
+    key = f"sk-live{chr(10)}0123456789"
+    failure = InvalidHeader(
+        f"Invalid return character or leading space in header: {key!r}"
+    )
+    escaped = repr(key)[1:-1]
+    if setup == "whisper":
+        whisper_client(get_usage_info=failure)
+    else:
+
+        def fail(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(clone_cmd, "run_clone", fail)
+        monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", key)
+        monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    code, out, err = run(capsys, *argv)
+    assert code == int(ExitCode.USAGE)
+    assert escaped not in out and escaped not in err

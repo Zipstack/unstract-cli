@@ -7,7 +7,8 @@ hint and the response detail.
 
 The two clients report failure differently -- LLMWhisperer raises with a status
 code attached, the deployment client returns a dict containing one -- so both
-shapes converge here rather than in each command.
+shapes converge here rather than in each command. The deployment client also
+raises for a request it will not send at all, which is always a usage error.
 """
 
 from __future__ import annotations
@@ -17,7 +18,16 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from requests.exceptions import ConnectionError, Timeout
+from requests.exceptions import (
+    ConnectionError,
+    InvalidHeader,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    RequestException,
+    Timeout,
+    URLRequired,
+)
 from unstract.api_deployments.client import (
     APIDeploymentsClient,
     APIDeploymentsClientException,
@@ -171,6 +181,18 @@ def _unresolved_host(exc: BaseException) -> str | None:
     return ""
 
 
+#: Failures that mean the request was never sendable, so the fault is in the
+#: caller's configuration rather than in the service. `InvalidHeader` is not
+#: among them: every handler takes it first, to keep the credential it quotes
+#: out of the message. `InvalidProxyURL` is an `InvalidURL`.
+UNSENDABLE = (
+    MissingSchema,
+    InvalidSchema,
+    InvalidURL,
+    URLRequired,
+)
+
+
 @contextmanager
 def translated(endpoint: str | None = None) -> Iterator[None]:
     """Turn a client failure into a CLIError with an exit code and a hint."""
@@ -211,6 +233,40 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
             retryable=True,
             hint="Could not reach the service. Check the base URL and connectivity.",
         ) from exc
+    except InvalidHeader as exc:
+        # The message quotes the offending header value, and that value is the
+        # credential. It arrives `repr`-escaped, so the literal scrub cannot
+        # match it either -- say what happened instead of quoting it.
+        raise CLIError(
+            "A request header could not be built.",
+            ExitCode.USAGE,
+            endpoint=endpoint,
+            hint=(
+                "A credential most likely carries a newline or a control "
+                "character. Check how it is stored."
+            ),
+        ) from exc
+    except UNSENDABLE as exc:
+        # These say the request could never be sent -- a base URL without a
+        # scheme is the usual one. Retrying is the wrong advice, and the fault
+        # is in the caller's configuration rather than in the service.
+        raise CLIError(
+            str(exc) or type(exc).__name__,
+            ExitCode.USAGE,
+            endpoint=endpoint,
+            hint=(
+                "The request could not be built. Check the base URL, and any "
+                "proxy variables, for a typo."
+            ),
+        ) from exc
+    except RequestException as exc:
+        raise CLIError(
+            str(exc) or type(exc).__name__,
+            ExitCode.SERVER_ERROR,
+            endpoint=endpoint,
+            retryable=True,
+            hint="The request failed in transit rather than being answered.",
+        ) from exc
 
 
 def translating(
@@ -237,9 +293,28 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
     failure would otherwise be reported as a successful run whose payload
     happens to contain an error.
     """
-    status = int(result.get("status_code") or 0)
+    raw_status = result.get("status_code")
+    try:
+        status = int(raw_status) if raw_status is not None else 0
+    except (TypeError, ValueError):
+        raise CLIError(
+            f"The service reported a status code of {raw_status!r}.",
+            ExitCode.SERVER_ERROR,
+            details=result,
+            endpoint=endpoint,
+            hint="`details` carries the response exactly as it arrived.",
+        ) from None
     reported = result.get("error")
-    if status and not 200 <= status < 300:
+    if not status:
+        raise CLIError(
+            "The service answered without a status code.",
+            ExitCode.SERVER_ERROR,
+            details=result,
+            endpoint=endpoint,
+            retryable=True,
+            hint="`details` carries the response exactly as it arrived.",
+        )
+    if not 200 <= status < 300:
         raise error_from_status(
             status,
             str(reported or f"Request failed with status {status}"),
@@ -261,6 +336,7 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
 
 
 __all__ = [
+    "UNSENDABLE",
     "deployment",
     "deployment_url",
     "llmwhisperer",

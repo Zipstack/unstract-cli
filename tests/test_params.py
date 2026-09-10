@@ -13,6 +13,7 @@ from unstract.api_deployments.client import APIDeploymentsClient
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
 from unstract_cli.core import params as params_module
+from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.params import (
     Param,
     click_option,
@@ -275,5 +276,10 @@ def test_unpassed_values_are_not_sent():
     assert requested({"a": None, "b": (), "c": 1}) == {"c": 1}
 
 
-def test_dropped_names_are_not_sent():
-    assert requested({"a": 1, "b": 2}, drop=("b",)) == {"a": 1}
+def test_an_unmapped_spec_type_fails_the_flag_and_not_the_import():
+    """Options are built at import time, so refusing there would take down
+    --help and every unrelated command instead of the one flag."""
+    option = click_option(Param(name="shape", type="geojson"), {})
+    with pytest.raises(CLIError) as caught:
+        option.type.convert("x", option, None)
+    assert caught.value.exit_code is ExitCode.GENERIC

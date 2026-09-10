@@ -31,7 +31,7 @@ def test_v1_groups_are_registered():
     assert set(tree["config"]["commands"]) == {"doctor", "get", "init", "list", "set"}
 
 
-def test_help_exits_zero(capsys):
+def test_help_exits_zero():
     assert main(["--help"]) == int(ExitCode.SUCCESS)
 
 
@@ -201,3 +201,16 @@ def test_click_parameter_info_dict_keeps_the_keys_discovery_reads():
     param = next(p for p in cli.params if p.name == "output")
     info = param.to_info_dict()
     assert {"name", "opts", "help", "type", "required"} <= set(info)
+
+
+def test_the_joined_output_form_is_accepted(capsys):
+    """`--output=json` is the same request as `--output json`, and the pre-parse
+    read of it decides what a parse failure is rendered in."""
+    assert main(["--output=json", "--discover", "groups"]) == int(ExitCode.SUCCESS)
+    assert json.loads(capsys.readouterr().out)["data"]["tier"] == "groups"
+
+
+def test_an_unknown_output_format_is_reported_as_an_envelope(capsys):
+    code, payload, _ = run(capsys, "--output", "yaml", "config", "list")
+    assert code == int(ExitCode.USAGE)
+    assert payload["error"]["exit_code"] == int(ExitCode.USAGE)

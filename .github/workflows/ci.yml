@@ -29,7 +29,7 @@ jobs:
       - run: uv pip install 'click~=8.1.0'
       - run: .venv/bin/python -m pytest -q
       - run: .venv/bin/python -m unstract_cli -o json --discover full > floor.json
-      - run: uv pip install -U click
+      - run: uv pip install -U 'click>=8.1,<9'
       - run: .venv/bin/python -m pytest -q
       - run: .venv/bin/python -m unstract_cli -o json --discover full > latest.json
       - run: diff floor.json latest.json

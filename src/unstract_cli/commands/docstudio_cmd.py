@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import click
 from unstract.api_deployments.client import APIDeploymentsClient
@@ -23,8 +23,16 @@ from unstract_cli.core.clients import (
     translating,
 )
 from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.output import diagnostic
 from unstract_cli.core.params import requested, spec_options
-from unstract_cli.core.poll import PollSpec, classify, preflight, wait_for_completion
+from unstract_cli.core.poll import (
+    PollSpec,
+    PollState,
+    classify,
+    persist,
+    preflight,
+    wait_for_completion,
+)
 
 PRODUCT = "docstudio"
 
@@ -79,6 +87,15 @@ def run(
     """
     client = deployment(ctx.config, target, ctx.transport_timeout)
     sent = requested(params)
+    if save and not wait:
+        raise CLIError(
+            "--save has nothing to write with --no-wait.",
+            ExitCode.USAGE,
+            hint=(
+                "Drop --no-wait, or start now and save later with "
+                "`deployment status --save`."
+            ),
+        )
     if save:
         preflight(save)
     with naming_aliases(ctx.config, target), translated(endpoint=client.api_url):
@@ -103,8 +120,14 @@ def run(
             save=save,
             interval=interval,
             timeout=wait_timeout,
-            on_status=lambda status: (
-                click.echo(f"status: {status}", err=True) if not ctx.quiet else None
+            on_status=lambda status: diagnostic(
+                f"status: {status}", quiet=ctx.quiet, verbosity=ctx.verbosity
+            ),
+            on_retry=lambda exc: diagnostic(
+                f"retrying: {exc.message}", quiet=ctx.quiet, verbosity=ctx.verbosity
+            ),
+            on_saved=lambda path: diagnostic(
+                f"saved: {path}", quiet=ctx.quiet, verbosity=ctx.verbosity
             ),
         )
     # A waited result names no execution, so the handle is returned as meta for
@@ -147,18 +170,30 @@ def _status_poller(
     client_method=APIDeploymentsClient.check_execution_status,
     exclude=("execution_id",),
 )
+@click.option(
+    "--save",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Write the result here before printing it.",
+)
 @pass_context
-def status(ctx: Context, target: str, execution_id: str, **params: Any) -> None:
+def status(
+    ctx: Context, target: str, execution_id: str, save: str | None, **params: Any
+) -> None:
     """Report the state of a running or finished execution."""
     client = deployment(ctx.config, target, ctx.transport_timeout)
-    endpoint = f"{client.api_url}?execution_id={execution_id}"
+    if save:
+        preflight(save)
+    # Quoted rather than trusted: the id comes from the caller and would
+    # otherwise be able to carry query syntax of its own.
+    endpoint = f"{client.api_url}?execution_id={quote(execution_id, safe='')}"
     with naming_aliases(ctx.config, target), translated(endpoint=client.api_url):
         result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
             raise_for_result(result, endpoint=client.api_url)
     # A finished-and-failed execution is reported inside an HTTP 200, so the
     # status code alone would call this a success.
-    if classify(result, RUN_POLL) == "failure":
+    if classify(result, RUN_POLL) is PollState.FAILURE:
         raise CLIError(
             f"Execution {execution_id} finished with status "
             f"{result.get('execution_status')!r}.",
@@ -168,6 +203,9 @@ def status(ctx: Context, target: str, execution_id: str, **params: Any) -> None:
             hint="Inspect `details` for the per-file error, or check the execution logs.",
             extra={"execution_id": execution_id},
         )
+    if save:
+        written = persist(save, result)
+        diagnostic(f"saved: {written}", quiet=ctx.quiet, verbosity=ctx.verbosity)
     finish(ctx, result, raw_fields=STATUS_RAW)
 
 

@@ -31,7 +31,7 @@ def test_v1_groups_are_registered():
     assert set(tree["config"]["commands"]) == {"doctor", "get", "init", "list", "set"}
 
 
-def test_help_exits_zero(capsys):
+def test_help_exits_zero():
     assert main(["--help"]) == int(ExitCode.SUCCESS)
 
 
@@ -59,6 +59,32 @@ def test_an_interrupt_exits_one_thirty_with_an_envelope(capsys, monkeypatch):
     assert payload["error"]["code"] == "interrupted"
 
 
+def test_a_reader_that_went_away_does_not_raise_on_the_way_out(capsys, monkeypatch):
+    """`... | head` closes the pipe mid-write; Python flushes stdout again at exit."""
+
+    def gone():
+        raise BrokenPipeError
+
+    monkeypatch.setattr("unstract_cli.commands.config_cmd.load_config", gone)
+
+    assert main(["-o", "json", "config", "doctor"]) == int(ExitCode.GENERIC)
+    # Whatever stdout now points at, writing to it must not raise.
+    print("still writable")
+
+
+def test_an_unwritable_stream_is_an_envelope_rather_than_a_traceback(capsys, monkeypatch):
+    def full_disk():
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr("unstract_cli.commands.config_cmd.load_config", full_disk)
+
+    code, payload, _ = run(capsys, "config", "doctor")
+
+    assert code == int(ExitCode.GENERIC)
+    assert payload["error"]["message"] == "No space left on device"
+    assert "disk" in payload["error"]["hint"]
+
+
 def test_unknown_config_target_exits_two(capsys):
     code, payload, _ = run(capsys, "config", "get", "nosuchproduct", "base_url")
     assert code == int(ExitCode.USAGE)
@@ -74,6 +100,25 @@ def test_set_then_get_round_trip(capsys, tmp_path, monkeypatch):
     code, payload, _ = run(capsys, "config", "get", "docstudio", "org_id")
     assert code == 0
     assert payload["data"]["value"] == "org_A"
+
+
+def test_set_refuses_a_setting_the_product_does_not_have(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+    code, payload, _ = run(capsys, "config", "set", "llmwhisperer", "org_id", "org_A")
+
+    assert code == int(ExitCode.USAGE)
+    assert "org_id" in payload["error"]["message"]
+    assert "base_url" in payload["error"]["hint"]
+    assert not (tmp_path / "c.toml").exists()
+
+
+def test_doctor_reports_a_setting_nothing_reads(capsys, write_config):
+    write_config('default_profile = "p"\n\n[profiles.p.llmwhisperer]\norg_id = "org_A"\n')
+    code, payload, _ = run(capsys, "config", "doctor")
+
+    assert code != 0
+    problems = payload["error"]["details"]["problems"]
+    assert any("llmwhisperer.org_id" in problem for problem in problems)
 
 
 def test_set_warns_when_a_credential_is_stored_literally(capsys, tmp_path, monkeypatch):
@@ -201,3 +246,60 @@ def test_click_parameter_info_dict_keeps_the_keys_discovery_reads():
     param = next(p for p in cli.params if p.name == "output")
     info = param.to_info_dict()
     assert {"name", "opts", "help", "type", "required"} <= set(info)
+
+
+def test_the_joined_output_form_is_accepted(capsys):
+    """`--output=json` is the same request as `--output json`, and the pre-parse
+    read of it decides what a parse failure is rendered in."""
+    assert main(["--output=json", "--discover", "groups"]) == int(ExitCode.SUCCESS)
+    assert json.loads(capsys.readouterr().out)["data"]["tier"] == "groups"
+
+
+def test_an_unknown_output_format_is_reported_as_an_envelope(capsys):
+    code, payload, _ = run(capsys, "--output", "yaml", "config", "list")
+    assert code == int(ExitCode.USAGE)
+    assert payload["error"]["exit_code"] == int(ExitCode.USAGE)
+
+
+def test_a_clustered_short_option_still_selects_the_failure_format(capsys):
+    """`-ojson` and `-o json` are the same option to Click, so a failure has to
+    render the same way under both -- reading argv by hand only sees one."""
+    assert main(["-ojson", "docstudio", "deployment", "status"]) == int(ExitCode.USAGE)
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage_error"
+
+
+def test_a_format_named_after_other_short_options_is_still_read(capsys):
+    assert main(["-qojson", "whisper", "status"]) == int(ExitCode.USAGE)
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+def test_a_bare_invocation_is_a_usage_error_in_a_parseable_format(capsys):
+    """Help on stdout with exit 0 tells a parser the run succeeded, then hands
+    it a page of prose where the envelope should be."""
+    assert main(["-o", "json"]) == int(ExitCode.USAGE)
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage_error"
+
+
+def test_a_bare_invocation_still_prints_help_for_a_person(capsys):
+    assert main(["-o", "table"]) == int(ExitCode.SUCCESS)
+    assert "Commands:" in capsys.readouterr().out
+
+
+def test_quiet_silences_a_note_from_below_the_output_layer(capsys, tmp_path, monkeypatch):
+    """The config and credential registries cannot import the output layer, and
+    went straight to stderr -- so `--quiet` reached everything except them."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / ".unstract.toml").write_text(
+        '[profiles.p.docstudio]\norg_id = "env:CI_DEPLOY_TOKEN"\napi_key = "k-0123456789"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CI_DEPLOY_TOKEN", "tkn-never-read")
+
+    args = ["-o", "json", "-p", "p", "docstudio", "deployment", "status", "a", "b"]
+    main(args)
+    assert "may not choose which environment variable" in capsys.readouterr().err
+
+    main(["-q", *args])
+    assert "may not choose which environment variable" not in capsys.readouterr().err

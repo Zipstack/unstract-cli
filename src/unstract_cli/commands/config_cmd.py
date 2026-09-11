@@ -20,10 +20,11 @@ from unstract_cli.config import (
     LLMWHISPERER,
     PLATFORM,
     PRODUCTS,
+    UNTRUSTED_PROJECT_KEYS,
     ConfigError,
     ConfigFile,
     ResolvedConfig,
-    config_path,
+    init_path,
     load_config,
     save_config,
     settings_for,
@@ -63,6 +64,17 @@ def _check_product(product: str) -> str:
     return product
 
 
+def _check_key(product: str, key: str) -> str:
+    """A setting a product does not have would be written and never read again."""
+    if key not in (known := settings_for(product)):
+        raise CLIError(
+            f"{product} has no setting {key!r}.",
+            ExitCode.USAGE,
+            hint=f"Valid keys for {product}: " + ", ".join(known) + ".",
+        )
+    return key
+
+
 @click.group(name="config", help="Manage CLI configuration profiles (local only).")
 def config_group() -> None:
     """Local configuration management. These commands make no network calls."""
@@ -74,7 +86,7 @@ def config_group() -> None:
 )
 @click.pass_obj
 def config_init(obj: Any, force: bool) -> None:
-    path = config_path()
+    path = init_path()
     if path.exists() and not force:
         # Never prompt: state the situation and the exact flag that resolves it.
         raise CLIError(
@@ -179,6 +191,7 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
     shell history.
     """
     _check_product(product)
+    _check_key(product, key)
     cfg = _loaded(obj)
     name = profile or getattr(obj, "profile", None) or cfg.default_profile or "cloud-us"
 
@@ -187,12 +200,28 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
         cfg.default_profile = name
     written = save_config(cfg)
 
-    warning = None
+    warnings = []
     if _is_secret(key) and not value.startswith("env:"):
-        warning = (
+        warnings.append(
             "Value stored literally. Prefer `env:VAR_NAME` so the config file holds "
             "a reference rather than the secret itself."
         )
+    if cfg.is_project_local and key in UNTRUSTED_PROJECT_KEYS:
+        warnings.append(
+            f"{written} was found by searching upwards rather than named, so "
+            f"`{key}` written there is withheld when the config is loaded. Pass "
+            f"--config {written} to use it, or write it to the home config."
+        )
+    if cfg.is_project_local and value.startswith("env:"):
+        # Refused for every key, not only the withheld ones, so writing it
+        # without a word would report success for a setting that never resolves.
+        warnings.append(
+            f"{written} was found by searching upwards rather than named, so it "
+            f"may not choose which environment variable is read and `{value}` is "
+            f"ignored when the config is loaded. Pass --config {written} to use "
+            f"it, or write it to the home config."
+        )
+    warning = " ".join(warnings) or None
 
     emit_result(
         {
@@ -316,6 +345,9 @@ def config_doctor(obj: Any, probe: bool) -> None:
                 entry[key] = {"resolved": False, "source": "unset", "detail": str(exc)}
             if detail := entry[key].get("detail"):
                 problems.append(f"{product}.{key}: {detail}")
+        for stray in resolved.unknown_settings(product):
+            # Nothing reads it, so it is a setting the user believes is in force.
+            problems.append(f"{product}.{stray}: not a setting {product} has.")
         products[product] = entry
 
     try:
@@ -376,10 +408,9 @@ def config_doctor(obj: Any, probe: bool) -> None:
 def _loaded(obj: Any) -> ConfigFile:
     """The config file, with its warnings reported.
 
-    These commands load the file themselves rather than through the root
-    context, and they are the two a user runs *to understand* their config --
-    reading it here without repeating what it warned about would make them the
-    quietest commands in the CLI about their own subject.
+    A `config` subcommand may run with no root context to have loaded the file,
+    so it reports here what the file warned about -- reading it silently would
+    make these the quietest commands in the CLI about their own subject.
     """
     cfg = load_config()
     for warning in cfg.warnings:

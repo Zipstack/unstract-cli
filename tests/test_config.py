@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from unstract_cli.config import (
     ResolvedConfig,
     config_path,
     find_project_config,
+    init_path,
     load_config,
     save_config,
     set_config_path,
@@ -263,6 +265,64 @@ def test_an_existing_file_is_narrowed_before_the_secret_is_written(tmp_path, mon
     assert stat.S_IMODE(written.stat().st_mode) == 0o600
 
 
+def test_a_failed_write_leaves_the_previous_config_intact(tmp_path, monkeypatch):
+    """Truncating the real file first would trade a working config for an empty
+    one whenever anything after the truncate failed."""
+    path = tmp_path / "config.toml"
+    path.write_text('default_profile = "keep"\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        config_module.tomli_w,
+        "dump",
+        lambda doc, fh: (_ for _ in ()).throw(OSError("no space left on device")),
+    )
+    with pytest.raises(OSError):
+        save_config(ConfigFile(profiles=starter_profiles()), path)
+
+    assert path.read_text(encoding="utf-8") == 'default_profile = "keep"\n'
+    # And nothing half-written left behind next to it.
+    assert [p.name for p in tmp_path.iterdir()] == ["config.toml"]
+
+
+def test_the_replacement_is_synced_before_it_is_renamed(tmp_path, monkeypatch):
+    """A rename that outruns its own bytes survives a crash while the content
+    does not, which turns a working config into an empty one."""
+    path = tmp_path / "config.toml"
+    order: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(
+        config_module.os,
+        "fsync",
+        lambda fd: (order.append("fsync"), real_fsync(fd))[1],
+    )
+    monkeypatch.setattr(
+        config_module.os,
+        "replace",
+        lambda src, dst: (order.append("replace"), real_replace(src, dst))[1],
+    )
+
+    save_config(ConfigFile(profiles=starter_profiles()), path)
+
+    assert order[: order.index("replace")] == ["fsync"]
+    # The last one is the directory, so the rename itself is on the disk too.
+    assert order[-1] == "fsync"
+
+
+def test_an_unwritable_directory_is_reported_rather_than_raised(tmp_path):
+    """Replacing the file needs the directory, which overwriting it did not, so
+    the case says what is wrong instead of surfacing a bare PermissionError."""
+    nested = tmp_path / "locked"
+    nested.mkdir()
+    path = nested / "config.toml"
+    path.write_text("", encoding="utf-8")
+    nested.chmod(0o500)
+    try:
+        with pytest.raises(ConfigError, match="not writable"):
+            save_config(ConfigFile(profiles=starter_profiles()), path)
+    finally:
+        nested.chmod(0o700)
+
+
 def test_loose_permissions_warn_rather_than_fail(write_config):
     path = write_config(PROFILE_TOML)
     path.chmod(0o644)
@@ -334,6 +394,18 @@ def test_writing_back_a_project_config_keeps_the_keys_it_withheld(tmp_path, monk
     )
 
 
+def test_a_table_this_cli_does_not_own_survives_a_write(write_config):
+    path = write_config(PROFILE_TOML + "\n[telemetry]\nenabled = false\n")
+    cfg = load_config()
+    cfg.profiles["p"]["docstudio"]["org_id"] = "org_edited"
+    save_config(cfg, path)
+
+    assert load_config().profiles["p"]["docstudio"]["org_id"] == "org_edited"
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["telemetry"] == {
+        "enabled": False
+    }
+
+
 def test_withheld_keys_are_not_carried_into_a_file_the_user_names(tmp_path, monkeypatch):
     _plant_project_config(tmp_path, monkeypatch)
     elsewhere = tmp_path / "named.toml"
@@ -403,3 +475,128 @@ def test_starter_profiles_hold_no_literal_secrets():
         for settings in blocks.values():
             key = settings.get("api_key")
             assert key is None or key.startswith("env:")
+
+
+def test_a_discovered_file_cannot_choose_which_env_var_is_read(
+    tmp_path, monkeypatch, warnings_seen
+):
+    """`org_id` is not withheld from a project file, and it is spliced into the
+    deployment URL and echoed back in any error about it. Letting a checkout
+    the user did not write name the variable makes that an exfiltration path."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / PROJECT_CONFIG_NAME).write_text(
+        '[profiles.p.docstudio]\norg_id = "env:CI_DEPLOY_TOKEN"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CI_DEPLOY_TOKEN", "tkn-should-never-be-read")
+
+    cfg = ResolvedConfig(file=load_config(), profile_name="p")
+
+    assert cfg.get(DOCSTUDIO, "org_id") is None
+    assert any("may not choose which environment variable" in n for n in warnings_seen)
+
+
+def test_a_named_file_may_still_use_env_indirection(tmp_path, monkeypatch):
+    path = tmp_path / "named.toml"
+    path.write_text('[profiles.p.docstudio]\norg_id = "env:MY_ORG"\n', encoding="utf-8")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(path))
+    monkeypatch.setenv("MY_ORG", "org_ABC")
+
+    cfg = ResolvedConfig(file=load_config(), profile_name="p")
+    assert cfg.get(DOCSTUDIO, "org_id") == "org_ABC"
+
+
+def test_doctor_reports_a_refused_env_reference_as_unresolved(tmp_path, monkeypatch):
+    """Doctor exists to answer "I set it -- where is it looking?", so reporting
+    a value the resolver refuses as resolved is the one answer it must not give."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / PROJECT_CONFIG_NAME).write_text(
+        '[profiles.p.docstudio]\norg_id = "env:MY_ORG"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("MY_ORG", "org_ABC")
+
+    cfg = ResolvedConfig(file=load_config(), profile_name="p")
+    report = cfg.resolution_source(DOCSTUDIO, "org_id")
+
+    assert cfg.get(DOCSTUDIO, "org_id") is None
+    assert report["resolved"] is False
+    assert "may not choose which environment variable" in report["detail"]
+
+
+def test_a_refused_alias_reference_names_the_trust_rule_not_a_missing_var(
+    tmp_path, monkeypatch
+):
+    """Blaming an unset variable sends the user to export one that is set."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / PROJECT_CONFIG_NAME).write_text(
+        '[profiles.p.docstudio]\napi_key = "k"\n'
+        '[profiles.p.deployments.inv]\napi_name = "n"\norg_id = "env:MY_ORG"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("MY_ORG", "org_ABC")
+
+    cfg = ResolvedConfig(file=load_config(), profile_name="p")
+    with pytest.raises(ConfigError) as caught:
+        cfg.deployment("inv")
+    assert "may not choose which environment variable" in str(caught.value)
+
+
+def test_an_override_is_only_read_under_the_key_it_is_written_with(tmp_path):
+    """`resolution_source` and `get` have to look in the same place, or doctor
+    reports a value resolved that the CLI never reads."""
+    cfg = ResolvedConfig(
+        file=load_config(), profile_name="p", overrides={"org_id": "bare"}
+    )
+    assert cfg.get(DOCSTUDIO, "org_id") is None
+    assert cfg.resolution_source(DOCSTUDIO, "org_id")["resolved"] is False
+
+
+def test_init_writes_the_home_config_even_inside_a_project(tmp_path, monkeypatch):
+    """A discovered file is read-only as far as `init` is concerned.
+
+    Walking up from the working directory is how a project config is *found*.
+    Creating one that way writes a file the caller never named -- and one whose
+    credentials the loader then refuses, because a discovered file is not
+    trusted to supply them. The starter config has to land where it works.
+    """
+    project = tmp_path / "project"
+    (project / "sub").mkdir(parents=True)
+    (project / PROJECT_CONFIG_NAME).write_text(PROFILE_TOML)
+    monkeypatch.chdir(project / "sub")
+
+    assert find_project_config() == project / PROJECT_CONFIG_NAME
+    assert init_path() == config_module.HOME_CONFIG.expanduser()
+
+
+@pytest.mark.parametrize("named_by", ["flag", "env"])
+def test_init_writes_the_file_the_caller_named(tmp_path, monkeypatch, named_by):
+    """Naming a path is the trusted case, and it stays the target wherever it
+    points -- including at a project file, which the caller has then chosen."""
+    chosen = tmp_path / "chosen.toml"
+    if named_by == "flag":
+        set_config_path(chosen)
+    else:
+        monkeypatch.setenv("UNSTRACT_CONFIG", str(chosen))
+
+    assert init_path() == chosen
+
+
+def test_the_starter_config_is_one_the_loader_will_honour(tmp_path, monkeypatch):
+    """The round trip the bug broke: init, then read it back and resolve a
+    credential from it. Written to a discovered project file this fails, since
+    `env:` indirection is refused there.
+    """
+    monkeypatch.setenv("LLMWHISPERER_API_KEY", "k-1")
+    written = save_config(
+        ConfigFile(default_profile="cloud-us", profiles=starter_profiles()),
+        init_path(),
+    )
+
+    resolved = ResolvedConfig(file=load_config(written), profile_name="cloud-us")
+
+    assert resolved.get(LLMWHISPERER, "api_key") == "k-1"

@@ -18,12 +18,18 @@ dependencies = [
     # deliberately, against the specs vendored in `src/unstract_cli/specs`.
     "unstract-client==1.7.0",
     "llmwhisperer-client==2.9.0",
+    # Both clients pull this in, but the CLI imports its exception classes
+    # directly to classify a failure, so it names the dependency itself.
+    "requests>=2.32.3",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    # Tests only: the workflow files are parsed in the suite so a file that
+    # cannot be read fails the gate rather than the first dispatch of it.
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

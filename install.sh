@@ -10,7 +10,8 @@ SOURCE="${UNSTRACT_CLI_SOURCE:-git+https://github.com/Zipstack/unstract-cli@main
 if ! command -v uv >/dev/null 2>&1; then
     echo "Installing uv..." >&2
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    # The installer only edits shell rc files, which this shell has already read.
+    # The installer only edits shell rc files, which take effect in a new
+    # shell; this one needs uv on PATH now.
     PATH="${XDG_BIN_HOME:-${HOME}/.local/bin}:${HOME}/.cargo/bin:${PATH}"
     export PATH
 fi

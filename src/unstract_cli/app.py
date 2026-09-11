@@ -22,8 +22,9 @@ from unstract_cli.config import (
     load_config,
     set_config_path,
 )
+from unstract_cli.core.clients import DEFAULT_TRANSPORT_TIMEOUT
 from unstract_cli.core.discover import TIERS, discover
-from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.errors import CLIError, ExitCode, set_warning_sink
 from unstract_cli.core.output import (
     AgentMode,
     OutputFormat,
@@ -42,7 +43,7 @@ class Context:
     verbosity: int = 0
     profile: str | None = None
     #: Socket timeout for the deployment client, which has none of its own.
-    transport_timeout: float | None = None
+    transport_timeout: float | None = DEFAULT_TRANSPORT_TIMEOUT
     #: Command-line overrides, keyed `product.setting` -- the top tier of
     #: flag > env > profile > default.
     overrides: dict[str, Any] = field(default_factory=dict)
@@ -89,7 +90,10 @@ class Context:
             try:
                 if value := self.config.get(product, "api_key"):
                     out.append(str(value))
-            except ConfigError:
+            except (ConfigError, CLIError):
+                # A credential that cannot be resolved is one that cannot be
+                # printed either. Raising here would replace a finished report
+                # with a config error, after the work it describes is done.
                 continue
         return out
 
@@ -116,7 +120,8 @@ pass_context = click.make_pass_decorator(Context, ensure=True)
     "-o",
     default=None,
     type=click.Choice([f.value for f in OutputFormat]),
-    help="Output format. Defaults to table; pass json to parse the output.",
+    help="Output format. Defaults to table, or to json when --agent resolves "
+    "to yes; pass it explicitly to parse the output.",
 )
 @click.option(
     "--agent",
@@ -164,11 +169,17 @@ def cli(
     running anything.
     """
     set_config_path(config_file)
-    ctx.obj = Context(
-        output=resolve_format(output, agent),
-        quiet=quiet,
-        verbosity=verbose,
-        profile=profile,
+    # Filled in rather than replaced: the entry point holds this object so that
+    # a failure anywhere below renders in the format resolved here.
+    obj = ctx.ensure_object(Context)
+    obj.output = resolve_format(output, agent)
+    obj.quiet = quiet
+    obj.verbosity = verbose
+    obj.profile = profile
+    # Modules the output layer imports cannot import it back, so their notes
+    # reach it through here rather than going straight to stderr unfiltered.
+    set_warning_sink(
+        lambda message: diagnostic(message, quiet=obj.quiet, verbosity=obj.verbosity)
     )
     if discover_tier:
         # Discovery is how a caller learns what to run, so it has to answer
@@ -177,6 +188,15 @@ def cli(
         emit_result(discover(cli, discover_tier), OutputFormat.JSON)
         ctx.exit(int(ExitCode.SUCCESS))
     if ctx.invoked_subcommand is None:
+        if obj.output is not OutputFormat.TABLE:
+            # stdout carries one envelope and nothing else, and a run naming no
+            # command ran nothing -- printing help there and exiting 0 tells a
+            # parser the work succeeded and hands it a page of prose.
+            raise CLIError(
+                "No command given.",
+                ExitCode.USAGE,
+                hint="`--discover groups` lists what can be run, as JSON.",
+            )
         click.echo(ctx.get_help())
         ctx.exit(int(ExitCode.SUCCESS))
 
@@ -216,18 +236,19 @@ def whisper_group(ctx: Context, **overrides: str | None) -> None:
 @_connection_options(org_id=True)
 @click.option(
     "--transport-timeout",
-    type=float,
-    default=None,
-    help="Seconds before a stalled connection is given up on. Unset means no "
-    "bound for `deployment run` and `status`, and the platform client's own "
-    "60s default for `deployment ls`.",
+    type=click.FloatRange(min=0),
+    default=DEFAULT_TRANSPORT_TIMEOUT,
+    show_default=True,
+    help="Seconds before a stalled connection is given up on. 0 removes the "
+    "bound for `deployment run` and `status`, and leaves `deployment ls` on the "
+    "platform client's own 60s default.",
 )
 @pass_context
 def docstudio_group(
-    ctx: Context, transport_timeout: float | None, **overrides: str | None
+    ctx: Context, transport_timeout: float, **overrides: str | None
 ) -> None:
     """Run Document Studio API deployments."""
-    ctx.transport_timeout = transport_timeout
+    ctx.transport_timeout = transport_timeout or None
     ctx.override(DOCSTUDIO, overrides)
 
 

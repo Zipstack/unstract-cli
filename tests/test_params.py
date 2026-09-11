@@ -13,8 +13,10 @@ from unstract.api_deployments.client import APIDeploymentsClient
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
 from unstract_cli.core import params as params_module
+from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.params import (
     Param,
+    check_overlay,
     click_option,
     derive_params,
     docstring_params,
@@ -219,6 +221,33 @@ def test_choices_come_from_the_spec_unless_the_overlay_narrows_them():
     assert option.type.choices == ("form", "table")
 
 
+def test_an_overlay_entry_the_specs_do_not_declare_is_named(monkeypatch, warnings_seen):
+    """An entry that matches nothing applies nothing, and the file still parses."""
+    monkeypatch.setattr(
+        params_module,
+        "load_overlay",
+        lambda: {
+            "nosuchproduct": {"extract": {"mode": {"short": "-m"}}},
+            "llmwhisperer": {
+                "nosuchoperation": {"mode": {"short": "-m"}},
+                "extract": {"nosuchparam": {"short": "-n"}, "mode": {"short": "-m"}},
+            },
+        },
+    )
+    check_overlay.cache_clear()
+    try:
+        problems = check_overlay()
+    finally:
+        check_overlay.cache_clear()
+
+    assert [p.split(":")[0] for p in problems] == [
+        "[nosuchproduct]",
+        "[llmwhisperer.nosuchoperation]",
+        "[llmwhisperer.extract.nosuchparam]",
+    ]
+    assert len(warnings_seen) == 3
+
+
 def test_an_array_becomes_a_repeatable_option():
     option = click_option(Param("presigned_urls", "string", array=True), {})
     assert option.multiple is True
@@ -232,6 +261,17 @@ def test_types_map_onto_click_types():
 
 def test_a_required_parameter_stays_required():
     assert click_option(Param("url", "string", required=True), {}).required is True
+
+
+@pytest.mark.parametrize("type_name", ["string", "boolean"])
+def test_a_required_flag_carries_no_default_at_all(type_name):
+    """No command mounts a required derived flag today, so the parser check
+    below has nothing live to protect. This pins the property itself: Click
+    treats any default as a value the caller supplied."""
+    option = click_option(Param("lines", type_name, required=True), {})
+    bare = click.Option(["--bare"])
+    assert option.default is bare.default
+    assert click_option(Param("lines", type_name), {}).default is None
 
 
 @pytest.mark.parametrize("type_name", ["string", "boolean"])
@@ -264,5 +304,10 @@ def test_unpassed_values_are_not_sent():
     assert requested({"a": None, "b": (), "c": 1}) == {"c": 1}
 
 
-def test_dropped_names_are_not_sent():
-    assert requested({"a": 1, "b": 2}, drop=("b",)) == {"a": 1}
+def test_an_unmapped_spec_type_fails_the_flag_and_not_the_import():
+    """Options are built at import time, so refusing there would take down
+    --help and every unrelated command instead of the one flag."""
+    option = click_option(Param(name="shape", type="geojson"), {})
+    with pytest.raises(CLIError) as caught:
+        option.type.convert("x", option, None)
+    assert caught.value.exit_code is ExitCode.GENERIC

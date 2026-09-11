@@ -13,12 +13,14 @@ import click
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
 from unstract_cli.app import Context, pass_context, whisper_group
-from unstract_cli.commands.common import finish, raw_field, wait_options
+from unstract_cli.commands.common import finish, raw_fields, wait_options
 from unstract_cli.core.clients import llmwhisperer, translated, translating
 from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
+from unstract_cli.core.output import diagnostic
 from unstract_cli.core.params import requested, spec_options
 from unstract_cli.core.poll import (
     PollSpec,
+    PollState,
     classify,
     extract_status,
     persist,
@@ -39,14 +41,18 @@ EXTRACT_POLL = PollSpec(
 
 #: `--output raw` prints one field rather than the whole payload. Extraction
 #: results carry the text under this name.
-RAW_FIELD = "result_text"
+RAW_TEXT = ("result_text",)
+
+#: What a submission prints, best answer first: an accepted job answers with a
+#: handle and no text, so the handle is the answer until there is one.
+EXTRACT_RAW = (*RAW_TEXT, "whisper_hash")
 
 
 def _is_url(source: str) -> bool:
     return source.startswith(("http://", "https://"))
 
 
-@raw_field(RAW_FIELD)
+@raw_fields(*EXTRACT_RAW)
 @whisper_group.command("extract")
 @click.argument("source")
 @wait_options()
@@ -75,6 +81,15 @@ def extract(
     """
     client = llmwhisperer(ctx.config)
     sent = requested(params)
+    if save and not wait:
+        raise CLIError(
+            "--save has nothing to write with --no-wait.",
+            ExitCode.USAGE,
+            hint=(
+                "Drop --no-wait, or submit now and save later with "
+                "`whisper retrieve --save`."
+            ),
+        )
     if save:
         preflight(save)
 
@@ -98,7 +113,7 @@ def extract(
         )
 
         if not wait:
-            finish(ctx, accepted)
+            finish(ctx, accepted, raw_fields=EXTRACT_RAW)
             return
 
         result = wait_for_completion(
@@ -112,8 +127,14 @@ def extract(
             save=save,
             interval=interval,
             timeout=wait_timeout,
-            on_status=lambda status: (
-                click.echo(f"status: {status}", err=True) if not ctx.quiet else None
+            on_status=lambda status: diagnostic(
+                f"status: {status}", quiet=ctx.quiet, verbosity=ctx.verbosity
+            ),
+            on_retry=lambda exc: diagnostic(
+                f"retrying: {exc.message}", quiet=ctx.quiet, verbosity=ctx.verbosity
+            ),
+            on_saved=lambda path: diagnostic(
+                f"saved: {path}", quiet=ctx.quiet, verbosity=ctx.verbosity
             ),
         )
     # Waiting returns the text, which identifies the job nowhere; the hash is
@@ -121,7 +142,7 @@ def extract(
     finish(
         ctx,
         result,
-        raw_field=RAW_FIELD,
+        raw_fields=EXTRACT_RAW,
         meta={"whisper_hash": accepted.get("whisper_hash")}
         if accepted.get("whisper_hash")
         else None,
@@ -141,6 +162,7 @@ def _extraction(payload: Any) -> Any:
             "The service returned no extraction for a completed job.",
             ExitCode.SERVER_ERROR,
             details=payload,
+            verbatim_details=True,
             hint=(
                 "The read has been acknowledged, so it cannot be repeated. "
                 "`details` carries the response exactly as it arrived."
@@ -159,7 +181,7 @@ def status(ctx: Context, whisper_hash: str) -> None:
         result = client.whisper_status(whisper_hash)
     # A failed extraction is reported inside an HTTP 200, so the status code
     # alone would call this a success.
-    if classify(result, EXTRACT_POLL) == "failure":
+    if classify(result, EXTRACT_POLL) is PollState.FAILURE:
         raise CLIError(
             f"Extraction finished with status {extract_status(result)!r}.",
             ExitCode.VALIDATION,
@@ -174,7 +196,7 @@ def status(ctx: Context, whisper_hash: str) -> None:
     finish(ctx, result)
 
 
-@raw_field(RAW_FIELD)
+@raw_fields(*RAW_TEXT)
 @whisper_group.command("retrieve")
 @click.argument("whisper_hash")
 @click.option(
@@ -198,8 +220,9 @@ def retrieve(ctx: Context, whisper_hash: str, save: str | None) -> None:
         payload = client.whisper_retrieve(whisper_hash)
     result = _extraction(payload)
     if save:
-        persist(save, result)
-    finish(ctx, result, raw_field=RAW_FIELD)
+        written = persist(save, result)
+        diagnostic(f"saved: {written}", quiet=ctx.quiet, verbosity=ctx.verbosity)
+    finish(ctx, result, raw_fields=RAW_TEXT)
 
 
 @whisper_group.command("detail")
@@ -255,8 +278,19 @@ def highlights(
     sent.setdefault("lines", "")
 
     client = llmwhisperer(ctx.config)
-    with translated(endpoint="highlights"):
-        data = client.get_highlight_data(whisper_hash, **sent)
+    try:
+        with translated(endpoint="highlights"):
+            data = client.get_highlight_data(whisper_hash, **sent)
+    except CLIError as exc:
+        if exc.exit_code is ExitCode.VALIDATION:
+            # Line metadata is recorded during extraction or not at all, so the
+            # fix belongs to a call that has already been made and paid for.
+            exc.hint = (
+                "Line metadata exists only for an extraction run with "
+                "--add-line-nos. It cannot be added to this call: re-run "
+                "`whisper extract --add-line-nos` for the document."
+            )
+        raise
 
     if target_width and target_height:
         data = {
@@ -320,7 +354,12 @@ def webhook_group() -> None:
 @webhook_group.command("create")
 @click.argument("name")
 @click.option("--url", required=True, help="Where the result is delivered.")
-@click.option("--auth-token", required=True, help="Token sent with the delivery.")
+@click.option(
+    "--auth-token",
+    envvar="UNSTRACT_WEBHOOK_AUTH_TOKEN",
+    required=True,
+    help="Token sent with the delivery (or env UNSTRACT_WEBHOOK_AUTH_TOKEN).",
+)
 @pass_context
 def webhook_create(ctx: Context, name: str, url: str, auth_token: str) -> None:
     """Register a webhook."""
@@ -333,7 +372,12 @@ def webhook_create(ctx: Context, name: str, url: str, auth_token: str) -> None:
 @webhook_group.command("update")
 @click.argument("name")
 @click.option("--url", required=True, help="Where the result is delivered.")
-@click.option("--auth-token", required=True, help="Token sent with the delivery.")
+@click.option(
+    "--auth-token",
+    envvar="UNSTRACT_WEBHOOK_AUTH_TOKEN",
+    required=True,
+    help="Token sent with the delivery (or env UNSTRACT_WEBHOOK_AUTH_TOKEN).",
+)
 @pass_context
 def webhook_update(ctx: Context, name: str, url: str, auth_token: str) -> None:
     """Replace a webhook's URL and token."""
@@ -349,9 +393,10 @@ def webhook_update(ctx: Context, name: str, url: str, auth_token: str) -> None:
 def webhook_get(ctx: Context, name: str) -> None:
     """Show one webhook's configuration.
 
-    The token is reported as redacted, including for a webhook registered
+    The token is registered for redaction, including for a webhook created
     elsewhere: it authenticates deliveries wherever it was set, and this output
-    is as likely to land in a log as on a screen.
+    is as likely to land in a log as on a screen. A token too short to scrub for
+    is reported as such on stderr rather than silently printed.
     """
     client = llmwhisperer(ctx.config)
     with translated(endpoint="whisper-manage-callback"):

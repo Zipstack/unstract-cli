@@ -15,9 +15,10 @@ environment variables; that is the expected mode in CI and agent sandboxes.
 
 from __future__ import annotations
 
-import errno
+import contextlib
 import os
 import stat
+import tempfile
 import tomllib
 from collections.abc import Iterator
 from copy import deepcopy
@@ -27,7 +28,7 @@ from typing import Any
 
 import tomli_w
 
-from unstract_cli.core.errors import remember_secret
+from unstract_cli.core.errors import remember_secret, warn
 
 LLMWHISPERER = "llmwhisperer"
 DOCSTUDIO = "docstudio"
@@ -64,9 +65,9 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
 }
 
 
-#: Where the three credentials are minted. Quoted wherever the CLI reports one
-#: as missing: knowing a key is unset is no help without knowing where one is
-#: made.
+#: Where the three credentials are minted. Quoted by `config doctor`, by the
+#: starter file `config init` writes, and wherever the CLI reports one as
+#: missing: knowing a key is unset is no help without knowing where one is made.
 KEY_SOURCES = (
     "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
     "shown on the API deployment's own page in the Unstract UI, and a key "
@@ -146,6 +147,18 @@ def config_path() -> Path:
     return _resolve_config_path()[0]
 
 
+def init_path() -> Path:
+    """Where `config init` writes when no config file was named.
+
+    Discovery is for reading. A file found by walking up from the working
+    directory is not trusted with credentials or hosts, so a starter config
+    written there is one the next command refuses to honour -- and writing to a
+    checked-in file the user never named is a surprise in its own right.
+    """
+    path, discovered = _resolve_config_path()
+    return HOME_CONFIG.expanduser() if discovered else path
+
+
 def _resolve_config_path() -> tuple[Path, bool]:
     """The config path, and whether it was *discovered* rather than named.
 
@@ -162,7 +175,7 @@ def _resolve_config_path() -> tuple[Path, bool]:
     return HOME_CONFIG.expanduser(), False
 
 
-def _deref(value: Any) -> Any:
+def _deref(value: Any, *, allow_env: bool) -> Any:
     """Resolve ``env:VAR_NAME`` indirection so config files hold no secrets.
 
     An unset variable resolves to ``None`` rather than the literal string, so a
@@ -171,17 +184,24 @@ def _deref(value: Any) -> Any:
 
     An empty string resolves the same way: the placeholders a generated config
     carries must not satisfy `require`.
+
+    ``allow_env`` is the trust boundary, and has no default: the permissive
+    branch is the one that splices an attacker-chosen variable into a request
+    URL, so a caller has to ask for it. A discovered project-local file may not
+    name the variable to read, because whatever it names is then spliced into a
+    request URL and echoed back in any error about it.
     """
     if isinstance(value, str):
         if value.startswith("env:"):
-            return os.environ.get(value[4:].strip()) or None
+            return os.environ.get(value[4:].strip()) or None if allow_env else None
         return value or None
     return value
 
 
-#: Settings a *discovered* project-local file may not supply: a checkout the
-#: user did not write must not choose the host their key is sent to. Everything
-#: else -- org_id, profile selection, deployment aliases -- is still honoured.
+#: Settings a *discovered* project-local file may not supply as literals: a
+#: checkout the user did not write must not choose the host their key is sent
+#: to. Separately, and for every key, such a file may not name an environment
+#: variable to read either -- see `ResolvedConfig._env_refused`.
 UNTRUSTED_PROJECT_KEYS = frozenset({"api_key", "base_url"})
 
 
@@ -201,6 +221,9 @@ class ConfigFile:
     #: Keys withheld from an untrusted file, as ``{(profile, *blocks, key): value}``.
     #: Excluded from resolution, but kept so a write-back does not drop them.
     withheld: dict[tuple[str, ...], Any] = field(default_factory=dict)
+    #: The file as it was parsed. A write rebuilds only the tables this CLI owns,
+    #: so anything else in the file survives being written through.
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 def _strip_untrusted(profiles: dict[str, Any]) -> dict[tuple[str, ...], Any]:
@@ -283,6 +306,7 @@ def load_config(path: Path | None = None) -> ConfigFile:
         warnings=tuple(warnings),
         is_project_local=project_local,
         withheld=withheld,
+        raw=raw,
     )
 
 
@@ -315,30 +339,62 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     target = path or cfg.path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    doc: dict[str, Any] = {}
+    # Started from the file as it was read: a table this CLI does not know about
+    # is not a table it may delete, and `config set` would otherwise drop
+    # whatever else the user or a later version keeps here.
+    doc: dict[str, Any] = {k: v for k, v in cfg.raw.items() if k != "profiles"}
+    doc.pop("default_profile", None)
     if cfg.default_profile:
         doc["default_profile"] = cfg.default_profile
     doc["profiles"] = _restored_profiles(cfg, target)
 
-    # O_NOFOLLOW because this write truncates, and the path is not always one
-    # the user chose.
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(target, flags, 0o600)
-    except OSError as exc:
-        if exc.errno not in (errno.ELOOP, errno.EMLINK):
-            raise
+    # The path is not always one the user chose, and replacing a symlink would
+    # silently turn a deliberate one into a regular file.
+    if target.is_symlink():
         raise ConfigError(
             f"Refusing to write config through the symlink at {target}: it would "
             f"overwrite {os.readlink(target)} instead. Pass --config with the path "
             "of the real file."
+        )
+
+    # Written through a temporary file and renamed into place. Truncating the
+    # real one first would destroy a working config if anything below it failed,
+    # and `mkstemp` both names the temporary unpredictably -- a guessable
+    # sibling in a shared directory is a symlink waiting to be planted -- and
+    # creates it 0600, which is the mode the rename then gives the config, with
+    # no window in which the new credential is readable more widely.
+    try:
+        handle_fd, name = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    except OSError as exc:
+        # Renaming into place is what makes the write atomic, and that needs the
+        # directory, not just the file. Writing the file in place instead would
+        # put back the truncate this replaced.
+        raise ConfigError(
+            f"Cannot write {target}: its directory {target.parent} is not "
+            f"writable, and the config is replaced rather than overwritten so a "
+            f"failed write cannot destroy it ({exc.strerror})."
         ) from exc
-    # The mode above only applies to a file this call creates, so an existing
-    # wider one is narrowed before any content goes through the descriptor:
-    # after the write is a window in which the new secret is world-readable.
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        tomli_w.dump(doc, fh)
+    tmp = Path(name)
+    try:
+        with os.fdopen(handle_fd, "wb") as fh:
+            tomli_w.dump(doc, fh)
+            # The rename only replaces one whole config with another if the new
+            # bytes are on the disk before it happens. Without this a crash can
+            # leave the rename standing over content that never landed.
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, target)
+        # And the rename is itself a directory change that has to be persisted;
+        # syncing the file does not cover the entry that now points at it.
+        with contextlib.suppress(OSError):  # not every platform syncs a directory
+            dir_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return target
 
 
@@ -352,6 +408,8 @@ class ResolvedConfig:
     file: ConfigFile
     profile_name: str | None = None
     overrides: dict[str, Any] = field(default_factory=dict)
+    #: `env:` references already refused, so one is reported once per run.
+    _reported: set[str] = field(default_factory=set, repr=False, init=False)
 
     @property
     def active_profile(self) -> str | None:
@@ -382,6 +440,14 @@ class ResolvedConfig:
         # config that looks applied but is not fails later with no obvious cause.
         block = self._profile().get(product)
         return block if isinstance(block, dict) else {}
+
+    def unknown_settings(self, product: str) -> tuple[str, ...]:
+        """Keys written under a product that nothing will ever read back."""
+        try:
+            written = set(self._product_block(product))
+        except ConfigError:
+            return ()
+        return tuple(sorted(written - set(settings_for(product))))
 
     def get(self, product: str, key: str, default: Any = None) -> Any:
         """Resolve one setting: **flag > env > profile > built-in default**."""
@@ -419,12 +485,13 @@ class ResolvedConfig:
         which raises for one that does not exist. A caller answered by an
         earlier tier must not be failed by a later one it never consulted.
         """
-        yield self.overrides.get(f"{product}.{key}", self.overrides.get(key))
+        yield self.overrides.get(f"{product}.{key}")
         yield next(
             (v for e in ENV_VARS.get((product, key), ()) if (v := os.environ.get(e))),
             None,
         )
-        yield _deref(self._product_block(product).get(key))
+        raw = self._product_block(product).get(key)
+        yield _deref(raw, allow_env=self._env_allowed(raw))
 
     def _explicit(self, product: str, key: str) -> Any:
         """The tiers a human supplied: flag, then environment, then profile."""
@@ -439,6 +506,38 @@ class ResolvedConfig:
         if key == "base_url":
             return DEFAULT_BASE_URLS.get(product)
         return None
+
+    def _env_refused(self, raw: Any) -> bool:
+        """Whether this value names an environment variable this file may not read.
+
+        Pure, so a report can ask the same question `_resolve` does without the
+        side effect of warning about a value it is only describing.
+        """
+        return self.file.is_project_local and (
+            isinstance(raw, str) and raw.startswith("env:")
+        )
+
+    def _env_allowed(self, raw: Any) -> bool:
+        """Whether this value may name an environment variable to read."""
+        if not self._env_refused(raw):
+            return True
+        # Straight to stderr rather than onto `file.warnings`: those are
+        # reported when the file is loaded, and this is found while resolving.
+        if raw not in self._reported:
+            self._reported.add(raw)
+            warn(
+                f"warning: ignoring {raw!r} in the project-local "
+                f"{self.file.path}: a config file found by searching upwards "
+                "may not choose which environment variable is read."
+            )
+        return False
+
+    def _env_refusal_detail(self, raw: Any) -> str:
+        """Why an `env:` reference was not followed."""
+        return (
+            f"{self.file.path} is a discovered {PROJECT_CONFIG_NAME}, which may "
+            f"not choose which environment variable is read, so {raw!r} is ignored"
+        )
 
     def require(self, product: str, key: str) -> Any:
         """Resolve a setting, or raise a message naming exactly how to supply it."""
@@ -495,11 +594,15 @@ class ResolvedConfig:
         """
         raw = entry.get(key)
         if isinstance(raw, str) and raw.startswith("env:"):
-            if value := _deref(raw):
+            if value := _deref(raw, allow_env=self._env_allowed(raw)):
                 return value
+            reason = (
+                self._env_refusal_detail(raw)
+                if self._env_refused(raw)
+                else f"${raw[4:].strip()} is not set in this process's environment"
+            )
             raise ConfigError(
-                f"Deployment alias {alias!r} sets {key} to {raw!r}, and "
-                f"${raw[4:].strip()} is not set in this process's environment."
+                f"Deployment alias {alias!r} sets {key} to {raw!r}, and {reason}."
             )
         return raw or self.get(DOCSTUDIO, key)
 
@@ -515,10 +618,7 @@ class ResolvedConfig:
         time: "the CLI says the key is not configured, but I set it -- where is
         it looking?"
         """
-        if (
-            self.overrides.get(f"{product}.{key}") is not None
-            or self.overrides.get(key) is not None
-        ):
+        if self.overrides.get(f"{product}.{key}") is not None:
             return {"resolved": True, "source": "flag/override"}
 
         for env_var in ENV_VARS.get((product, key), ()):
@@ -528,6 +628,12 @@ class ResolvedConfig:
         raw = self._product_block(product).get(key)
         if isinstance(raw, str) and raw.startswith("env:"):
             var = raw[4:].strip()
+            if self._env_refused(raw):
+                return {
+                    "resolved": False,
+                    "source": f"profile -> env:{var} (refused)",
+                    "detail": self._env_refusal_detail(raw),
+                }
             present = bool(os.environ.get(var))
             return {
                 "resolved": present,
@@ -633,6 +739,7 @@ __all__ = [
     "ResolvedConfig",
     "config_path",
     "find_project_config",
+    "init_path",
     "load_config",
     "save_config",
     "set_config_path",

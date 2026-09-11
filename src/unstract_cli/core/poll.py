@@ -20,11 +20,30 @@ import tempfile
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from unstract_cli.core.errors import CLIError, ExitCode
+
+#: Consecutive transient poll failures tolerated before the wait gives up.
+#: Retrying stops at whichever comes first, this count or the deadline -- at the
+#: default interval the backoff reaches this count well inside the timeout.
+MAX_TRANSIENT_POLLS = 5
+
+#: Floor on the interval the backoff doubles. A caller reaching this module
+#: directly is not bound by what the flags accept, and doubling zero is zero.
+MIN_BACKOFF = 0.1
+
+
+class PollState(StrEnum):
+    """What one poll response says about the job."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    PENDING = "pending"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -39,6 +58,29 @@ class PollSpec:
     #: One name, or candidates tried in order: the run POST and the status GET
     #: spell the state differently.
     status_field: str | tuple[str, ...] = "status"
+
+    #: The terminal states case-folded, since every comparison against them is
+    #: case-insensitive. Derived, not declared -- see `__post_init__`.
+    failed: frozenset[str] = field(init=False, repr=False, compare=False)
+    succeeded: frozenset[str] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        succeeded = frozenset(s.lower() for s in self.terminal_success)
+        failed = frozenset(s.lower() for s in self.terminal_failure)
+        object.__setattr__(self, "succeeded", succeeded)
+        object.__setattr__(self, "failed", failed)
+        both = succeeded & failed
+        if both:
+            # A CLIError rather than a ValueError: specs are module-level, so
+            # this fires during import, and only a CLIError renders an envelope
+            # on the stream contracted to always carry one.
+            raise CLIError(
+                f"{sorted(both)} is named as both success and failure; "
+                "classify tests failure first, so a success would be reported "
+                "as an error.",
+                ExitCode.GENERIC,
+                hint="The poll spec is inconsistent; this needs a code change.",
+            )
 
 
 def _dig(payload: Any, field: str) -> Any:
@@ -78,13 +120,27 @@ def preflight(path: str | Path) -> Path:
     flag must not have.
     """
     target = Path(path).expanduser()
+    # Saving here would replace the link itself, so it stops being a link and
+    # whatever it stands for stops being updated.
+    if target.is_symlink():
+        raise CLIError(
+            f"--save target {path!r} is a symlink to {os.readlink(target)}: the "
+            "result would replace the link rather than update what it points at.",
+            ExitCode.USAGE,
+            hint=(
+                "Pass the path of the real file; nothing has been read yet, so "
+                "nothing is lost."
+            ),
+        )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        existed = target.exists()
-        with target.open("a", encoding="utf-8"):
-            pass
-        if not existed:
-            target.unlink()
+        # The write `persist` will do, not a stand-in for it: the result is
+        # written to a temporary sibling and moved over the target, so it is the
+        # directory that has to be writable. Opening the target itself passes in
+        # a read-only directory and fails after the read this protects.
+        probe_fd, probe = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+        os.close(probe_fd)
+        os.unlink(probe)
     except OSError as exc:
         raise CLIError(
             f"Cannot write to --save target {path!r}: {exc}.",
@@ -107,6 +163,18 @@ def persist(path: str | Path, payload: Any) -> Path:
     reach stdout somehow.
     """
     target = Path(path).expanduser()
+    if target.is_symlink():
+        raise CLIError(
+            f"--save target {path!r} is a symlink to {os.readlink(target)}: writing "
+            "here would replace the link rather than update what it points at.",
+            ExitCode.SAVE_FAILED,
+            details=payload,
+            verbatim_details=True,
+            hint=(
+                "`details` carries the result. Pass the path of the real file and "
+                "save it from there."
+            ),
+        )
     text = (
         payload
         if isinstance(payload, str)
@@ -134,6 +202,7 @@ def persist(path: str | Path, payload: Any) -> Path:
             f"The result could not be written to {path!r}: {exc}.",
             ExitCode.SAVE_FAILED,
             details=payload,
+            verbatim_details=True,
             hint=(
                 "`details` carries the result. It has already been read from the "
                 "service, which will not serve it again -- save it from here."
@@ -142,23 +211,23 @@ def persist(path: str | Path, payload: Any) -> Path:
     return target
 
 
-def classify(payload: Any, spec: PollSpec) -> str:
-    """`success`, `failure`, `pending` or `unknown` for one poll response.
+def classify(payload: Any, spec: PollSpec) -> PollState:
+    """What one poll response says about the job.
 
     Shared with the standalone status commands: a finished-and-failed execution
     is reported inside an HTTP 200, so a command that only checks the status
     code calls it a success.
     """
     status = (extract_status(payload, spec.status_field) or "").lower()
-    if status in {state.lower() for state in spec.terminal_failure}:
-        return "failure"
-    if status in {state.lower() for state in spec.terminal_success}:
-        return "success"
+    if status in spec.failed:
+        return PollState.FAILURE
+    if status in spec.succeeded:
+        return PollState.SUCCESS
     if not status or _dig(payload, "error"):
         # Not progress: polling on regardless reports a server fault as "still
         # running" until the deadline.
-        return "unknown"
-    return "pending"
+        return PollState.UNKNOWN
+    return PollState.PENDING
 
 
 def wait_for_completion(
@@ -171,26 +240,69 @@ def wait_for_completion(
     interval: float = 3.0,
     timeout: float = 300.0,
     on_status: Callable[[str | None], None] | None = None,
+    #: Called with the failure being retried. Separate from `on_status` so a
+    #: server-authored error is never rendered as a job status, and so the
+    #: caller can scrub it the way it scrubs any other untrusted text.
+    on_retry: Callable[[CLIError], None] | None = None,
     #: Called with the path once a result is on disk, before the caller sees
     #: anything. The ordering it observes is the whole point of --save.
     on_saved: Callable[[Path], None] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-    now: Callable[[], float] = time.monotonic,
+    #: Resolved on the call rather than bound at import, so replacing
+    #: `time.sleep` reaches this loop.
+    sleep: Callable[[float], None] | None = None,
+    now: Callable[[], float] | None = None,
 ) -> Any:
     """Poll until terminal, then retrieve if the operation has a retrieve step.
 
     On timeout, raises with the job handle attached, so a caller can resume with
-    a plain status/retrieve call rather than resubmitting the document.
+    a plain status/retrieve call rather than resubmitting the document. A
+    response carrying no handle is judged on the spot, since there is nothing to
+    poll: a terminal success is the whole answer and is delivered, anything else
+    raises.
     """
+    sleep = sleep or time.sleep
+    now = now or time.monotonic
+
+    def deliver(payload: Any) -> Any:
+        """Save the result before the caller is told it exists."""
+        if save is not None:
+            written = persist(save, payload)
+            if on_saved is not None:
+                on_saved(written)
+        return payload
+
     handle = extract_handle(initial, spec.handle_field)
     if not handle:
-        return initial
+        # No handle means nothing can be polled, so this response is the whole
+        # answer -- it still has to be judged, and saved if it is a result.
+        state = classify(initial, spec)
+        if state is PollState.SUCCESS:
+            return deliver(initial)
+        if state is PollState.FAILURE:
+            raise CLIError(
+                f"Operation finished with status "
+                f"{extract_status(initial, spec.status_field)!r}.",
+                ExitCode.VALIDATION,
+                details=initial,
+                hint="Inspect `details` for the per-file error, or check the execution logs.",
+            )
+        raise CLIError(
+            f"The service accepted the request without a {spec.handle_field}, so "
+            "there is nothing to poll and no result to return.",
+            ExitCode.SERVER_ERROR,
+            details=initial,
+            retryable=True,
+            hint=(
+                "`details` carries the response. Resubmitting is the only way "
+                f"forward, since no {spec.handle_field} was issued."
+            ),
+        )
 
     deadline = now() + timeout
     last_status: str | None = None
     payload: Any = initial
 
-    def naming_the_job(call: Callable[[str], Any]) -> Any:
+    def naming_the_job(call: Callable[[str], Any], *, retryable: bool) -> Any:
         """Run one step of the loop, ensuring any failure names the job.
 
         The handle is the difference between resuming and paying to process the
@@ -201,17 +313,40 @@ def wait_for_completion(
             return call(handle)
         except CLIError as exc:
             exc.extra.setdefault(spec.handle_field, handle)
+            if not retryable and exc.http_status not in (408, 429):
+                # A step that must not be repeated has to be un-marked here or
+                # the envelope invites the retry. Refusals are the exception:
+                # they mean the request was never served, so the one-shot read
+                # is still there to collect.
+                exc.retryable = False
             raise
         except Exception as exc:
+            # Everything the service can raise on purpose is already a CLIError
+            # by here, so what reaches this is a fault on this side. Calling it
+            # a retryable server error spends the retry budget repeating it.
             raise CLIError(
                 str(exc) or type(exc).__name__,
-                ExitCode.SERVER_ERROR,
-                retryable=True,
+                ExitCode.GENERIC,
                 extra={spec.handle_field: handle},
             ) from exc
 
+    transient = 0
     while True:
-        payload = naming_the_job(poll)
+        try:
+            payload = naming_the_job(poll, retryable=True)
+        except CLIError as exc:
+            remaining = deadline - now()
+            if not exc.retryable or remaining <= 0 or transient >= MAX_TRANSIENT_POLLS:
+                raise
+            transient += 1
+            if on_retry is not None:
+                on_retry(exc)
+            # Back off so a rate limit is not answered at the same rate that
+            # earned it, but never past the deadline the caller set. Floored
+            # because doubling a zero interval never grows it.
+            sleep(min(max(interval, MIN_BACKOFF) * 2**transient, remaining))
+            continue
+        transient = 0
         status = extract_status(payload, spec.status_field)
 
         if status != last_status:
@@ -220,7 +355,7 @@ def wait_for_completion(
             last_status = status
 
         state = classify(payload, spec)
-        if state == "failure":
+        if state is PollState.FAILURE:
             raise CLIError(
                 f"Operation finished with status {status!r}.",
                 ExitCode.VALIDATION,
@@ -228,7 +363,7 @@ def wait_for_completion(
                 hint="Inspect `details` for the per-file error, or check the execution logs.",
                 extra={spec.handle_field: handle},
             )
-        if state == "unknown":
+        if state is PollState.UNKNOWN:
             raise CLIError(
                 "The service answered with neither a status nor progress.",
                 ExitCode.SERVER_ERROR,
@@ -240,7 +375,7 @@ def wait_for_completion(
                 ),
                 extra={spec.handle_field: handle},
             )
-        if state == "success":
+        if state is PollState.SUCCESS:
             break
 
         remaining = deadline - now()
@@ -251,8 +386,8 @@ def wait_for_completion(
                 ExitCode.TIMEOUT,
                 retryable=True,
                 hint=(
-                    f"The job is still running. Resume with the {spec.handle_field} "
-                    f"below rather than resubmitting the document."
+                    f"Resume with the {spec.handle_field} below rather than "
+                    "resubmitting the document."
                 ),
                 extra={spec.handle_field: handle, "last_status": status},
             )
@@ -262,16 +397,15 @@ def wait_for_completion(
         sleep(min(interval, remaining))
 
     if retrieve is not None:
-        payload = naming_the_job(retrieve)
-    if save is not None:
-        written = persist(save, payload)
-        if on_saved is not None:
-            on_saved(written)
-    return payload
+        payload = naming_the_job(retrieve, retryable=False)
+    return deliver(payload)
 
 
 __all__ = [
+    "MAX_TRANSIENT_POLLS",
+    "MIN_BACKOFF",
     "PollSpec",
+    "PollState",
     "classify",
     "extract_handle",
     "extract_status",

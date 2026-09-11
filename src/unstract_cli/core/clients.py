@@ -8,23 +8,28 @@ hint and the response detail.
 The clients report failure differently -- LLMWhisperer raises with a status
 code attached, the deployment client returns a dict containing one, the Platform
 API client raises with the body attached -- so every shape converges here rather
-than in each command.
+than in each command. The deployment client also raises for a request it will
+not send at all, which is always a usage error.
 """
 
 from __future__ import annotations
 
 import re
+import socket
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
 from requests.exceptions import (
     ConnectionError,
+    InvalidHeader,
     InvalidSchema,
     InvalidURL,
+    JSONDecodeError,
     MissingSchema,
     RequestException,
     Timeout,
+    URLRequired,
 )
 from unstract.api_deployments.client import (
     APIDeploymentsClient,
@@ -63,8 +68,16 @@ def deployment_url(base_url: str, org_id: str, api_name: str) -> str:
     return base_url.rstrip("/") + path
 
 
+#: Socket timeout for the deployment client, which sets none of its own. The
+#: same figure the LLMWhisperer client applies, so a stalled connection is given
+#: up on the same way on both paths.
+DEFAULT_TRANSPORT_TIMEOUT = 120.0
+
+
 def deployment(
-    config: ResolvedConfig, target: str, transport_timeout: float | None = None
+    config: ResolvedConfig,
+    target: str,
+    transport_timeout: float | None = DEFAULT_TRANSPORT_TIMEOUT,
 ) -> APIDeploymentsClient:
     """Build a deployment client for an alias, or for a bare API name.
 
@@ -90,7 +103,8 @@ def deployment(
         raise CLIError(
             f"Deployment {target!r} is missing {' and '.join(missing)}.",
             ExitCode.USAGE,
-            hint=(
+            hint=_alias_hint(config, target)
+            or (
                 "Define the deployment as an alias in the active profile, or set "
                 "$UNSTRACT_ORG_ID and $UNSTRACT_DEPLOYMENT_KEY."
             ),
@@ -102,6 +116,37 @@ def deployment(
         logging_level="ERROR",
         transport_timeout=transport_timeout,
     )
+
+
+def _alias_hint(config: ResolvedConfig, target: str) -> str | None:
+    """What to say when a target is not one of the aliases that are configured.
+
+    A bare API name is a supported way to name a deployment, so a target that is
+    not an alias cannot be rejected outright. It can still be a misspelt one,
+    and a caller who has defined aliases is likelier to have meant one of them
+    than to have typed a raw name, so the ones that exist are worth naming.
+    """
+    if not (aliases := config.deployment_aliases()) or target in aliases:
+        return None
+    return (
+        f"{target!r} is not one of the deployment aliases in the active profile "
+        f"({', '.join(aliases)}), so it was sent as an API name."
+    )
+
+
+@contextmanager
+def naming_aliases(config: ResolvedConfig, target: str) -> Iterator[None]:
+    """Say which aliases exist when a bare API name is not found.
+
+    Sending a misspelt alias as an API name is indistinguishable from sending a
+    real one until the service answers, so the correction belongs on the answer.
+    """
+    try:
+        yield
+    except CLIError as exc:
+        if exc.exit_code is ExitCode.NOT_FOUND and (hint := _alias_hint(config, target)):
+            exc.hint = f"{exc.hint} {hint}" if exc.hint else hint
+        raise
 
 
 def _message_and_details(value: Any) -> tuple[str, Any]:
@@ -118,17 +163,47 @@ def _message_and_details(value: Any) -> tuple[str, Any]:
     return str(value), None
 
 
+def _causes(exc: BaseException) -> Iterator[BaseException]:
+    """One failure and everything it was raised from, outermost first."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        yield seen
+        seen = seen.__cause__ or seen.__context__
+
+
 def _unresolved_host(exc: BaseException) -> str | None:
     """The host a connection failed to resolve, or ``None`` if that is not why.
 
     A name that does not resolve is the one connection failure retrying cannot
-    fix. Matched by type name rather than by import: the exception belongs to a
-    transitive dependency of the clients, not to anything declared here.
+    fix. Read from the chain rather than from the outermost exception: the
+    clients re-raise transport failures as their ``requests`` equivalents
+    carrying only a message, so nothing structural survives at the top -- but
+    the original is still attached underneath, and `socket.gaierror` is the
+    resolver's own answer whichever transport asked it.
     """
-    reason = getattr(exc.args[0] if exc.args else None, "reason", None)
-    if type(reason).__name__ != "NameResolutionError":
+    if not any(isinstance(cause, socket.gaierror) for cause in _causes(exc)):
         return None
-    return getattr(getattr(reason, "conn", None), "host", "") or ""
+    for cause in _causes(exc):
+        # httpx keeps the request on the error it raises; urllib3 keeps the
+        # connection. Either names the host without parsing a message.
+        url = getattr(getattr(cause, "request", None), "url", None)
+        if host := getattr(url, "host", "") or getattr(
+            getattr(cause, "conn", None), "host", ""
+        ):
+            return host
+    return ""
+
+
+#: Failures that mean the request was never sendable, so the fault is in the
+#: caller's configuration rather than in the service. `InvalidHeader` is not
+#: among them: every handler takes it first, to keep the credential it quotes
+#: out of the message. `InvalidProxyURL` is an `InvalidURL`.
+UNSENDABLE = (
+    MissingSchema,
+    InvalidSchema,
+    InvalidURL,
+    URLRequired,
+)
 
 
 #: The status inside a `PlatformClientError` message. The released client embeds
@@ -214,28 +289,52 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
             retryable=True,
             hint="Could not reach the service. Check the base URL and connectivity.",
         ) from exc
-    except RequestException as exc:
-        # Must sit after Timeout and ConnectionError, which are subclasses.
-        #
-        # The Platform client is a bare `requests.Session`: unlike the other two
-        # it wraps nothing itself, so a malformed base URL (`MissingSchema`,
-        # `InvalidURL`) or a 2xx carrying HTML from a proxy or SPA host
-        # (`JSONDecodeError`) arrives here raw. Every one of those subclasses
-        # `OSError`, so untranslated they were caught by the entry point's
-        # full-disk handler and rendered "Check the path and disk." -- the wrong
-        # subsystem, on the one message a user with a bad base URL most needs to
-        # be right.
-        usage = isinstance(exc, (MissingSchema, InvalidSchema, InvalidURL))
+    except InvalidHeader as exc:
+        # The message quotes the offending header value, and that value is the
+        # credential. It arrives `repr`-escaped, so the literal scrub cannot
+        # match it either -- say what happened instead of quoting it.
         raise CLIError(
-            str(exc),
-            ExitCode.USAGE if usage else ExitCode.SERVER_ERROR,
+            "A request header could not be built.",
+            ExitCode.USAGE,
             endpoint=endpoint,
             hint=(
-                "Check `base_url` -- it needs a scheme, e.g. https://host."
-                if usage
-                else "The service answered, but not with JSON. Check that "
+                "A credential most likely carries a newline or a control "
+                "character. Check how it is stored."
+            ),
+        ) from exc
+    except UNSENDABLE as exc:
+        # These say the request could never be sent -- a base URL without a
+        # scheme is the usual one. Retrying is the wrong advice, and the fault
+        # is in the caller's configuration rather than in the service.
+        raise CLIError(
+            str(exc) or type(exc).__name__,
+            ExitCode.USAGE,
+            endpoint=endpoint,
+            hint=(
+                "The request could not be built. Check the base URL, and any "
+                "proxy variables, for a typo."
+            ),
+        ) from exc
+    except JSONDecodeError as exc:
+        # The Platform client is a bare `requests.Session`, so a 2xx carrying
+        # HTML from a proxy or SPA host arrives here raw. It subclasses
+        # `OSError`, so untranslated it would be rendered as a disk failure.
+        raise CLIError(
+            str(exc),
+            ExitCode.SERVER_ERROR,
+            endpoint=endpoint,
+            hint=(
+                "The service answered, but not with JSON. Check that "
                 "`base_url` names the API rather than a proxy or web app."
             ),
+        ) from exc
+    except RequestException as exc:
+        raise CLIError(
+            str(exc) or type(exc).__name__,
+            ExitCode.SERVER_ERROR,
+            endpoint=endpoint,
+            retryable=True,
+            hint="The request failed in transit rather than being answered.",
         ) from exc
 
 
@@ -263,9 +362,28 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
     failure would otherwise be reported as a successful run whose payload
     happens to contain an error.
     """
-    status = int(result.get("status_code") or 0)
+    raw_status = result.get("status_code")
+    try:
+        status = int(raw_status) if raw_status is not None else 0
+    except (TypeError, ValueError):
+        raise CLIError(
+            f"The service reported a status code of {raw_status!r}.",
+            ExitCode.SERVER_ERROR,
+            details=result,
+            endpoint=endpoint,
+            hint="`details` carries the response exactly as it arrived.",
+        ) from None
     reported = result.get("error")
-    if status and not 200 <= status < 300:
+    if not status:
+        raise CLIError(
+            "The service answered without a status code.",
+            ExitCode.SERVER_ERROR,
+            details=result,
+            endpoint=endpoint,
+            retryable=True,
+            hint="`details` carries the response exactly as it arrived.",
+        )
+    if not 200 <= status < 300:
         raise error_from_status(
             status,
             str(reported or f"Request failed with status {status}"),
@@ -287,9 +405,12 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
 
 
 __all__ = [
+    "DEFAULT_TRANSPORT_TIMEOUT",
+    "UNSENDABLE",
     "deployment",
     "deployment_url",
     "llmwhisperer",
+    "naming_aliases",
     "raise_for_result",
     "translated",
     "translating",

@@ -13,8 +13,10 @@ import click
 import pytest
 
 from unstract_cli.__main__ import main
+from unstract_cli.app import cli
 from unstract_cli.commands import config_cmd
 from unstract_cli.config import PLATFORM
+from unstract_cli.core.discover import discover, exit_codes
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import CONTRACT_VERSION
 
@@ -65,8 +67,13 @@ def test_full_carries_enough_to_build_a_call(capsys):
         "table",
     ]
     assert params["wait"]["flags"] == ["--wait", "--no-wait"]
+    # The type a caller can map, with the bound as its own key: Click's own
+    # name for a bounded number is "float range", which describes nothing.
     assert params["interval"]["type"] == "float"
-    assert extract["raw_field"] == "result_text"
+    assert params["interval"]["minimum"] == 0.1
+    # Two, because a submission answers with a handle and no text: raw has to
+    # name both or it describes only the waited call.
+    assert extract["raw_fields"] == ["result_text", "whisper_hash"]
 
 
 def test_full_publishes_the_flags_that_are_not_on_the_command(capsys):
@@ -101,6 +108,19 @@ def test_no_flag_publishes_a_default_it_does_not_have(capsys):
     for name, value in published:
         assert not isinstance(value, str) or "Sentinel" not in value, name
         assert not repr(value).startswith("<"), name
+
+
+def test_an_on_off_flag_publishes_the_same_default_across_click_versions():
+    """The one declaration this CLI uses most answers differently per version:
+    given no default, some report `False` and some their own sentinel. Neither
+    is what omitting the flag does, which is to send nothing."""
+    from unstract_cli.core.discover import _param
+
+    assert "default" not in _param(click.Option(["--x/--no-x"], default=None))
+    # A default that was actually chosen still travels.
+    assert _param(click.Option(["--y/--no-y"], default=True))["default"] is True
+    # And a plain on-only flag keeps reporting the False it really defaults to.
+    assert _param(click.Option(["--z"], is_flag=True))["default"] is False
 
 
 def test_a_bare_option_publishes_no_default():
@@ -320,3 +340,78 @@ def test_config_init_then_doctor_exits_zero_without_a_platform_key(
     capsys.readouterr()
 
     assert main(["-o", "json", "config", "doctor"]) == int(ExitCode.SUCCESS)
+
+
+def test_an_unknown_tier_is_a_usage_error_rather_than_a_traceback():
+    with pytest.raises(CLIError) as caught:
+        discover(cli, "everything")
+    assert caught.value.exit_code is ExitCode.USAGE
+
+
+def test_success_publishes_no_error_code():
+    table = {entry["name"]: entry["error_code"] for entry in exit_codes()}
+    assert table["success"] == ""
+    assert all(code for name, code in table.items() if name != "success")
+
+
+def test_doctor_reports_an_alias_whose_settings_do_not_arrive(
+    capsys, write_config, monkeypatch
+):
+    """A listed alias says nothing about whether the settings behind it
+    resolve, and the failure only shows up when a run is attempted."""
+    write_config(
+        """
+        default_profile = "p"
+        [profiles.p.docstudio]
+        api_key = "dk-configured-key"
+        org_id = "org_ABC"
+        [profiles.p.deployments.invoices]
+        api_name = "invoice-parser"
+        [profiles.p.deployments.broken]
+        api_name = "no-key"
+        api_key = "env:NOT_SET_ANYWHERE"
+        """
+    )
+    monkeypatch.delenv("NOT_SET_ANYWHERE", raising=False)
+
+    code = main(["-o", "json", "config", "doctor"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code != int(ExitCode.SUCCESS)
+    report = payload["error"]["details"]
+    assert set(report["deployment_aliases"]) == {"invoices", "broken"}
+    assert any("broken" in problem for problem in report["problems"])
+
+
+def test_a_malformed_config_file_is_a_usage_error(capsys, write_config):
+    write_config("[profiles.p\nthis is not toml")
+
+    code, _ = run(capsys, "config", "list")
+
+    assert code == int(ExitCode.USAGE)
+
+
+def test_full_publishes_what_omitting_a_spec_flag_gets_you(capsys):
+    """The CLI leaves a spec flag's own default unset so that nothing is
+    resent, which left the value a caller gets by omitting it readable only as
+    a sentence inside the help text."""
+    _, data = run(capsys, "--discover", "full")
+    extract = data["commands"]["whisper"]["commands"]["extract"]
+    params = {p["name"]: p for p in extract["params"]}
+
+    assert params["mode"]["server_default"] == "form"
+    assert params["mode"].get("default") is None
+    # Not on a flag the CLI declares itself: nothing behind it applies a value.
+    assert "server_default" not in params["interval"]
+
+
+def test_a_spec_flag_states_its_default_once(capsys):
+    """The spec describes some defaults in prose of its own, which disagreed
+    with the value the client actually applies."""
+    _, data = run(capsys, "--discover", "full")
+    extract = data["commands"]["whisper"]["commands"]["extract"]
+    params = {p["name"]: p for p in extract["params"]}
+
+    threshold = params["word_confidence_threshold"]
+    assert "Defaults to" not in threshold["help"]
+    assert f"[default: {threshold['server_default']}]" in threshold["help"]

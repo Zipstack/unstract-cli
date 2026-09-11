@@ -8,7 +8,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--allow-rotated-text": {
       "name": "allow_rotated_text",
@@ -18,7 +19,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--checkbox-confidence-threshold": {
       "name": "checkbox_confidence_threshold",
@@ -28,7 +30,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--derotate-threshold": {
       "name": "derotate_threshold",
@@ -38,7 +41,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--file-name": {
       "name": "file_name",
@@ -48,7 +52,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--gaussian-blur-radius": {
       "name": "gaussian_blur_radius",
@@ -58,7 +63,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--horizontal-stretch-factor": {
       "name": "horizontal_stretch_factor",
@@ -68,7 +74,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--ignore-vertical-text": {
       "name": "ignore_vertical_text",
@@ -78,7 +85,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--include-line-confidence": {
       "name": "include_line_confidence",
@@ -88,7 +96,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--lang": {
       "name": "lang",
@@ -98,7 +107,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--line-splitter-strategy": {
       "name": "line_splitter_strategy",
@@ -112,7 +122,8 @@
         "left-priority",
         "mid-priority",
         "right-priority"
-      ]
+      ],
+      "short": null
     },
     "--line-splitter-tolerance": {
       "name": "line_splitter_tolerance",
@@ -122,7 +133,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--mark-horizontal-lines": {
       "name": "mark_horizontal_lines",
@@ -132,7 +144,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--mark-vertical-lines": {
       "name": "mark_vertical_lines",
@@ -142,7 +155,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--median-filter-size": {
       "name": "median_filter_size",
@@ -152,7 +166,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--min-table-width": {
       "name": "min_table_width",
@@ -162,7 +177,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--mode": {
       "name": "mode",
@@ -180,7 +196,8 @@
         "low_cost",
         "native_text",
         "table"
-      ]
+      ],
+      "short": null
     },
     "--output-mode": {
       "name": "output_mode",
@@ -195,7 +212,8 @@
         "layout_preserving",
         "line-printer",
         "text"
-      ]
+      ],
+      "short": null
     },
     "--page-separator": {
       "name": "page_separator",
@@ -205,7 +223,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--pages-to-extract": {
       "name": "pages_to_extract",
@@ -215,7 +234,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--tag": {
       "name": "tag",
@@ -225,7 +245,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--url": {
       "name": "url",
@@ -235,7 +256,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--use-webhook": {
       "name": "use_webhook",
@@ -245,7 +267,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--watermark-angle-threshold": {
       "name": "watermark_angle_threshold",
@@ -255,7 +278,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--webhook-metadata": {
       "name": "webhook_metadata",
@@ -265,7 +289,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--word-confidence-threshold": {
       "name": "word_confidence_threshold",
@@ -275,7 +300,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     }
   },
   "llmwhisperer:highlights": {
@@ -287,7 +313,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--lines": {
       "name": "lines",
@@ -297,7 +324,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--whisper-hash": {
       "name": "whisper_hash",
@@ -307,7 +335,8 @@
       "array": false,
       "nullable": false,
       "required": true,
-      "choices": []
+      "choices": [],
+      "short": null
     }
   },
   "docstudio:execute": {
@@ -319,7 +348,8 @@
       "array": false,
       "nullable": true,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--hitl-packet-id": {
       "name": "hitl_packet_id",
@@ -329,7 +359,8 @@
       "array": false,
       "nullable": true,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--hitl-queue-name": {
       "name": "hitl_queue_name",
@@ -339,7 +370,8 @@
       "array": false,
       "nullable": true,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--include-extracted-text": {
       "name": "include_extracted_text",
@@ -349,7 +381,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--include-metadata": {
       "name": "include_metadata",
@@ -359,7 +392,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--include-metrics": {
       "name": "include_metrics",
@@ -369,7 +403,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--llm-profile-id": {
       "name": "llm_profile_id",
@@ -379,7 +414,8 @@
       "array": false,
       "nullable": true,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--presigned-urls": {
       "name": "presigned_urls",
@@ -389,7 +425,8 @@
       "array": true,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--tags": {
       "name": "tags",
@@ -399,7 +436,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--timeout": {
       "name": "timeout",
@@ -409,7 +447,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--use-file-history": {
       "name": "use_file_history",
@@ -419,7 +458,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     }
   },
   "docstudio:status": {
@@ -431,7 +471,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--include-metadata": {
       "name": "include_metadata",
@@ -441,7 +482,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     },
     "--include-metrics": {
       "name": "include_metrics",
@@ -451,7 +493,8 @@
       "array": false,
       "nullable": false,
       "required": false,
-      "choices": []
+      "choices": [],
+      "short": null
     }
   }
 }

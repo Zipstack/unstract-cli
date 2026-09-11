@@ -8,18 +8,21 @@ caller sees on stdout and in the exit code.
 from __future__ import annotations
 
 import json
+import os
 import socket
 
+import click
+import httpx
 import pytest
-from requests.exceptions import ConnectionError
+from requests.exceptions import ConnectionError, InvalidHeader, MissingSchema
 from unstract.api_deployments.client import PlatformClientError
+from unstract.clone.exceptions import CloneError, PlatformAPIError
 from unstract.clone.report import CloneReport, Endpoint, PhaseResult
+from unstract.llmwhisperer import client_v2
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
     LLMWhispererClientV2,
 )
-from urllib3.connection import HTTPConnection
-from urllib3.exceptions import MaxRetryError, NameResolutionError
 
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
@@ -44,11 +47,25 @@ def envelope(out: str) -> dict:
 
 
 def _name_resolution_error(host: str) -> ConnectionError:
-    """What requests raises when DNS has no answer, built rather than provoked:
-    resolving a name for real would make this suite depend on the network."""
-    conn = HTTPConnection(host)
-    reason = NameResolutionError(host, conn, socket.gaierror(-2, "no answer"))
-    return ConnectionError(MaxRetryError(pool=conn, url="/", reason=reason))
+    """The failure the pinned client raises when a host does not resolve.
+
+    Built by putting a transport error through the client's own translation
+    rather than assembled here: the client re-raises with only a message, so a
+    hand-made stand-in can keep passing long after the client has stopped
+    producing anything like it.
+    """
+
+    def fail():
+        request = httpx.Request("GET", f"https://{host}/api/v2/get-usage-info")
+        raise httpx.ConnectError(
+            "[Errno -2] Name or service not known", request=request
+        ) from socket.gaierror(-2, "Name or service not known")
+
+    try:
+        client_v2._translate_transport_errors(fail)
+    except ConnectionError as exc:
+        return exc
+    raise AssertionError("the pinned client no longer translates a connect error")
 
 
 class FakeWhisper:
@@ -244,7 +261,7 @@ def test_the_cli_owns_the_wait_loop(capsys, whisper_client, tmp_path):
         whisper_retrieve={"extraction": {"result_text": "hello"}},
     )
 
-    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0.1")
 
     assert code == int(ExitCode.SUCCESS)
     assert client.kwargs_for("whisper")["wait_for_completion"] is False
@@ -261,7 +278,7 @@ def test_raw_output_prints_the_extracted_text(capsys, whisper_client, tmp_path):
     )
 
     _, out, _ = run(
-        capsys, "-q", "-o", "raw", "whisper", "extract", str(doc), "--interval", "0"
+        capsys, "-q", "-o", "raw", "whisper", "extract", str(doc), "--interval", "0.1"
     )
     assert out.strip() == "hello"
 
@@ -287,7 +304,7 @@ def test_a_failed_extraction_carries_the_handle(capsys, whisper_client, tmp_path
         whisper_status={"status": "error", "message": "bad scan"},
     )
 
-    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0.1")
     assert code == int(ExitCode.VALIDATION)
     assert envelope(out)["error"]["whisper_hash"] == "h1"
 
@@ -304,7 +321,7 @@ def test_a_transport_failure_mid_poll_carries_the_handle(
         whisper_status=ConnectionError("connection dropped"),
     )
 
-    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0.1")
     assert code == int(ExitCode.SERVER_ERROR)
     assert envelope(out)["error"]["whisper_hash"] == "h1"
 
@@ -320,7 +337,7 @@ def test_a_failed_retrieve_carries_the_handle(capsys, whisper_client, tmp_path):
         whisper_retrieve=ConnectionError("connection dropped"),
     )
 
-    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0.1")
     assert code == int(ExitCode.SERVER_ERROR)
     assert envelope(out)["error"]["whisper_hash"] == "h1"
 
@@ -463,6 +480,22 @@ def test_a_host_that_does_not_resolve_is_not_worth_retrying(capsys, whisper_clie
     assert "nope.invalid" in error["message"]
 
 
+@pytest.mark.skipif(
+    not os.environ.get("UNSTRACT_CLI_LIVE"),
+    reason="asks the resolver about a host; set UNSTRACT_CLI_LIVE=1 to run it",
+)
+def test_a_real_resolver_failure_reaches_the_same_answer(capsys, monkeypatch):
+    """The offline stand-in is built by hand, however carefully. This one asks
+    the pinned client to reach a name no resolver will answer for."""
+    monkeypatch.setenv("LLMWHISPERER_API_KEY", "k")
+    monkeypatch.setenv("LLMWHISPERER_BASE_URL", "https://unresolvable.invalid/api/v2")
+    code, out, _ = run(capsys, "whisper", "usage")
+    assert code == int(ExitCode.SERVER_ERROR)
+    error = envelope(out)["error"]
+    assert error["retryable"] is False
+    assert "unresolvable.invalid" in error["message"]
+
+
 def test_an_unreachable_service_is_worth_retrying(capsys, whisper_client):
     whisper_client(get_usage_info=ConnectionError("connection refused"))
     code, out, _ = run(capsys, "whisper", "usage")
@@ -525,7 +558,7 @@ def test_run_queues_the_execution_and_polls_it(capsys, deployment_client, tmp_pa
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
     )
 
     assert code == int(ExitCode.SUCCESS)
@@ -533,14 +566,68 @@ def test_run_queues_the_execution_and_polls_it(capsys, deployment_client, tmp_pa
     assert envelope(out)["data"]["execution_status"] == "COMPLETED"
 
 
+def test_a_run_can_name_its_documents_as_presigned_urls(
+    capsys, deployment_client, tmp_path
+):
+    """The flag is derived from the spec and advertised by `--discover`, so an
+    invocation that uses it and nothing else has to reach the client: a local
+    path was once the only way to name a document, which made the flag
+    unusable rather than merely unused.
+    """
+    client = deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": False,
+            "execution_status": "COMPLETED",
+            "extraction_result": [{"file": "doc.pdf"}],
+        }
+    )
+
+    code, out, _ = run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        "--presigned-urls",
+        "https://example.com/doc.pdf",
+        "--interval",
+        "0.1",
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    sent = client.kwargs_for("structure_file")
+    assert list(sent["presigned_urls"]) == ["https://example.com/doc.pdf"]
+    assert envelope(out)["data"]["execution_status"] == "COMPLETED"
+
+
+def test_a_run_naming_no_documents_at_all_is_refused(capsys, deployment_client):
+    """Neither source is required on its own, so nothing in Click's own parsing
+    catches a run that names no document; without this the request goes out
+    empty and the server answers for us.
+    """
+    deployment_client(structure_file={"status_code": 200})
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "run", "my-api")
+
+    assert code == int(ExitCode.USAGE)
+    assert "at least one document" in envelope(out)["error"]["message"]
+
+
 @pytest.mark.parametrize(
-    ("flag", "expected"), [([], None), (["--transport-timeout", "12.5"], 12.5)]
+    ("flag", "expected"),
+    [
+        ([], 120.0),
+        (["--transport-timeout", "12.5"], 12.5),
+        (["--transport-timeout", "0"], None),
+    ],
 )
 def test_the_transport_timeout_flag_reaches_the_client(
     capsys, deployment_client, tmp_path, flag, expected
 ):
-    """Unset means a stalled connection is never given up on, which is what
-    the client has always done."""
+    """Unset means the default, and only zero means a stalled connection is
+    never given up on."""
     doc = tmp_path / "doc.pdf"
     doc.write_bytes(b"%PDF-")
     client = deployment_client(
@@ -615,6 +702,141 @@ def test_a_queued_run_reports_the_handle_it_started(capsys, deployment_client, t
     )
     assert code == int(ExitCode.SUCCESS)
     assert capsys.readouterr().out.strip() == "e-1"
+
+
+def test_a_target_that_is_not_a_configured_alias_names_the_ones_that_are(
+    capsys, deployment_client, write_config
+):
+    """A misspelt alias is sent as an API name and comes back not-found, which
+    says nothing about the aliases sitting in the profile."""
+    write_config(
+        'default_profile = "p"\n'
+        "[profiles.p.docstudio]\n"
+        'org_id = "org"\n'
+        'api_key = "k"\n'
+        "[profiles.p.deployments.invoices]\n"
+        'api_name = "invoice-parser"\n'
+    )
+    deployment_client(check_execution_status={"status_code": 404, "error": "not found"})
+    code, out, _ = run(capsys, "docstudio", "deployment", "status", "invoces", "e-1")
+    assert code == int(ExitCode.NOT_FOUND)
+    hint = envelope(out)["error"]["hint"]
+    assert "invoces" in hint and "invoices" in hint
+
+
+def test_highlights_on_an_extraction_without_line_numbers_says_where_to_fix_it(
+    capsys, whisper_client
+):
+    """The call that can be fixed is the extract, which has already been paid
+    for; a hint about this call sends the caller nowhere."""
+    whisper_client(
+        get_highlight_data=LLMWhispererClientException(
+            {"message": "no line metadata", "status_code": 400}, 400
+        )
+    )
+    code, out, _ = run(capsys, "whisper", "highlights", "h1", "--lines", "1-5")
+    assert code == int(ExitCode.VALIDATION)
+    assert "--add-line-nos" in envelope(out)["error"]["hint"]
+
+
+ACK = {
+    "status_code": 200,
+    "execution_status": "PENDING",
+    "extraction_result": "",
+    "status_check_api_endpoint": "/deployment/api/status?execution_id=e-1",
+}
+
+PENDING_STATUS = {
+    "status_code": 422,
+    "pending": True,
+    "execution_status": "EXECUTING",
+    "extraction_result": "",
+}
+
+DONE_STATUS = {
+    "status_code": 200,
+    "execution_status": "COMPLETED",
+    "extraction_result": "the answer",
+}
+
+
+def _raw(capsys, *args) -> str:
+    assert main(["-o", "raw", *args]) == int(ExitCode.SUCCESS)
+    return capsys.readouterr().out.strip()
+
+
+def test_a_queued_run_renders_the_handle_it_had_to_derive(
+    capsys, deployment_client, tmp_path
+):
+    """The ack names no execution of its own -- the id is only in the endpoint
+    it hands back -- so raw would otherwise have nothing true to print."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(structure_file=ACK)
+
+    code, out, _ = run(
+        capsys, "docstudio", "deployment", "run", "my-api", str(doc), "--no-wait"
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["meta"]["execution_id"] == "e-1"
+
+    deployment_client(structure_file=ACK)
+    assert (
+        _raw(capsys, "docstudio", "deployment", "run", "my-api", str(doc), "--no-wait")
+        == "e-1"
+    )
+
+
+def test_an_accepted_extraction_renders_its_handle_not_the_whole_ack(
+    capsys, whisper_client, tmp_path
+):
+    """An accepted job carries no text, so raw prints the handle -- the one
+    thing the caller can act on. Declaring no fields here would print the whole
+    acknowledgement instead, which raw is precisely not for.
+    """
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(whisper={"whisper_hash": "h1", "status_code": 202})
+
+    assert _raw(capsys, "whisper", "extract", str(doc), "--no-wait") == "h1"
+
+
+def test_a_still_running_status_never_renders_as_an_empty_result(
+    capsys, deployment_client
+):
+    """`extraction_result` is present and empty while the job runs. Printing that
+    tells a polling caller the same thing as a finished job with no output."""
+    deployment_client(check_execution_status=PENDING_STATUS)
+    code, out, _ = run(capsys, "docstudio", "deployment", "status", "my-api", "e-1")
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["execution_status"] == "EXECUTING"
+
+    deployment_client(check_execution_status=PENDING_STATUS)
+    assert (
+        _raw(capsys, "docstudio", "deployment", "status", "my-api", "e-1") == "EXECUTING"
+    )
+
+
+def test_a_finished_status_renders_its_result(capsys, deployment_client):
+    deployment_client(check_execution_status=DONE_STATUS)
+    code, out, _ = run(capsys, "docstudio", "deployment", "status", "my-api", "e-1")
+    assert envelope(out)["data"]["extraction_result"] == "the answer"
+
+    deployment_client(check_execution_status=DONE_STATUS)
+    assert (
+        _raw(capsys, "docstudio", "deployment", "status", "my-api", "e-1") == "the answer"
+    )
+
+
+def test_raw_fails_rather_than_printing_something_else(capsys, deployment_client):
+    """An answer carrying none of the declared fields has no raw form. Dumping
+    the whole payload answers a question the caller did not ask."""
+    deployment_client(check_execution_status={"status_code": 200, "unexpected": 1})
+    code = main(["-o", "raw", "docstudio", "deployment", "status", "my-api", "e-1"])
+    out, err = capsys.readouterr()
+    assert code == int(ExitCode.GENERIC)
+    assert "unexpected" not in out
+    assert "extraction_result" in out or "extraction_result" in err
 
 
 def test_an_error_status_from_a_run_is_a_failure(capsys, deployment_client, tmp_path):
@@ -711,7 +933,7 @@ def test_a_waited_run_reads_its_result_with_the_flags_it_was_given(
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
         "--include-metrics",
         "--no-include-metadata",
     )
@@ -751,7 +973,7 @@ def test_a_waited_run_reports_which_execution_it_was(capsys, deployment_client, 
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
     )
     assert envelope(out)["meta"]["execution_id"] == "e1"
 
@@ -784,7 +1006,7 @@ def test_a_run_only_parameter_is_not_forwarded_to_the_status_read(
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
         "--tags",
         "a,b",
     )
@@ -894,7 +1116,7 @@ def test_a_waited_extract_keeps_a_result_that_is_not_wrapped(
         whisper_retrieve={"status_code": 200, "result_text": "THE REAL TEXT"},
     )
 
-    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0.1")
 
     assert code == int(ExitCode.SUCCESS)
     assert envelope(out)["data"]["result_text"] == "THE REAL TEXT"
@@ -913,7 +1135,7 @@ def test_a_waited_extract_calls_an_empty_result_a_failure(
         whisper_retrieve={"extraction": {}},
     )
 
-    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0.1")
 
     assert code == int(ExitCode.SERVER_ERROR)
     assert envelope(out)["ok"] is False
@@ -930,7 +1152,7 @@ def test_a_waited_extract_reads_the_result_when_it_is_not_wrapped(
         whisper_retrieve={"extraction": {"result_text": "hello"}},
     )
 
-    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0.1")
 
     assert code == int(ExitCode.SUCCESS)
     assert envelope(out)["data"]["result_text"] == "hello"
@@ -1103,6 +1325,40 @@ def test_clone_maps_its_flags_and_reports_a_partial_failure(capsys, monkeypatch)
     }
     for key in ("src-key-0123456789", "tgt-key-0123456789"):
         assert key not in out and key not in err
+
+
+def test_a_clone_that_skipped_files_says_so_on_stderr(capsys, monkeypatch):
+    """A skip is not a failure, so nothing else tells a caller it happened."""
+
+    def fake_clone(source, target, options):
+        return CloneReport(
+            source=Endpoint(source.base_url, source.organization_id),
+            target=Endpoint(target.base_url, target.organization_id),
+            phases=[PhaseResult(name="files", created=1, skipped=3)],
+            oversize_files=[{"name": "big.pdf"}],
+        )
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+    args = (
+        "clone",
+        "--source-url",
+        "https://dev.example.com",
+        "--source-org",
+        "org_dev",
+        "--target-url",
+        "https://qa.example.com",
+        "--target-org",
+        "org_qa",
+    )
+
+    code, out, err = run(capsys, *args)
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["ok"] is True
+    assert "files 3" in err and "oversize files 1" in err
+
+    assert "Skipped" not in run(capsys, "--quiet", *args)[2]
 
 
 def test_a_key_quoted_in_a_clone_report_does_not_survive_the_table(capsys, monkeypatch):
@@ -1587,7 +1843,7 @@ def test_whoami_does_not_rewrite_a_discovered_project_config(
     [
         (["auth", "whoami"], None),
         (["auth", "--transport-timeout", "12.5", "whoami"], 12.5),
-        (["docstudio", "deployment", "ls"], None),
+        (["docstudio", "deployment", "ls"], 120.0),
         (["docstudio", "--transport-timeout", "12.5", "deployment", "ls"], 12.5),
     ],
 )
@@ -1723,3 +1979,691 @@ def test_the_platform_status_is_recovered_from_the_message(
     code, _, _ = run(capsys, "auth", "whoami")
 
     assert code == int(expected), message
+
+
+# --------------------------------------------------------------------------- #
+# --save: the flag that exists to protect a one-shot read
+# --------------------------------------------------------------------------- #
+
+
+def test_save_with_no_wait_is_a_usage_error(capsys, whisper_client, tmp_path):
+    """--no-wait returns before there is a result, so --save would write
+    nothing while reporting success."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(whisper={"whisper_hash": "h1", "status_code": 202})
+
+    code, out, _ = run(
+        capsys,
+        "whisper",
+        "extract",
+        str(doc),
+        "--no-wait",
+        "--save",
+        str(tmp_path / "out.json"),
+    )
+
+    assert code == int(ExitCode.USAGE)
+    assert not (tmp_path / "out.json").exists()
+    assert "retrieve" in envelope(out)["error"]["hint"]
+
+
+#: The flattened shape the pinned client hands back for a finished batch: the
+#: execution completed, one document inside it did not.
+PARTIAL_FAILURE = {
+    "status_code": 200,
+    "pending": False,
+    "execution_status": "COMPLETED",
+    "error": "",
+    "extraction_result": [
+        {
+            "file": "a.pdf",
+            "file_execution_id": "f1",
+            "status": "Success",
+            "result": {"total": 1},
+            "error": None,
+            "metadata": {},
+        },
+        {
+            "file": "bad.pdf",
+            "file_execution_id": "f2",
+            "status": "Failed",
+            "result": None,
+            "error": "Structure tool failed: 415 not supported",
+            "metadata": {},
+        },
+        {
+            "file": "c.pdf",
+            "file_execution_id": "f3",
+            "status": "Success",
+            "result": {"total": 3},
+            "error": None,
+            "metadata": {},
+        },
+    ],
+}
+
+
+def _partial_run(capsys, deployment_client, tmp_path, *extra):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": True,
+            "execution_status": "PENDING",
+            "status_check_api_endpoint": "/status?execution_id=e1",
+        },
+        check_execution_status=PARTIAL_FAILURE,
+    )
+    return run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0.1",
+        *extra,
+    )
+
+
+def test_a_completed_run_with_a_failed_document_is_not_a_success(
+    capsys, deployment_client, tmp_path
+):
+    """The batch status says the job ran, not that every document came out, so
+    the exit code has to read the per-file results."""
+    code, out, _ = _partial_run(capsys, deployment_client, tmp_path)
+
+    assert code == int(ExitCode.VALIDATION)
+    error = envelope(out)["error"]
+    assert error["failed_files"] == ["bad.pdf"]
+    assert error["execution_id"] == "e1"
+    assert "bad.pdf" in error["message"]
+    # One-shot read: the successful documents survive only here, unredacted.
+    assert error["details"] == PARTIAL_FAILURE
+
+
+def test_a_run_whose_documents_all_succeeded_is_still_a_success(
+    capsys, deployment_client, tmp_path
+):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": True,
+            "status_check_api_endpoint": "/status?execution_id=e1",
+        },
+        check_execution_status={
+            **PARTIAL_FAILURE,
+            "extraction_result": [
+                {**PARTIAL_FAILURE["extraction_result"][0]},
+                {**PARTIAL_FAILURE["extraction_result"][2], "status": "SUCCESS"},
+            ],
+        },
+    )
+
+    code, out, _ = run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0.1",
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["ok"] is True
+
+
+def test_a_failed_document_is_saved_before_the_run_is_failed(
+    capsys, deployment_client, tmp_path
+):
+    target = tmp_path / "result.json"
+    code, _, _ = _partial_run(capsys, deployment_client, tmp_path, "--save", str(target))
+
+    assert code == int(ExitCode.VALIDATION)
+    saved = json.loads(target.read_text())
+    assert [e["file"] for e in saved["extraction_result"]] == [
+        "a.pdf",
+        "bad.pdf",
+        "c.pdf",
+    ]
+
+
+def test_a_status_read_with_a_failed_document_is_not_a_success(
+    capsys, deployment_client, tmp_path
+):
+    target = tmp_path / "result.json"
+    deployment_client(check_execution_status=PARTIAL_FAILURE)
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "status",
+        "my-api",
+        "e-1",
+        "--save",
+        str(target),
+    )
+
+    assert code == int(ExitCode.VALIDATION)
+    error = envelope(out)["error"]
+    assert error["failed_files"] == ["bad.pdf"]
+    assert error["execution_id"] == "e-1"
+    assert target.exists()
+
+
+def test_deployment_status_can_save_the_result(capsys, deployment_client, tmp_path):
+    """`deployment status` is the documented way to resume after a timeout, so
+    it is where a result has to be savable."""
+    target = tmp_path / "result.json"
+    deployment_client(
+        check_execution_status={
+            "status_code": 200,
+            "execution_status": "COMPLETED",
+            "extraction_result": {"text": "done"},
+        }
+    )
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "status",
+        "my-api",
+        "e-1",
+        "--save",
+        str(target),
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert json.loads(target.read_text())["execution_status"] == "COMPLETED"
+    assert envelope(out)["ok"] is True
+
+
+def test_an_execution_id_cannot_carry_query_syntax(capsys, deployment_client):
+    client = deployment_client(
+        check_execution_status={"status_code": 200, "execution_status": "COMPLETED"}
+    )
+    run(capsys, "docstudio", "deployment", "status", "my-api", "e-1&admin=1")
+    endpoint = client.calls[0][1][0]
+    assert endpoint.endswith("?execution_id=e-1%26admin%3D1")
+
+
+# --------------------------------------------------------------------------- #
+# whisper status: a failure inside an HTTP 200
+# --------------------------------------------------------------------------- #
+
+
+def test_whisper_status_fails_on_a_failed_extraction(capsys, whisper_client):
+    whisper_client(whisper_status={"status": "error", "message": "bad scan"})
+
+    code, out, _ = run(capsys, "whisper", "status", "h1")
+
+    assert code == int(ExitCode.VALIDATION)
+    error = envelope(out)["error"]
+    assert error["details"]["message"] == "bad scan"
+    assert error["whisper_hash"] == "h1"
+
+
+def test_whisper_status_reports_a_hash_the_service_forgot(capsys, whisper_client):
+    """`unknown` is terminal: the service no longer holds the hash, and no
+    amount of polling changes that."""
+    whisper_client(whisper_status={"status": "unknown"})
+
+    code, _, _ = run(capsys, "whisper", "status", "h1")
+
+    assert code == int(ExitCode.VALIDATION)
+
+
+def test_whisper_status_passes_a_running_extraction_through(capsys, whisper_client):
+    whisper_client(whisper_status={"status": "processing"})
+
+    code, out, _ = run(capsys, "whisper", "status", "h1")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["status"] == "processing"
+
+
+def test_a_webhook_token_is_not_printed_back(capsys, whisper_client):
+    token = "wh-secret-abcdefghijklmnop"
+    whisper_client(get_webhook_details={"name": "n", "auth_token": token, "url": "u"})
+
+    code, out, _ = run(capsys, "whisper", "webhook", "get", "n")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert token not in out
+
+
+def test_a_webhook_can_be_updated_and_removed(capsys, whisper_client):
+    """The token reaches the client and never the output, on both commands."""
+    token = "wh-token-abcdefghijk"
+    client = whisper_client(
+        update_webhook_details={"message": "updated"},
+        delete_webhook={"message": "deleted"},
+    )
+
+    code, out, err = run(
+        capsys,
+        "whisper",
+        "webhook",
+        "update",
+        "hook1",
+        "--url",
+        "https://example.com/hook",
+        "--auth-token",
+        token,
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["message"] == "updated"
+    assert client.calls[0][1] == ("hook1", "https://example.com/hook", token)
+    assert token not in out and token not in err
+
+    code, out, _ = run(capsys, "whisper", "webhook", "delete", "hook1")
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["message"] == "deleted"
+    assert client.calls[-1][1] == ("hook1",)
+
+
+def test_a_token_quoted_back_while_updating_a_webhook_is_scrubbed(capsys, whisper_client):
+    """`remember_secret` runs before the call, so a failure quoting it is covered."""
+    token = "wh-token-abcdefghijk"
+    whisper_client(
+        update_webhook_details=LLMWhispererClientException(
+            f"rejected token {token}", status_code=400
+        )
+    )
+
+    code, out, err = run(
+        capsys,
+        "whisper",
+        "webhook",
+        "update",
+        "hook1",
+        "--url",
+        "https://example.com/hook",
+        "--auth-token",
+        token,
+    )
+
+    assert code == int(ExitCode.VALIDATION)
+    assert token not in out and token not in err
+
+
+def test_a_rate_limited_call_exits_six(capsys, whisper_client):
+    whisper_client(
+        get_usage_info=LLMWhispererClientException("slow down", status_code=429)
+    )
+
+    code, out, _ = run(capsys, "whisper", "usage")
+
+    assert code == int(ExitCode.RATE_LIMITED) == 6
+    assert envelope(out)["error"]["retryable"] is True
+
+
+def test_a_wait_that_runs_out_exits_seven_naming_the_handle(
+    capsys, whisper_client, tmp_path, monkeypatch
+):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1", "status_code": 202},
+        whisper_status={"status": "processing"},
+    )
+    monkeypatch.setattr("unstract_cli.core.poll.time.sleep", lambda _seconds: None)
+
+    code, out, _ = run(
+        capsys, "whisper", "extract", str(doc), "--interval", "0.1", "--timeout", "0"
+    )
+
+    assert code == int(ExitCode.TIMEOUT) == 7
+    error = envelope(out)["error"]
+    assert error["whisper_hash"] == "h1"
+    assert error["retryable"] is True
+
+
+def test_deployment_save_with_no_wait_is_a_usage_error(
+    capsys, deployment_client, tmp_path
+):
+    """The deployment path needs the same guard as the whisper one: --no-wait
+    returns before there is a result, so --save would write nothing."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file={"status_code": 200, "pending": True, "execution_status": "P"}
+    )
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--no-wait",
+        "--save",
+        str(tmp_path / "out.json"),
+    )
+
+    assert code == int(ExitCode.USAGE)
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_a_webhook_token_can_come_from_the_environment(
+    capsys, whisper_client, monkeypatch
+):
+    """Passing a credential as an argument puts it in the process list, so the
+    envvar is the supported way to supply it."""
+    monkeypatch.setenv("UNSTRACT_WEBHOOK_AUTH_TOKEN", "wh-token-0123456789")
+    client = whisper_client(register_webhook={"status_code": 201, "message": "ok"})
+
+    code, _, _ = run(
+        capsys,
+        "whisper",
+        "webhook",
+        "create",
+        "hook1",
+        "--url",
+        "https://example.com/hook",
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "wh-token-0123456789" in client.calls[0][1]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("25", 25), ("2K", 2048), ("500M", 500 * 1024**2), ("1.5GB", int(1.5 * 1024**3))],
+)
+def test_clone_accepts_every_size_spelling_the_client_does(value, expected):
+    """Both spellings of this command have to accept the same strings."""
+    assert clone_cmd._parse_size(value) == expected
+
+
+@pytest.mark.parametrize("value", ["1.2.3", ".", "5X", ""])
+def test_a_malformed_size_is_a_usage_error_not_a_crash(value):
+    """`float()` raising here would escape as a traceback with no envelope."""
+    with pytest.raises(click.BadParameter):
+        clone_cmd._parse_size(value)
+
+
+def test_splitting_a_csv_drops_blanks_and_trims():
+    assert clone_cmd._split_csv(" a , b ,, c ") == ("a", "b", "c")
+    assert clone_cmd._split_csv("") is None
+    assert clone_cmd._split_csv(None) is None
+
+
+def test_an_unusable_output_format_is_still_reported_as_an_envelope(capsys):
+    """The format is resolved before the handler that renders envelopes exists,
+    so a failure there has to fall back rather than raise past it."""
+    code = main(["-o", "bogus", "whisper", "status", "h1"])
+    out = capsys.readouterr().out
+    assert code == int(ExitCode.USAGE)
+    # Rendered in whatever the fallback resolves to, but on stdout and shaped
+    # like a report: raising here would leave stdout empty instead.
+    assert "bogus" in out
+
+
+def test_a_base_url_without_a_scheme_is_a_usage_error(capsys, whisper_client):
+    """The request was never sendable, so the fault is the caller's config and
+    retrying it is the wrong advice."""
+    whisper_client(get_usage_info=MissingSchema("Invalid URL 'example.com'"))
+    code, out, _ = run(capsys, "whisper", "usage")
+    assert code == int(ExitCode.USAGE)
+    assert envelope(out)["error"]["retryable"] is False
+
+
+def test_a_clone_url_without_a_scheme_is_a_usage_error(capsys, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise MissingSchema("Invalid URL 'dev.example.com'")
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fail)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+    code, out, _ = run(
+        capsys,
+        "clone",
+        "--source-url",
+        "dev.example.com",
+        "--source-org",
+        "a",
+        "--target-url",
+        "https://prod.example.com",
+        "--target-org",
+        "b",
+    )
+    assert code == int(ExitCode.USAGE)
+    assert envelope(out)["error"]["retryable"] is False
+
+
+CLONE_ARGS = (
+    "clone",
+    "--source-url",
+    "https://dev.example.com",
+    "--source-org",
+    "a",
+    "--target-url",
+    "https://prod.example.com",
+    "--target-org",
+    "b",
+)
+
+
+@pytest.fixture
+def clone_raising(monkeypatch):
+    """Run `clone` against an orchestrator that fails the way the test names."""
+
+    def install(exc):
+        def fail(*_args, **_kwargs):
+            raise exc
+
+        monkeypatch.setattr(clone_cmd, "run_clone", fail)
+        monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+        monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    return install
+
+
+def test_a_platform_api_status_decides_the_clone_exit_code(capsys, clone_raising):
+    clone_raising(PlatformAPIError("forbidden", status_code=403, body="no access"))
+    code, out, _ = run(capsys, *CLONE_ARGS)
+
+    assert code == int(ExitCode.AUTH)
+    assert "no access" in json.dumps(envelope(out)["error"]["details"])
+
+
+def test_a_platform_api_that_never_answered_is_retryable(capsys, clone_raising):
+    """No status means no response, which is the case retrying can still fix."""
+    clone_raising(PlatformAPIError("connection reset"))
+    code, out, _ = run(capsys, *CLONE_ARGS)
+
+    assert code == int(ExitCode.SERVER_ERROR)
+    assert envelope(out)["error"]["retryable"] is True
+
+
+def test_a_clone_that_could_not_start_is_a_usage_error(capsys, clone_raising):
+    clone_raising(CloneError("source and target are the same organization"))
+    code, out, _ = run(capsys, *CLONE_ARGS)
+
+    assert code == int(ExitCode.USAGE)
+    assert "same organization" in envelope(out)["error"]["message"]
+
+
+def test_an_aborted_clone_reports_why_it_stopped(capsys, monkeypatch):
+    def fake_clone(source, target, options):
+        return CloneReport(
+            source=Endpoint(source.base_url, source.organization_id),
+            target=Endpoint(target.base_url, target.organization_id),
+            phases=[PhaseResult(name="adapters", created=1)],
+            aborted=True,
+            abort_reason="a name already exists on the target",
+        )
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    code, out, _ = run(capsys, *CLONE_ARGS)
+
+    assert code == int(ExitCode.GENERIC)
+    assert "already exists on the target" in envelope(out)["error"]["message"]
+
+
+def test_the_clone_size_grammar_matches_the_client_it_mirrors():
+    """Both spellings of this command have to accept the same strings, and the
+    table is copied rather than imported, so nothing else notices a drift."""
+    from unstract.clone import cli as upstream
+
+    assert clone_cmd._SIZE_UNITS == upstream._SIZE_UNITS
+    assert clone_cmd._SIZE_RE.pattern == upstream._SIZE_RE.pattern
+
+
+def test_setting_an_env_reference_in_a_discovered_file_says_it_is_ignored(
+    capsys, tmp_path, monkeypatch
+):
+    """The refusal applies to every key, not only the withheld ones, so writing
+    one without a word would report success for a setting that never resolves."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / ".unstract.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(work)
+    _, out, _ = run(capsys, "config", "set", "docstudio", "org_id", "env:MY_ORG")
+    assert "ignored when the config is loaded" in envelope(out)["data"]["warning"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "setup"),
+    [
+        (("whisper", "usage"), "whisper"),
+        (
+            (
+                "clone",
+                "--source-url",
+                "https://dev.example.com",
+                "--source-org",
+                "a",
+                "--target-url",
+                "https://prod.example.com",
+                "--target-org",
+                "b",
+            ),
+            "clone",
+        ),
+    ],
+)
+def test_a_header_that_will_not_build_does_not_quote_the_credential(
+    capsys, monkeypatch, whisper_client, argv, setup
+):
+    """The only way to reach this is a credential carrying a control character,
+    and the exception quotes it `repr`-escaped -- past what the scrub matches."""
+    # The control character sits inside the key, not after it: `repr` then
+    # splits the literal, which is precisely what the scrub cannot match.
+    key = f"sk-live{chr(10)}0123456789"
+    failure = InvalidHeader(
+        f"Invalid return character or leading space in header: {key!r}"
+    )
+    escaped = repr(key)[1:-1]
+    if setup == "whisper":
+        whisper_client(get_usage_info=failure)
+    else:
+
+        def fail(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(clone_cmd, "run_clone", fail)
+        monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", key)
+        monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    code, out, err = run(capsys, *argv)
+    assert code == int(ExitCode.USAGE)
+    assert escaped not in out and escaped not in err
+
+
+def test_a_finished_clone_still_reports_when_the_config_is_unreadable(
+    capsys, monkeypatch, tmp_path
+):
+    """Clone takes both endpoints as flags, so an unreadable config file has no
+    bearing on it. Scrubbing consults the config for keys to hide, and failing
+    there would discard a report describing work already done."""
+    broken = tmp_path / "broken.toml"
+    broken.write_text("this is not = = toml", encoding="utf-8")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(broken))
+
+    def fake_clone(source, target, options):
+        return CloneReport(
+            source=Endpoint(source.base_url, source.organization_id),
+            target=Endpoint(target.base_url, target.organization_id),
+            phases=[PhaseResult(name="adapters", created=1)],
+        )
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    code, out, _ = run(
+        capsys,
+        "clone",
+        "--source-url",
+        "https://dev.example.com",
+        "--source-org",
+        "org_dev",
+        "--target-url",
+        "https://qa.example.com",
+        "--target-org",
+        "org_qa",
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["skipped"]["total"] == 0
+
+
+def test_a_run_that_times_out_names_the_id_its_status_command_takes(
+    capsys, deployment_client, tmp_path, monkeypatch
+):
+    """The poll handle is a status URL. Told to resume with that, a caller has
+    nothing to pass to `deployment status`, which takes an execution id."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file=ACK,
+        check_execution_status={
+            "status_code": 200,
+            "execution_status": "EXECUTING",
+            "extraction_result": "",
+        },
+    )
+    monkeypatch.setattr("unstract_cli.core.poll.time.sleep", lambda _seconds: None)
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0.1",
+        "--timeout",
+        "0",
+    )
+
+    assert code == int(ExitCode.TIMEOUT)
+    error = envelope(out)["error"]
+    assert error["execution_id"] == "e-1"
+    assert "deployment status my-api e-1" in error["hint"]
+
+
+def test_a_zero_poll_interval_is_refused(capsys, whisper_client, tmp_path):
+    """Zero seconds between polls is a busy loop against a metered service."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+    assert code == int(ExitCode.USAGE)
+    assert "interval" in envelope(out)["error"]["message"].lower()

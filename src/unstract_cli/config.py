@@ -132,6 +132,18 @@ def config_path() -> Path:
     return _resolve_config_path()[0]
 
 
+def init_path() -> Path:
+    """Where `config init` writes when no config file was named.
+
+    Discovery is for reading. A file found by walking up from the working
+    directory is not trusted with credentials or hosts, so a starter config
+    written there is one the next command refuses to honour -- and writing to a
+    checked-in file the user never named is a surprise in its own right.
+    """
+    path, discovered = _resolve_config_path()
+    return HOME_CONFIG.expanduser() if discovered else path
+
+
 def _resolve_config_path() -> tuple[Path, bool]:
     """The config path, and whether it was *discovered* rather than named.
 
@@ -656,6 +668,7 @@ __all__ = [
     "ResolvedConfig",
     "config_path",
     "find_project_config",
+    "init_path",
     "load_config",
     "save_config",
     "set_config_path",

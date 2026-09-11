@@ -19,6 +19,7 @@ from unstract_cli.config import (
     ResolvedConfig,
     config_path,
     find_project_config,
+    init_path,
     load_config,
     save_config,
     set_config_path,
@@ -540,3 +541,49 @@ def test_an_override_is_only_read_under_the_key_it_is_written_with(tmp_path):
     )
     assert cfg.get(DOCSTUDIO, "org_id") is None
     assert cfg.resolution_source(DOCSTUDIO, "org_id")["resolved"] is False
+
+
+def test_init_writes_the_home_config_even_inside_a_project(tmp_path, monkeypatch):
+    """A discovered file is read-only as far as `init` is concerned.
+
+    Walking up from the working directory is how a project config is *found*.
+    Creating one that way writes a file the caller never named -- and one whose
+    credentials the loader then refuses, because a discovered file is not
+    trusted to supply them. The starter config has to land where it works.
+    """
+    project = tmp_path / "project"
+    (project / "sub").mkdir(parents=True)
+    (project / PROJECT_CONFIG_NAME).write_text(PROFILE_TOML)
+    monkeypatch.chdir(project / "sub")
+
+    assert find_project_config() == project / PROJECT_CONFIG_NAME
+    assert init_path() == config_module.HOME_CONFIG.expanduser()
+
+
+@pytest.mark.parametrize("named_by", ["flag", "env"])
+def test_init_writes_the_file_the_caller_named(tmp_path, monkeypatch, named_by):
+    """Naming a path is the trusted case, and it stays the target wherever it
+    points -- including at a project file, which the caller has then chosen."""
+    chosen = tmp_path / "chosen.toml"
+    if named_by == "flag":
+        set_config_path(chosen)
+    else:
+        monkeypatch.setenv("UNSTRACT_CONFIG", str(chosen))
+
+    assert init_path() == chosen
+
+
+def test_the_starter_config_is_one_the_loader_will_honour(tmp_path, monkeypatch):
+    """The round trip the bug broke: init, then read it back and resolve a
+    credential from it. Written to a discovered project file this fails, since
+    `env:` indirection is refused there.
+    """
+    monkeypatch.setenv("LLMWHISPERER_API_KEY", "k-1")
+    written = save_config(
+        ConfigFile(default_profile="cloud-us", profiles=starter_profiles()),
+        init_path(),
+    )
+
+    resolved = ResolvedConfig(file=load_config(written), profile_name="cloud-us")
+
+    assert resolved.get(LLMWHISPERER, "api_key") == "k-1"

@@ -23,7 +23,7 @@ from unstract_cli.config import (
     ConfigError,
     ConfigFile,
     ResolvedConfig,
-    config_path,
+    init_path,
     load_config,
     save_config,
     settings_for,
@@ -73,7 +73,7 @@ def config_group() -> None:
 )
 @click.pass_obj
 def config_init(obj: Any, force: bool) -> None:
-    path = config_path()
+    path = init_path()
     if path.exists() and not force:
         # Never prompt: state the situation and the exact flag that resolves it.
         raise CLIError(

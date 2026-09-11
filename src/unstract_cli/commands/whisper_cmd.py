@@ -162,6 +162,7 @@ def _extraction(payload: Any) -> Any:
             "The service returned no extraction for a completed job.",
             ExitCode.SERVER_ERROR,
             details=payload,
+            verbatim_details=True,
             hint=(
                 "The read has been acknowledged, so it cannot be repeated. "
                 "`details` carries the response exactly as it arrived."

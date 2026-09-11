@@ -273,6 +273,11 @@ class CLIError(Exception):
     hint: str | None = None
     retryable: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+    #: Set where `details` is the only surviving copy of something the service
+    #: will not serve again. Redacting by field name would destroy the part of
+    #: the result the caller most needs; the literal scrub of every resolved
+    #: credential still applies on the way out.
+    verbatim_details: bool = False
 
     def __post_init__(self) -> None:
         super().__init__(self.message)
@@ -290,7 +295,9 @@ class CLIError(Exception):
             "http_status": self.http_status,
             # Structural, not opt-in: the details come from a server body that
             # can echo the request, headers and key included.
-            "details": redact_value(self.details),
+            "details": self.details
+            if self.verbatim_details
+            else redact_value(self.details),
             "endpoint": self.endpoint or None,
             "hint": self.hint or None,
         }

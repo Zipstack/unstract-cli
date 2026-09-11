@@ -163,6 +163,7 @@ def persist(path: str | Path, payload: Any) -> Path:
             "here would replace the link rather than update what it points at.",
             ExitCode.SAVE_FAILED,
             details=payload,
+            verbatim_details=True,
             hint=(
                 "`details` carries the result. Pass the path of the real file and "
                 "save it from there."
@@ -195,6 +196,7 @@ def persist(path: str | Path, payload: Any) -> Path:
             f"The result could not be written to {path!r}: {exc}.",
             ExitCode.SAVE_FAILED,
             details=payload,
+            verbatim_details=True,
             hint=(
                 "`details` carries the result. It has already been read from the "
                 "service, which will not serve it again -- save it from here."

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from unstract_cli.core.errors import ExitCode
+from unstract_cli.core.errors import REDACTED, ExitCode
 from unstract_cli.core.poll import (
     MAX_TRANSIENT_POLLS,
     CLIError,
@@ -503,3 +503,21 @@ def test_a_retried_failure_is_reported_without_being_dressed_as_a_status():
     )
     assert [exc.message for exc in retries] == ["upstream is busy"]
     assert not any("upstream is busy" in status for status in seen)
+
+
+def test_a_rescued_result_survives_field_name_redaction(tmp_path):
+    """A failed save leaves `details` as the only copy of a result the service
+    will not serve again, so collapsing a field for being named like a
+    credential destroys what the caller is being handed it to recover."""
+    result = {"extraction": {"license_key": "AB-123456", "name": "Ada"}}
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    with pytest.raises(CLIError) as caught:
+        persist(blocker / "out.json", result)
+    assert caught.value.exit_code is ExitCode.SAVE_FAILED
+    assert caught.value.to_dict()["details"] == result
+
+
+def test_an_ordinary_failure_still_redacts_by_field_name():
+    error = CLIError("nope", ExitCode.VALIDATION, details={"api_key": "AB-123456"})
+    assert error.to_dict()["details"] == {"api_key": REDACTED}

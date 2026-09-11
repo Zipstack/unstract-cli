@@ -27,6 +27,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    # Tests only: the workflow files are parsed in the suite so a file that
+    # cannot be read fails the gate rather than the first dispatch of it.
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

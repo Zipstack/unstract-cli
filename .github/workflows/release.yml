@@ -138,6 +138,7 @@ jobs:
       - name: Commit version bump and create release
         env:
           RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
         run: |
           NEW_VERSION="${{ steps.version.outputs.version }}"
 
@@ -169,8 +170,6 @@ jobs:
           fi
 
           echo "Created release v$NEW_VERSION"
-        env:
-          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
 
       - name: Success message
         run: |

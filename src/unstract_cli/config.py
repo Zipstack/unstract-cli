@@ -205,6 +205,9 @@ class ConfigFile:
     #: Keys withheld from an untrusted file, as ``{(profile, *blocks, key): value}``.
     #: Excluded from resolution, but kept so a write-back does not drop them.
     withheld: dict[tuple[str, ...], Any] = field(default_factory=dict)
+    #: The file as it was parsed. A write rebuilds only the tables this CLI owns,
+    #: so anything else in the file survives being written through.
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 def _strip_untrusted(profiles: dict[str, Any]) -> dict[tuple[str, ...], Any]:
@@ -287,6 +290,7 @@ def load_config(path: Path | None = None) -> ConfigFile:
         warnings=tuple(warnings),
         is_project_local=project_local,
         withheld=withheld,
+        raw=raw,
     )
 
 
@@ -319,7 +323,11 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     target = path or cfg.path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    doc: dict[str, Any] = {}
+    # Started from the file as it was read: a table this CLI does not know about
+    # is not a table it may delete, and `config set` would otherwise drop
+    # whatever else the user or a later version keeps here.
+    doc: dict[str, Any] = {k: v for k, v in cfg.raw.items() if k != "profiles"}
+    doc.pop("default_profile", None)
     if cfg.default_profile:
         doc["default_profile"] = cfg.default_profile
     doc["profiles"] = _restored_profiles(cfg, target)

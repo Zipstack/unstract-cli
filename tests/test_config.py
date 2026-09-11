@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -391,6 +392,18 @@ def test_writing_back_a_project_config_keeps_the_keys_it_withheld(tmp_path, monk
     assert reloaded.profiles["p"]["deployments"]["invoices"]["api_key"] == (
         "alias-literal-key"
     )
+
+
+def test_a_table_this_cli_does_not_own_survives_a_write(write_config):
+    path = write_config(PROFILE_TOML + "\n[telemetry]\nenabled = false\n")
+    cfg = load_config()
+    cfg.profiles["p"]["docstudio"]["org_id"] = "org_edited"
+    save_config(cfg, path)
+
+    assert load_config().profiles["p"]["docstudio"]["org_id"] == "org_edited"
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["telemetry"] == {
+        "enabled": False
+    }
 
 
 def test_withheld_keys_are_not_carried_into_a_file_the_user_names(tmp_path, monkeypatch):

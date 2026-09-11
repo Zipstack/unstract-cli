@@ -281,3 +281,29 @@ def test_a_malformed_config_file_is_a_usage_error(capsys, write_config):
     code, _ = run(capsys, "config", "list")
 
     assert code == int(ExitCode.USAGE)
+
+
+def test_full_publishes_what_omitting_a_spec_flag_gets_you(capsys):
+    """The CLI leaves a spec flag's own default unset so that nothing is
+    resent, which left the value a caller gets by omitting it readable only as
+    a sentence inside the help text."""
+    _, data = run(capsys, "--discover", "full")
+    extract = data["commands"]["whisper"]["commands"]["extract"]
+    params = {p["name"]: p for p in extract["params"]}
+
+    assert params["mode"]["server_default"] == "form"
+    assert params["mode"].get("default") is None
+    # Not on a flag the CLI declares itself: nothing behind it applies a value.
+    assert "server_default" not in params["interval"]
+
+
+def test_a_spec_flag_states_its_default_once(capsys):
+    """The spec describes some defaults in prose of its own, which disagreed
+    with the value the client actually applies."""
+    _, data = run(capsys, "--discover", "full")
+    extract = data["commands"]["whisper"]["commands"]["extract"]
+    params = {p["name"]: p for p in extract["params"]}
+
+    threshold = params["word_confidence_threshold"]
+    assert "Defaults to" not in threshold["help"]
+    assert f"[default: {threshold['server_default']}]" in threshold["help"]

@@ -300,7 +300,9 @@ def _help_text(param: Param, choices: tuple[str, ...]) -> str:
     leave this out", which is the only question a default can honestly answer
     here: the CLI does not resend it, the client or the server does.
     """
-    parts = [param.description] if param.description else []
+    # The spec states some defaults in prose of its own. Left in, the flag
+    # carries two statements of one default, free to disagree.
+    parts = [_strip_restated(param.description)] if param.description else []
     if choices:
         parts.append(f"One of: {', '.join(choices)}.")
     if param.default not in (None, "") and not param.required:
@@ -333,19 +335,24 @@ def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
         decls = [f"{param.flag}/--no-{param.name.replace('_', '-')}"]
         if short:
             decls.insert(0, short)
-        return click.Option(decls, required=param.required, help=help_text, **absent)
-
-    decls = [param.flag]
-    if short:
-        decls.insert(0, short)
-    return click.Option(
-        decls,
-        type=click.Choice(choices) if choices else _click_type(param),
-        required=param.required,
-        multiple=param.array,
-        help=help_text,
-        **absent,
-    )
+        option = click.Option(decls, required=param.required, help=help_text, **absent)
+    else:
+        decls = [param.flag]
+        if short:
+            decls.insert(0, short)
+        option = click.Option(
+            decls,
+            type=click.Choice(choices) if choices else _click_type(param),
+            required=param.required,
+            multiple=param.array,
+            help=help_text,
+            **absent,
+        )
+    # What omitting the flag gets you. It cannot be Click's own default, which
+    # the CLI leaves unset so that nothing is resent -- and a caller building a
+    # call needs it as a value, not as a sentence inside the help.
+    option.server_default = param.default
+    return option
 
 
 class Diverged(click.ParamType):

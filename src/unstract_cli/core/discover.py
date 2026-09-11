@@ -113,6 +113,10 @@ def _param(param: click.Parameter) -> dict[str, Any]:
         default = False if getattr(param, "is_flag", False) else None
     if default is not None and not isinstance(param, click.Argument):
         entry["default"] = default
+    # For a spec-derived flag: what the client or the service applies when it is
+    # not passed. The CLI never resends it, so it is not the flag's own default.
+    if (fallback := getattr(param, "server_default", None)) is not None:
+        entry["server_default"] = fallback
     return entry
 
 

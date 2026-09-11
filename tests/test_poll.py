@@ -572,3 +572,28 @@ def test_preflight_accepts_a_path_whose_directory_does_not_exist_yet(tmp_path):
     """`persist` creates the parents, so refusing here would refuse a path that
     works."""
     assert preflight(tmp_path / "new" / "deeper" / "out.json")
+
+
+def test_a_fault_on_this_side_is_not_retried_as_a_server_failure():
+    """Everything the service raises on purpose is a CLIError by the time it
+    reaches the loop, so anything else is this CLI's own bug -- repeating it
+    spends the retry budget and reports someone else's fault."""
+    calls: list[str] = []
+
+    def broken(handle):
+        calls.append(handle)
+        raise AttributeError("'NoneType' object has no attribute 'get'")
+
+    clock = Clock()
+    with pytest.raises(CLIError) as caught:
+        wait_for_completion(
+            initial={"whisper_hash": "h1"},
+            spec=SPEC,
+            poll=broken,
+            timeout=600,
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    assert caught.value.exit_code is ExitCode.GENERIC
+    assert caught.value.retryable is False
+    assert len(calls) == 1

@@ -321,10 +321,12 @@ def wait_for_completion(
                 exc.retryable = False
             raise
         except Exception as exc:
+            # Everything the service can raise on purpose is already a CLIError
+            # by here, so what reaches this is a fault on this side. Calling it
+            # a retryable server error spends the retry budget repeating it.
             raise CLIError(
                 str(exc) or type(exc).__name__,
-                ExitCode.SERVER_ERROR,
-                retryable=retryable,
+                ExitCode.GENERIC,
                 extra={spec.handle_field: handle},
             ) from exc
 

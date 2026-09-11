@@ -160,9 +160,57 @@ def run(
                     f"{found}` rather than resubmitting the document."
                 )
             raise
+    handle = _handle_meta(started)
+    _raise_for_failed_files(result, endpoint=client.api_url, extra=handle)
     # A waited result names no execution, so the handle is returned as meta for
     # correlation.
-    finish(ctx, result, raw_fields=RUN_RAW, meta=_handle_meta(started))
+    finish(ctx, result, raw_fields=RUN_RAW, meta=handle)
+
+
+def _failed_files(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-file entries of a completed execution that produced no result."""
+    entries = result.get("extraction_result")
+    if not isinstance(entries, list):
+        return []
+    failed = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        status = entry.get("status")
+        if status is None:
+            if entry.get("error"):
+                failed.append(entry)
+        elif str(status).casefold() != "success":
+            failed.append(entry)
+    return failed
+
+
+def _raise_for_failed_files(
+    result: dict[str, Any], *, endpoint: str, extra: dict[str, Any]
+) -> None:
+    # A completed execution says the batch ran, not that every document in it
+    # came out: a failed file is reported inside the success shape.
+    failed = _failed_files(result)
+    if not failed:
+        return
+    named = "; ".join(
+        f"{entry.get('file') or '?'}: {entry.get('error') or entry.get('status')}"
+        for entry in failed
+    )
+    raise CLIError(
+        f"{len(failed)} of {len(result['extraction_result'])} documents failed: {named}",
+        ExitCode.VALIDATION,
+        details=result,
+        endpoint=endpoint,
+        # The status read is one-shot, so the successful documents in this
+        # payload survive nowhere else.
+        verbatim_details=True,
+        hint=(
+            "`error.details` carries the full result, successful documents "
+            "included. Resubmit only the files named in `failed_files`."
+        ),
+        extra={**extra, "failed_files": [entry.get("file") for entry in failed]},
+    )
 
 
 def _handle_meta(started: dict[str, Any]) -> dict[str, Any]:
@@ -236,6 +284,9 @@ def status(
     if save:
         written = persist(save, result)
         diagnostic(f"saved: {written}", quiet=ctx.quiet, verbosity=ctx.verbosity)
+    _raise_for_failed_files(
+        result, endpoint=client.api_url, extra={"execution_id": execution_id}
+    )
     finish(ctx, result, raw_fields=STATUS_RAW)
 
 

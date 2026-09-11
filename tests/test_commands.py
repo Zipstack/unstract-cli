@@ -1404,6 +1404,159 @@ def test_save_with_no_wait_is_a_usage_error(capsys, whisper_client, tmp_path):
     assert "retrieve" in envelope(out)["error"]["hint"]
 
 
+#: The flattened shape the pinned client hands back for a finished batch: the
+#: execution completed, one document inside it did not.
+PARTIAL_FAILURE = {
+    "status_code": 200,
+    "pending": False,
+    "execution_status": "COMPLETED",
+    "error": "",
+    "extraction_result": [
+        {
+            "file": "a.pdf",
+            "file_execution_id": "f1",
+            "status": "Success",
+            "result": {"total": 1},
+            "error": None,
+            "metadata": {},
+        },
+        {
+            "file": "bad.pdf",
+            "file_execution_id": "f2",
+            "status": "Failed",
+            "result": None,
+            "error": "Structure tool failed: 415 not supported",
+            "metadata": {},
+        },
+        {
+            "file": "c.pdf",
+            "file_execution_id": "f3",
+            "status": "Success",
+            "result": {"total": 3},
+            "error": None,
+            "metadata": {},
+        },
+    ],
+}
+
+
+def _partial_run(capsys, deployment_client, tmp_path, *extra):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": True,
+            "execution_status": "PENDING",
+            "status_check_api_endpoint": "/status?execution_id=e1",
+        },
+        check_execution_status=PARTIAL_FAILURE,
+    )
+    return run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0.1",
+        *extra,
+    )
+
+
+def test_a_completed_run_with_a_failed_document_is_not_a_success(
+    capsys, deployment_client, tmp_path
+):
+    """The batch status says the job ran, not that every document came out, so
+    the exit code has to read the per-file results."""
+    code, out, _ = _partial_run(capsys, deployment_client, tmp_path)
+
+    assert code == int(ExitCode.VALIDATION)
+    error = envelope(out)["error"]
+    assert error["failed_files"] == ["bad.pdf"]
+    assert error["execution_id"] == "e1"
+    assert "bad.pdf" in error["message"]
+    # One-shot read: the successful documents survive only here, unredacted.
+    assert error["details"] == PARTIAL_FAILURE
+
+
+def test_a_run_whose_documents_all_succeeded_is_still_a_success(
+    capsys, deployment_client, tmp_path
+):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": True,
+            "status_check_api_endpoint": "/status?execution_id=e1",
+        },
+        check_execution_status={
+            **PARTIAL_FAILURE,
+            "extraction_result": [
+                {**PARTIAL_FAILURE["extraction_result"][0]},
+                {**PARTIAL_FAILURE["extraction_result"][2], "status": "SUCCESS"},
+            ],
+        },
+    )
+
+    code, out, _ = run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0.1",
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["ok"] is True
+
+
+def test_a_failed_document_is_saved_before_the_run_is_failed(
+    capsys, deployment_client, tmp_path
+):
+    target = tmp_path / "result.json"
+    code, _, _ = _partial_run(capsys, deployment_client, tmp_path, "--save", str(target))
+
+    assert code == int(ExitCode.VALIDATION)
+    saved = json.loads(target.read_text())
+    assert [e["file"] for e in saved["extraction_result"]] == [
+        "a.pdf",
+        "bad.pdf",
+        "c.pdf",
+    ]
+
+
+def test_a_status_read_with_a_failed_document_is_not_a_success(
+    capsys, deployment_client, tmp_path
+):
+    target = tmp_path / "result.json"
+    deployment_client(check_execution_status=PARTIAL_FAILURE)
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "status",
+        "my-api",
+        "e-1",
+        "--save",
+        str(target),
+    )
+
+    assert code == int(ExitCode.VALIDATION)
+    error = envelope(out)["error"]
+    assert error["failed_files"] == ["bad.pdf"]
+    assert error["execution_id"] == "e-1"
+    assert target.exists()
+
+
 def test_deployment_status_can_save_the_result(capsys, deployment_client, tmp_path):
     """`deployment status` is the documented way to resume after a timeout, so
     it is where a result has to be savable."""

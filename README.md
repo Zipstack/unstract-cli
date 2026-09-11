@@ -55,7 +55,7 @@ have to copy it:
 | 2 | usage error |
 | 3 | authentication failed |
 | 4 | not found |
-| 5 | validation failed |
+| 5 | validation failed — also a completed run in which a document failed; the full result, successful documents included, is in `error.details` |
 | 6 | rate limited |
 | 7 | timed out (the job handle is in the error payload — resume, do not resubmit) |
 | 8 | server error |

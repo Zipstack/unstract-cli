@@ -548,3 +548,27 @@ def test_a_zero_interval_still_backs_off_between_retries():
             now=clock.now,
         )
     assert slept and all(seconds > 0 for seconds in slept)
+
+
+def test_preflight_refuses_a_writable_file_in_a_directory_it_cannot_write(tmp_path):
+    """The result is written to a temporary sibling and moved over the target,
+    so the directory is what has to be writable. Checking the file alone passes
+    here and fails after the read `--save` exists to protect."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    target = locked / "out.json"
+    target.write_text("", encoding="utf-8")
+    locked.chmod(0o500)
+    try:
+        with pytest.raises(CLIError) as caught:
+            preflight(target)
+    finally:
+        locked.chmod(0o700)
+    assert caught.value.exit_code is ExitCode.USAGE
+    assert "nothing is lost" in (caught.value.hint or "")
+
+
+def test_preflight_accepts_a_path_whose_directory_does_not_exist_yet(tmp_path):
+    """`persist` creates the parents, so refusing here would refuse a path that
+    works."""
+    assert preflight(tmp_path / "new" / "deeper" / "out.json")

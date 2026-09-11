@@ -134,11 +134,13 @@ def preflight(path: str | Path) -> Path:
         )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        existed = target.exists()
-        with target.open("a", encoding="utf-8"):
-            pass
-        if not existed:
-            target.unlink()
+        # The write `persist` will do, not a stand-in for it: the result is
+        # written to a temporary sibling and moved over the target, so it is the
+        # directory that has to be writable. Opening the target itself passes in
+        # a read-only directory and fails after the read this protects.
+        probe_fd, probe = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+        os.close(probe_fd)
+        os.unlink(probe)
     except OSError as exc:
         raise CLIError(
             f"Cannot write to --save target {path!r}: {exc}.",

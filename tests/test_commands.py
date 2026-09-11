@@ -538,6 +538,55 @@ def test_run_queues_the_execution_and_polls_it(capsys, deployment_client, tmp_pa
     assert envelope(out)["data"]["execution_status"] == "COMPLETED"
 
 
+def test_a_run_can_name_its_documents_as_presigned_urls(
+    capsys, deployment_client, tmp_path
+):
+    """The flag is derived from the spec and advertised by `--discover`, so an
+    invocation that uses it and nothing else has to reach the client: a local
+    path was once the only way to name a document, which made the flag
+    unusable rather than merely unused.
+    """
+    client = deployment_client(
+        structure_file={
+            "status_code": 200,
+            "pending": False,
+            "execution_status": "COMPLETED",
+            "extraction_result": [{"file": "doc.pdf"}],
+        }
+    )
+
+    code, out, _ = run(
+        capsys,
+        "-q",
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        "--presigned-urls",
+        "https://example.com/doc.pdf",
+        "--interval",
+        "0",
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    sent = client.kwargs_for("structure_file")
+    assert list(sent["presigned_urls"]) == ["https://example.com/doc.pdf"]
+    assert envelope(out)["data"]["execution_status"] == "COMPLETED"
+
+
+def test_a_run_naming_no_documents_at_all_is_refused(capsys, deployment_client):
+    """Neither source is required on its own, so nothing in Click's own parsing
+    catches a run that names no document; without this the request goes out
+    empty and the server answers for us.
+    """
+    deployment_client(structure_file={"status_code": 200})
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "run", "my-api")
+
+    assert code == int(ExitCode.USAGE)
+    assert "at least one document" in envelope(out)["error"]["message"]
+
+
 @pytest.mark.parametrize(
     ("flag", "expected"), [([], None), (["--transport-timeout", "12.5"], 12.5)]
 )
@@ -703,6 +752,20 @@ def test_a_queued_run_renders_the_handle_it_had_to_derive(
         _raw(capsys, "docstudio", "deployment", "run", "my-api", str(doc), "--no-wait")
         == "e-1"
     )
+
+
+def test_an_accepted_extraction_renders_its_handle_not_the_whole_ack(
+    capsys, whisper_client, tmp_path
+):
+    """An accepted job carries no text, so raw prints the handle -- the one
+    thing the caller can act on. Declaring no fields here would print the whole
+    acknowledgement instead, which raw is precisely not for.
+    """
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(whisper={"whisper_hash": "h1", "status_code": 202})
+
+    assert _raw(capsys, "whisper", "extract", str(doc), "--no-wait") == "h1"
 
 
 def test_a_still_running_status_never_renders_as_an_empty_result(

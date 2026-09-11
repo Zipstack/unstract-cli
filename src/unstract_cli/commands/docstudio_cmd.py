@@ -59,7 +59,10 @@ _SHARED_WITH_STATUS = ("include_metadata", "include_metrics", "include_extracted
 @raw_fields(*RUN_RAW)
 @deployment_group.command("run")
 @click.argument("target")
-@click.argument("files", nargs=-1, required=True, type=click.Path(exists=True))
+# Optional because a run can name its documents as `--presigned-urls`
+# instead; the two are checked together below, since neither alone is
+# required and a run naming no documents at all is the real error.
+@click.argument("files", nargs=-1, type=click.Path(exists=True))
 @wait_options()
 @spec_options(
     PRODUCT,
@@ -82,11 +85,23 @@ def run(
 ) -> None:
     """Run a deployment against one or more documents.
 
-    TARGET is a deployment alias or an API name. With --wait (the default) this
-    polls until the execution finishes and returns its result.
+    TARGET is a deployment alias or an API name. Name the documents as local
+    FILES, as --presigned-urls, or both. With --wait (the default) this polls
+    until the execution finishes and returns its result.
     """
-    client = deployment(ctx.config, target, ctx.transport_timeout)
     sent = requested(params)
+    # Before the client is built: what the caller typed is wrong whatever the
+    # config resolves to, and a credential error here would name the wrong fault.
+    if not files and not sent.get("presigned_urls"):
+        raise CLIError(
+            "A run needs at least one document.",
+            ExitCode.USAGE,
+            hint=(
+                "Name local files as arguments, or pass --presigned-urls with "
+                "one or more HTTPS URLs."
+            ),
+        )
+    client = deployment(ctx.config, target, ctx.transport_timeout)
     if save and not wait:
         raise CLIError(
             "--save has nothing to write with --no-wait.",

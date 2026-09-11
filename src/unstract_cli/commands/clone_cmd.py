@@ -30,7 +30,7 @@ from unstract_cli.core.errors import (
     error_from_status,
     remember_secret,
 )
-from unstract_cli.core.output import OutputFormat, emit_text
+from unstract_cli.core.output import OutputFormat, diagnostic, emit_text
 
 # Mirrors the table and grammar `unstract.clone.cli` uses, single-letter
 # spellings included, so both spellings of this command accept the same strings.
@@ -264,7 +264,19 @@ def _finish(ctx: Context, report: CloneReport) -> None:
     elif failed := [phase.name for phase in report.phases if phase.failed]:
         failure = f"Clone completed with failures in: {', '.join(sorted(failed))}"
 
-    payload = {**report.as_dict(), "skipped": _skipped(report)}
+    skipped = _skipped(report)
+    counts = {
+        **skipped["by_phase"],
+        "oversize files": skipped["oversize_files"],
+        "unsupported files": skipped["unsupported_files"],
+    }
+    if named := ", ".join(f"{what} {n}" for what, n in counts.items() if n):
+        # On stderr in every format: a skip does not fail the run, so a caller
+        # reading the exit code alone is told nothing about what never arrived,
+        # and a machine format is not read by eye.
+        diagnostic(f"Skipped: {named}.", quiet=ctx.quiet, verbosity=ctx.verbosity)
+
+    payload = {**report.as_dict(), "skipped": skipped}
     # A person running this reads the report itself; every other format gets the
     # single envelope, which carries the same content as data.
     rendered = ctx.output is OutputFormat.TABLE

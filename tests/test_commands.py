@@ -1294,6 +1294,40 @@ def test_clone_maps_its_flags_and_reports_a_partial_failure(capsys, monkeypatch)
         assert key not in out and key not in err
 
 
+def test_a_clone_that_skipped_files_says_so_on_stderr(capsys, monkeypatch):
+    """A skip is not a failure, so nothing else tells a caller it happened."""
+
+    def fake_clone(source, target, options):
+        return CloneReport(
+            source=Endpoint(source.base_url, source.organization_id),
+            target=Endpoint(target.base_url, target.organization_id),
+            phases=[PhaseResult(name="files", created=1, skipped=3)],
+            oversize_files=[{"name": "big.pdf"}],
+        )
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+    args = (
+        "clone",
+        "--source-url",
+        "https://dev.example.com",
+        "--source-org",
+        "org_dev",
+        "--target-url",
+        "https://qa.example.com",
+        "--target-org",
+        "org_qa",
+    )
+
+    code, out, err = run(capsys, *args)
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["ok"] is True
+    assert "files 3" in err and "oversize files 1" in err
+
+    assert "Skipped" not in run(capsys, "--quiet", *args)[2]
+
+
 def test_a_key_quoted_in_a_clone_report_does_not_survive_the_table(capsys, monkeypatch):
     """The table is the output a person gets, and the report renders itself.
 

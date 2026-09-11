@@ -83,3 +83,17 @@ def test_every_step_that_names_a_secret_can_read_it(path: Path) -> None:
             available = job_env | set(step.get("env") or {})
             named = step.get("name", step.get("uses", "?"))
             assert "GITHUB_TOKEN" in available, f"{path.name}: {job_name}: {named}"
+
+
+def test_the_release_publishes_only_after_everything_revertible_is_done() -> None:
+    """A tag, a branch and a release can all be deleted; a published version
+    cannot. Publishing first turns any later failure into a release on PyPI
+    that no tag in the repository names."""
+    steps = _load(Path(__file__).resolve().parents[1] / ".github/workflows/release.yml")[
+        "jobs"
+    ]["release-and-publish"]["steps"]
+    names = [step.get("name", "") for step in steps]
+
+    assert names.index("Publish to PyPI") > names.index(
+        "Commit version bump and create release"
+    )

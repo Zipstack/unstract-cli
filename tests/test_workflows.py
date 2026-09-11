@@ -5,6 +5,7 @@ sits in the repository looking fine until the day someone needs it to run. That
 day is a release. These read the files the way GitHub does, at PR time.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -66,23 +67,40 @@ def test_workflow_declares_a_trigger_and_a_job(path: Path) -> None:
     assert document.get("jobs"), f"{path.name}: no jobs"
 
 
-@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
-def test_every_step_that_names_a_secret_can_read_it(path: Path) -> None:
-    """A `run` block reading `$GITHUB_TOKEN` needs the step or the job to set it;
-    nothing fails at parse time when it does not, the command just gets an empty
-    value and the step fails halfway through a release.
-    """
-    document = _load(path)
+#: `gh` as a command rather than as a word: it reads its credential from the
+#: environment and says nothing about where it came from.
+_INVOKES_GH = re.compile(r"(?:^|[|&;(\n]|\bthen\b|\belse\b)\s*gh\s", re.MULTILINE)
 
+
+def _steps_invoking_gh(document: dict) -> list[tuple[str, str, set]]:
+    """Every step that shells out to `gh`, with the environment it will see."""
+    found = []
     for job_name, job in (document.get("jobs") or {}).items():
         job_env = set(job.get("env") or {})
         for step in job.get("steps") or []:
-            script = step.get("run") or ""
-            if "$GITHUB_TOKEN" not in script and "${GITHUB_TOKEN" not in script:
-                continue
-            available = job_env | set(step.get("env") or {})
-            named = step.get("name", step.get("uses", "?"))
-            assert "GITHUB_TOKEN" in available, f"{path.name}: {job_name}: {named}"
+            if _INVOKES_GH.search(step.get("run") or ""):
+                named = step.get("name", step.get("uses", "?"))
+                found.append((job_name, named, job_env | set(step.get("env") or {})))
+    return found
+
+
+def test_the_release_is_the_workflow_that_shells_out_to_gh() -> None:
+    """Guards the matcher below: a pattern that stops matching would leave every
+    check that uses it passing vacuously."""
+    matched = {path.name for path in WORKFLOWS if _steps_invoking_gh(_load(path))}
+    assert "release.yml" in matched
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+def test_every_step_that_shells_out_to_gh_can_authenticate(path: Path) -> None:
+    """`gh` takes its credential from the environment and exits non-zero without
+    one. Nothing fails at parse time, so an unset token surfaces halfway through
+    a release, after the steps before it have already run.
+    """
+    for job_name, named, available in _steps_invoking_gh(_load(path)):
+        assert available & {"GITHUB_TOKEN", "GH_TOKEN"}, (
+            f"{path.name}: {job_name}: {named}"
+        )
 
 
 def test_the_release_publishes_only_after_everything_revertible_is_done() -> None:

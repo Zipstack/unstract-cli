@@ -271,8 +271,8 @@ def raw_value(env: Envelope, fields: tuple[str, ...]) -> Any:
     Nothing present is a failure, not empty output. Raw is one value on stdout
     and nothing else, so it cannot say "not this time" inside itself: printing
     the whole payload would answer a question nobody asked, and printing the
-    field's own ``null`` is worse, because a caller polling for a result cannot
-    tell it apart from a finished job that produced nothing.
+    field's own empty value is worse, because a caller polling for a result
+    cannot tell it apart from a finished job that produced nothing.
     """
     payload = _payload(env)
     if not fields or not isinstance(payload, dict):
@@ -281,10 +281,11 @@ def raw_value(env: Envelope, fields: tuple[str, ...]) -> Any:
         for source in (payload, env.get("meta") or {}):
             if not isinstance(source, dict):
                 continue
-            # Only `None` counts as absent: an empty result is a real answer,
-            # and skipping it would print the next field -- a handle where the
-            # caller expects text -- rather than nothing.
-            if (value := source.get(name)) is not None:
+            # Empty counts as absent, not as an answer: the clients spell a
+            # field that has no value yet as `""` rather than leaving it out,
+            # so stopping at the first present key would print a blank line
+            # where a later field carries the handle the caller can act on.
+            if (value := source.get(name)) not in (None, ""):
                 return value
     raise CLIError(
         f"This answer carries none of {', '.join(fields)}, so there is nothing "

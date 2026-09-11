@@ -187,14 +187,22 @@ def test_an_unknown_output_format_is_a_usage_error():
     assert caught.value.exit_code is ExitCode.USAGE
 
 
-def test_raw_prints_an_empty_answer_rather_than_the_next_field():
-    """An empty result is a real answer, and printing the next field instead
-    would hand back a handle where the caller expects text."""
+def test_raw_reads_past_an_empty_answer_to_the_next_field():
+    """The clients spell "no value yet" as an empty string rather than omitting
+    the key, so stopping there prints a blank line for every queued job."""
     env = envelope(data={"extraction_result": "", "execution_id": "e-1"})
     assert (
         render(env, OutputFormat.RAW, raw_fields=("extraction_result", "execution_id"))
-        == ""
+        == "e-1"
     )
+
+
+def test_raw_fails_when_every_declared_field_is_empty():
+    """Raw prints one value and nothing else, so an answer carrying none of them
+    has to fail rather than succeed with a blank line."""
+    env = envelope(data={"extraction_result": "", "execution_id": ""})
+    with pytest.raises(CLIError):
+        render(env, OutputFormat.RAW, raw_fields=("extraction_result", "execution_id"))
 
 
 def test_a_wide_table_is_shrunk_in_one_pass():

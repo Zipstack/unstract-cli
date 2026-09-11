@@ -709,7 +709,7 @@ def test_highlights_on_an_extraction_without_line_numbers_says_where_to_fix_it(
 ACK = {
     "status_code": 200,
     "execution_status": "PENDING",
-    "extraction_result": None,
+    "extraction_result": "",
     "status_check_api_endpoint": "/deployment/api/status?execution_id=e-1",
 }
 
@@ -717,7 +717,7 @@ PENDING_STATUS = {
     "status_code": 422,
     "pending": True,
     "execution_status": "EXECUTING",
-    "extraction_result": None,
+    "extraction_result": "",
 }
 
 DONE_STATUS = {
@@ -771,7 +771,7 @@ def test_an_accepted_extraction_renders_its_handle_not_the_whole_ack(
 def test_a_still_running_status_never_renders_as_an_empty_result(
     capsys, deployment_client
 ):
-    """`extraction_result` is present and null while the job runs. Printing that
+    """`extraction_result` is present and empty while the job runs. Printing that
     tells a polling caller the same thing as a finished job with no output."""
     deployment_client(check_execution_status=PENDING_STATUS)
     code, out, _ = run(capsys, "docstudio", "deployment", "status", "my-api", "e-1")

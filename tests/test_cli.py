@@ -238,3 +238,23 @@ def test_a_bare_invocation_is_a_usage_error_in_a_parseable_format(capsys):
 def test_a_bare_invocation_still_prints_help_for_a_person(capsys):
     assert main(["-o", "table"]) == int(ExitCode.SUCCESS)
     assert "Commands:" in capsys.readouterr().out
+
+
+def test_quiet_silences_a_note_from_below_the_output_layer(capsys, tmp_path, monkeypatch):
+    """The config and credential registries cannot import the output layer, and
+    went straight to stderr -- so `--quiet` reached everything except them."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / ".unstract.toml").write_text(
+        '[profiles.p.docstudio]\norg_id = "env:CI_DEPLOY_TOKEN"\napi_key = "k-0123456789"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CI_DEPLOY_TOKEN", "tkn-never-read")
+
+    args = ["-o", "json", "-p", "p", "docstudio", "deployment", "status", "a", "b"]
+    main(args)
+    assert "may not choose which environment variable" in capsys.readouterr().err
+
+    main(["-q", *args])
+    assert "may not choose which environment variable" not in capsys.readouterr().err

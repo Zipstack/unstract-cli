@@ -22,7 +22,7 @@ from unstract_cli.config import (
     set_config_path,
 )
 from unstract_cli.core.discover import TIERS, discover
-from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.errors import CLIError, ExitCode, set_warning_sink
 from unstract_cli.core.output import (
     AgentMode,
     OutputFormat,
@@ -174,6 +174,11 @@ def cli(
     obj.quiet = quiet
     obj.verbosity = verbose
     obj.profile = profile
+    # Modules the output layer imports cannot import it back, so their notes
+    # reach it through here rather than going straight to stderr unfiltered.
+    set_warning_sink(
+        lambda message: diagnostic(message, quiet=obj.quiet, verbosity=obj.verbosity)
+    )
     if discover_tier:
         # Discovery is how a caller learns what to run, so it has to answer
         # before any configuration exists -- and always as JSON, because the

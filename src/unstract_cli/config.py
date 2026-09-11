@@ -18,7 +18,6 @@ from __future__ import annotations
 import contextlib
 import os
 import stat
-import sys
 import tempfile
 import tomllib
 from copy import deepcopy
@@ -28,7 +27,7 @@ from typing import Any
 
 import tomli_w
 
-from unstract_cli.core.errors import remember_secret
+from unstract_cli.core.errors import remember_secret, warn
 
 LLMWHISPERER = "llmwhisperer"
 DOCSTUDIO = "docstudio"
@@ -461,11 +460,10 @@ class ResolvedConfig:
         # reported when the file is loaded, and this is found while resolving.
         if raw not in self._reported:
             self._reported.add(raw)
-            print(
+            warn(
                 f"warning: ignoring {raw!r} in the project-local "
                 f"{self.file.path}: a config file found by searching upwards "
-                "may not choose which environment variable is read.",
-                file=sys.stderr,
+                "may not choose which environment variable is read."
             )
         return False
 

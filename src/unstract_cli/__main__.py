@@ -16,7 +16,7 @@ import click
 
 from unstract_cli.app import Context, cli
 from unstract_cli.config import ConfigError
-from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.errors import CLIError, ExitCode, set_warning_sink
 from unstract_cli.core.output import AgentMode, OutputFormat, emit_error, resolve_format
 
 
@@ -95,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     except click.exceptions.Exit as exc:  # --help and --version exit through here
         return int(exc.exit_code)
+    finally:
+        # A run that failed before the root callback bound a sink still has to
+        # show what was held, rather than swallowing it for being early.
+        set_warning_sink(None)
     return int(ExitCode.SUCCESS)
 
 

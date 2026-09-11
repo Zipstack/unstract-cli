@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
@@ -135,6 +136,48 @@ _KNOWN_SECRETS: set[str] = set()
 _REPORTED_SHORT: set[str] = set()
 
 
+def _to_stderr(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+#: Notes written before a sink was bound. The command tree is built at import,
+#: so a warning about the overlay is raised before there is a run to ask whether
+#: it was told to be quiet.
+_HELD: list[str] = []
+
+#: Where a note goes once a run owns the streams. Unbound until then.
+_SINK: Callable[[str], None] | None = None
+
+
+def warn(message: str) -> None:
+    """A note from a module that cannot reach the output layer.
+
+    The config, overlay and credential registries are all imported by it, so
+    they cannot import it back; this is the seam that keeps their notes subject
+    to the same `--quiet` as every other diagnostic.
+    """
+    if _SINK is None:
+        _HELD.append(message)
+        return
+    _SINK(message)
+
+
+def set_warning_sink(sink: Callable[[str], None] | None) -> None:
+    """Route held and future notes. ``None`` sends them to stderr unfiltered."""
+    global _SINK
+    _SINK = sink or _to_stderr
+    for message in _HELD:
+        _SINK(message)
+    _HELD.clear()
+
+
+def forget_warning_sink() -> None:
+    """Unbind the sink and drop anything held, so one run cannot leak into the next."""
+    global _SINK
+    _SINK = None
+    _HELD.clear()
+
+
 def remember_secret(value: Any) -> None:
     """Record a resolved credential so no stream can print it later."""
     if not isinstance(value, str) or not value:
@@ -145,10 +188,9 @@ def remember_secret(value: Any) -> None:
         # a key resolves several times in one run.
         if value not in _REPORTED_SHORT:
             _REPORTED_SHORT.add(value)
-            print(
+            warn(
                 f"warning: a credential under {_MIN_SECRET_LEN} characters is too "
-                "short to scrub for and will not be redacted",
-                file=sys.stderr,
+                "short to scrub for and will not be redacted"
             )
         return
     _KNOWN_SECRETS.add(value)

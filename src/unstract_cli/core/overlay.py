@@ -15,11 +15,12 @@ valid overlay.
 
 from __future__ import annotations
 
-import sys
 import tomllib
 from functools import cache
 from importlib import resources
 from typing import Any
+
+from unstract_cli.core.errors import warn
 
 OVERLAY_FILE = "overlay.toml"
 
@@ -39,10 +40,9 @@ def overlay_for(product: str, operation_id: str) -> dict[str, dict[str, Any]]:
         if isinstance(entry, dict):
             out[name] = entry
         else:
-            print(
+            warn(
                 f"warning: ignoring {OVERLAY_FILE} entry [{product}.{operation_id}."
-                f"{name}]: expected a table, found {type(entry).__name__}.",
-                file=sys.stderr,
+                f"{name}]: expected a table, found {type(entry).__name__}."
             )
     return out
 

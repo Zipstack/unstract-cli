@@ -187,10 +187,10 @@ def test_a_secret_named_key_is_redacted_whatever_type_it_holds():
     assert out["n"] == 1
 
 
-def test_a_credential_too_short_to_scrub_for_says_so(capsys):
+def test_a_credential_too_short_to_scrub_for_says_so(warnings_seen):
     remember_secret("short")
     assert "short" not in known_secrets()
-    assert "will not be redacted" in capsys.readouterr().err
+    assert any("will not be redacted" in note for note in warnings_seen)
 
 
 def test_scrub_structure_replaces_before_anything_renders():
@@ -243,7 +243,7 @@ def test_a_credential_is_collapsed_whatever_shape_it_arrives_in(value):
     assert redact_value({"secret": value})["secret"] == REDACTED
 
 
-def test_a_short_credential_warns_once_per_run(capsys):
+def test_a_short_credential_warns_once_per_run(warnings_seen):
     remember_secret("short")
     remember_secret("short")
-    assert capsys.readouterr().err.count("too short to scrub") == 1
+    assert sum("too short to scrub" in note for note in warnings_seen) == 1

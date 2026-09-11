@@ -465,7 +465,7 @@ def test_starter_profiles_hold_no_literal_secrets():
 
 
 def test_a_discovered_file_cannot_choose_which_env_var_is_read(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, warnings_seen
 ):
     """`org_id` is not withheld from a project file, and it is spliced into the
     deployment URL and echoed back in any error about it. Letting a checkout
@@ -481,7 +481,7 @@ def test_a_discovered_file_cannot_choose_which_env_var_is_read(
     cfg = ResolvedConfig(file=load_config(), profile_name="p")
 
     assert cfg.get(DOCSTUDIO, "org_id") is None
-    assert "may not choose which environment variable" in capsys.readouterr().err
+    assert any("may not choose which environment variable" in n for n in warnings_seen)
 
 
 def test_a_named_file_may_still_use_env_indirection(tmp_path, monkeypatch):

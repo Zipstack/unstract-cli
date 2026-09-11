@@ -6,7 +6,11 @@ from fnmatch import fnmatch
 import pytest
 
 from unstract_cli import config as config_mod
-from unstract_cli.core.errors import forget_secrets
+from unstract_cli.core.errors import (
+    forget_secrets,
+    forget_warning_sink,
+    set_warning_sink,
+)
 from unstract_cli.core.output import AGENT_ENV
 
 #: Every variable the loader consults. Cleared per test so a developer's real
@@ -35,9 +39,23 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(config_mod, "HOME_CONFIG", tmp_path / "home" / "config.toml")
     forget_secrets()
+    forget_warning_sink()
     yield
     config_mod.set_config_path(None)
     forget_secrets()
+    forget_warning_sink()
+
+
+@pytest.fixture
+def warnings_seen():
+    """Notes from the modules that cannot reach the output layer, as a list.
+
+    They are held rather than printed until a run binds a sink, so a test
+    calling the library directly has to bind one to see them at all.
+    """
+    seen: list[str] = []
+    set_warning_sink(seen.append)
+    return seen
 
 
 @pytest.fixture(autouse=True)

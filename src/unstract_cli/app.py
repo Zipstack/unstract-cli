@@ -164,12 +164,13 @@ def cli(
     running anything.
     """
     set_config_path(config_file)
-    ctx.obj = Context(
-        output=resolve_format(output, agent),
-        quiet=quiet,
-        verbosity=verbose,
-        profile=profile,
-    )
+    # Filled in rather than replaced: the entry point holds this object so that
+    # a failure anywhere below renders in the format resolved here.
+    obj = ctx.ensure_object(Context)
+    obj.output = resolve_format(output, agent)
+    obj.quiet = quiet
+    obj.verbosity = verbose
+    obj.profile = profile
     if discover_tier:
         # Discovery is how a caller learns what to run, so it has to answer
         # before any configuration exists -- and always as JSON, because the

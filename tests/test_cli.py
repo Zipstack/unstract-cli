@@ -214,3 +214,15 @@ def test_an_unknown_output_format_is_reported_as_an_envelope(capsys):
     code, payload, _ = run(capsys, "--output", "yaml", "config", "list")
     assert code == int(ExitCode.USAGE)
     assert payload["error"]["exit_code"] == int(ExitCode.USAGE)
+
+
+def test_a_clustered_short_option_still_selects_the_failure_format(capsys):
+    """`-ojson` and `-o json` are the same option to Click, so a failure has to
+    render the same way under both -- reading argv by hand only sees one."""
+    assert main(["-ojson", "docstudio", "deployment", "status"]) == int(ExitCode.USAGE)
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage_error"
+
+
+def test_a_format_named_after_other_short_options_is_still_read(capsys):
+    assert main(["-qojson", "whisper", "status"]) == int(ExitCode.USAGE)
+    assert json.loads(capsys.readouterr().out)["ok"] is False

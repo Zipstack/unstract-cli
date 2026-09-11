@@ -14,7 +14,7 @@ import sys
 
 import click
 
-from unstract_cli.app import cli
+from unstract_cli.app import Context, cli
 from unstract_cli.config import ConfigError
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import AgentMode, OutputFormat, emit_error, resolve_format
@@ -52,18 +52,22 @@ def _format_from_argv(argv: list[str]) -> OutputFormat:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    fmt = _format_from_argv(args)
+    # Seeded with the guess and then filled in by the root callback, so a
+    # failure after parsing renders in the format the run actually resolved --
+    # which argv alone cannot tell, since `-o json` and `-ojson` mean the same
+    # thing to Click and only one of them looks like an option to read by hand.
+    ctx = Context(output=_format_from_argv(args))
     try:
-        cli.main(args=args, standalone_mode=False)
+        cli.main(args=args, standalone_mode=False, obj=ctx)
     except CLIError as exc:
-        return int(emit_error(exc, fmt))
+        return int(emit_error(exc, ctx.output))
     except ConfigError as exc:
-        return int(emit_error(CLIError(str(exc), ExitCode.USAGE), fmt))
+        return int(emit_error(CLIError(str(exc), ExitCode.USAGE), ctx.output))
     except click.UsageError as exc:
         return int(
             emit_error(
                 CLIError(exc.format_message(), ExitCode.USAGE, hint="Run with --help."),
-                fmt,
+                ctx.output,
             )
         )
     except BrokenPipeError:
@@ -79,14 +83,14 @@ def main(argv: list[str] | None = None) -> int:
         return int(
             emit_error(
                 CLIError(str(exc), ExitCode.GENERIC, hint="Check the path and disk."),
-                fmt,
+                ctx.output,
             )
         )
     except (click.Abort, KeyboardInterrupt):
         # Nothing here prompts, so Click's Abort can only mean an interrupt.
         return int(
             emit_error(
-                CLIError("Interrupted.", ExitCode.INTERRUPTED, retryable=True), fmt
+                CLIError("Interrupted.", ExitCode.INTERRUPTED, retryable=True), ctx.output
             )
         )
     except click.exceptions.Exit as exc:  # --help and --version exit through here

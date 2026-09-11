@@ -43,12 +43,16 @@ EXTRACT_POLL = PollSpec(
 #: results carry the text under this name.
 RAW_TEXT = ("result_text",)
 
+#: What a submission prints, best answer first: an accepted job answers with a
+#: handle and no text, so the handle is the answer until there is one.
+EXTRACT_RAW = (*RAW_TEXT, "whisper_hash")
+
 
 def _is_url(source: str) -> bool:
     return source.startswith(("http://", "https://"))
 
 
-@raw_fields(*RAW_TEXT)
+@raw_fields(*EXTRACT_RAW)
 @whisper_group.command("extract")
 @click.argument("source")
 @wait_options()
@@ -109,7 +113,7 @@ def extract(
         )
 
         if not wait:
-            finish(ctx, accepted)
+            finish(ctx, accepted, raw_fields=EXTRACT_RAW)
             return
 
         result = wait_for_completion(
@@ -138,7 +142,7 @@ def extract(
     finish(
         ctx,
         result,
-        raw_fields=RAW_TEXT,
+        raw_fields=EXTRACT_RAW,
         meta={"whisper_hash": accepted.get("whisper_hash")}
         if accepted.get("whisper_hash")
         else None,

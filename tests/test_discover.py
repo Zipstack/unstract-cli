@@ -62,7 +62,9 @@ def test_full_carries_enough_to_build_a_call(capsys):
     ]
     assert params["wait"]["flags"] == ["--wait", "--no-wait"]
     assert params["interval"]["type"] == "float"
-    assert extract["raw_fields"] == ["result_text"]
+    # Two, because a submission answers with a handle and no text: raw has to
+    # name both or it describes only the waited call.
+    assert extract["raw_fields"] == ["result_text", "whisper_hash"]
 
 
 def test_full_publishes_the_flags_that_are_not_on_the_command(capsys):

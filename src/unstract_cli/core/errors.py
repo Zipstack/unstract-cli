@@ -99,11 +99,8 @@ def is_retryable(status: int) -> bool:
 # Redaction
 # --------------------------------------------------------------------------- #
 
-_SECRET_HEADERS = {"unstract-key", "authorization", "apikey"}
-_SECRET_HEADER_PREFIXES = ("x-",)
-#: Words that mark a field or header as carrying a credential. `names_a_secret`
-#: matches these as whole name segments; `redact_headers` matches them as
-#: substrings, since a header name is a flatter namespace than a payload's.
+#: Words that mark a field as carrying a credential, matched as whole name
+#: segments rather than as substrings.
 _SECRET_KEY_HINTS = frozenset(
     {
         "bearer",
@@ -213,19 +210,6 @@ def known_secrets() -> list[str]:
     rather than leaving its tail behind.
     """
     return sorted(_KNOWN_SECRETS, key=len, reverse=True)
-
-
-def redact_headers(headers: dict[str, Any]) -> dict[str, Any]:
-    """Redact credential-bearing headers."""
-    out: dict[str, Any] = {}
-    for key, value in headers.items():
-        low = key.lower()
-        secret = low in _SECRET_HEADERS or (
-            low.startswith(_SECRET_HEADER_PREFIXES)
-            and any(hint in low for hint in _SECRET_KEY_HINTS)
-        )
-        out[key] = REDACTED if secret else value
-    return out
 
 
 #: Splits a field name into words on punctuation and on camelCase boundaries.
@@ -448,7 +432,6 @@ __all__ = [
     "exit_code_for_status",
     "hint_for",
     "is_retryable",
-    "redact_headers",
     "redact_value",
     "scrub",
     "undeclared_status_error",

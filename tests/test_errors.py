@@ -19,7 +19,6 @@ from unstract_cli.core.errors import (
     hint_for,
     is_retryable,
     known_secrets,
-    redact_headers,
     redact_value,
     remember_secret,
     scrub,
@@ -92,19 +91,6 @@ def test_undeclared_status_is_reported_verbatim_never_guessed():
     assert "Undeclared status 418" in err.message
     assert "teapot" in err.message
     assert err.to_dict()["details"] == {"detail": "teapot"}
-
-
-def test_redact_headers():
-    out = redact_headers(
-        {
-            "unstract-key": "abc",
-            "Authorization": "Bearer x",
-            "X-Api-Key": "y",
-            "Content-Type": "application/json",
-        }
-    )
-    assert out["unstract-key"] == out["Authorization"] == out["X-Api-Key"] == REDACTED
-    assert out["Content-Type"] == "application/json"
 
 
 def test_redact_value_walks_nested_payloads():

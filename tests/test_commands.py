@@ -1697,3 +1697,39 @@ def test_a_finished_clone_still_reports_when_the_config_is_unreadable(
     )
     assert code == int(ExitCode.SUCCESS)
     assert envelope(out)["data"]["skipped"]["total"] == 0
+
+
+def test_a_run_that_times_out_names_the_id_its_status_command_takes(
+    capsys, deployment_client, tmp_path, monkeypatch
+):
+    """The poll handle is a status URL. Told to resume with that, a caller has
+    nothing to pass to `deployment status`, which takes an execution id."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    deployment_client(
+        structure_file=ACK,
+        check_execution_status={
+            "status_code": 200,
+            "execution_status": "EXECUTING",
+            "extraction_result": "",
+        },
+    )
+    monkeypatch.setattr("unstract_cli.core.poll.time.sleep", lambda _seconds: None)
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0",
+        "--timeout",
+        "0",
+    )
+
+    assert code == int(ExitCode.TIMEOUT)
+    error = envelope(out)["error"]
+    assert error["execution_id"] == "e-1"
+    assert "deployment status my-api e-1" in error["hint"]

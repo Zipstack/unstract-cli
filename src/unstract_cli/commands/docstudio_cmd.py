@@ -126,25 +126,40 @@ def run(
             finish(ctx, started, raw_fields=RUN_RAW, meta=_handle_meta(started))
             return
 
-        result = wait_for_completion(
-            initial=started,
-            spec=RUN_POLL,
-            poll=_status_poller(
-                client, {k: v for k, v in sent.items() if k in _SHARED_WITH_STATUS}
-            ),
-            save=save,
-            interval=interval,
-            timeout=wait_timeout,
-            on_status=lambda status: diagnostic(
-                f"status: {status}", quiet=ctx.quiet, verbosity=ctx.verbosity
-            ),
-            on_retry=lambda exc: diagnostic(
-                f"retrying: {exc.message}", quiet=ctx.quiet, verbosity=ctx.verbosity
-            ),
-            on_saved=lambda path: diagnostic(
-                f"saved: {path}", quiet=ctx.quiet, verbosity=ctx.verbosity
-            ),
-        )
+        try:
+            result = wait_for_completion(
+                initial=started,
+                spec=RUN_POLL,
+                poll=_status_poller(
+                    client, {k: v for k, v in sent.items() if k in _SHARED_WITH_STATUS}
+                ),
+                save=save,
+                interval=interval,
+                timeout=wait_timeout,
+                on_status=lambda status: diagnostic(
+                    f"status: {status}", quiet=ctx.quiet, verbosity=ctx.verbosity
+                ),
+                on_retry=lambda exc: diagnostic(
+                    f"retrying: {exc.message}", quiet=ctx.quiet, verbosity=ctx.verbosity
+                ),
+                on_saved=lambda path: diagnostic(
+                    f"saved: {path}", quiet=ctx.quiet, verbosity=ctx.verbosity
+                ),
+            )
+        except CLIError as exc:
+            # This job polls on a status URL, which is not what the status
+            # command takes; without the id the caller is told to resume with
+            # something they cannot pass to it.
+            handle = _handle_meta(started)
+            exc.extra = {**exc.extra, **handle}
+            if exc.exit_code is ExitCode.TIMEOUT and (
+                found := handle.get("execution_id")
+            ):
+                exc.hint = (
+                    f"Resume with `unstract docstudio deployment status {target} "
+                    f"{found}` rather than resubmitting the document."
+                )
+            raise
     # A waited result names no execution, so the handle is returned as meta for
     # correlation.
     finish(ctx, result, raw_fields=RUN_RAW, meta=_handle_meta(started))

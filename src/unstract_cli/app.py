@@ -88,7 +88,10 @@ class Context:
             try:
                 if value := self.config.get(product, "api_key"):
                     out.append(str(value))
-            except ConfigError:
+            except (ConfigError, CLIError):
+                # A credential that cannot be resolved is one that cannot be
+                # printed either. Raising here would replace a finished report
+                # with a config error, after the work it describes is done.
                 continue
         return out
 

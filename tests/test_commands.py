@@ -1660,3 +1660,40 @@ def test_a_header_that_will_not_build_does_not_quote_the_credential(
     code, out, err = run(capsys, *argv)
     assert code == int(ExitCode.USAGE)
     assert escaped not in out and escaped not in err
+
+
+def test_a_finished_clone_still_reports_when_the_config_is_unreadable(
+    capsys, monkeypatch, tmp_path
+):
+    """Clone takes both endpoints as flags, so an unreadable config file has no
+    bearing on it. Scrubbing consults the config for keys to hide, and failing
+    there would discard a report describing work already done."""
+    broken = tmp_path / "broken.toml"
+    broken.write_text("this is not = = toml", encoding="utf-8")
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(broken))
+
+    def fake_clone(source, target, options):
+        return CloneReport(
+            source=Endpoint(source.base_url, source.organization_id),
+            target=Endpoint(target.base_url, target.organization_id),
+            phases=[PhaseResult(name="adapters", created=1)],
+        )
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    code, out, _ = run(
+        capsys,
+        "clone",
+        "--source-url",
+        "https://dev.example.com",
+        "--source-org",
+        "org_dev",
+        "--target-url",
+        "https://qa.example.com",
+        "--target-org",
+        "org_qa",
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["skipped"]["total"] == 0

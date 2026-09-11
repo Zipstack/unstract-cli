@@ -85,6 +85,15 @@ def _param(param: click.Parameter) -> dict[str, Any]:
         entry["flags"] = list(param.opts) + list(param.secondary_opts)
         entry["help"] = param.help or ""
         entry["repeatable"] = bool(param.multiple)
+    if isinstance(param.type, click.IntRange | click.FloatRange):
+        # Click names a bounded number "integer range" or "float range", which
+        # is not a type a caller can map onto anything. Publish the type it
+        # really is, and the bounds as their own keys.
+        entry["type"] = "integer" if isinstance(param.type, click.IntRange) else "float"
+        if param.type.min is not None:
+            entry["minimum"] = param.type.min
+        if param.type.max is not None:
+            entry["maximum"] = param.type.max
     if isinstance(param.type, click.Choice):
         entry["choices"] = list(param.type.choices)
     if isinstance(param.type, Diverged):

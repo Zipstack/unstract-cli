@@ -40,6 +40,16 @@ def clean_env(monkeypatch, tmp_path):
     forget_secrets()
 
 
+@pytest.fixture(autouse=True)
+def no_real_waiting(monkeypatch):
+    """Nothing in this suite is testing that a wait takes wall-clock time.
+
+    The poll engine's own tests drive it with a fake clock they pass in; every
+    other test reaches it through a command, where a real sleep buys nothing.
+    """
+    monkeypatch.setattr("unstract_cli.core.poll.time.sleep", lambda _seconds: None)
+
+
 @pytest.fixture
 def write_config(tmp_path, monkeypatch):
     """Write a config file and point the CLI at it."""

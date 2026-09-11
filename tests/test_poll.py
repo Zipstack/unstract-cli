@@ -521,3 +521,30 @@ def test_a_rescued_result_survives_field_name_redaction(tmp_path):
 def test_an_ordinary_failure_still_redacts_by_field_name():
     error = CLIError("nope", ExitCode.VALIDATION, details={"api_key": "AB-123456"})
     assert error.to_dict()["details"] == {"api_key": REDACTED}
+
+
+def test_a_zero_interval_still_backs_off_between_retries():
+    """The flags refuse a zero interval, but nothing stops a caller reaching
+    this loop directly -- and doubling zero never grows it, so a rate limit
+    would be answered as fast as the loop can issue calls."""
+    slept: list[float] = []
+    clock = Clock()
+
+    def failing(_handle):
+        raise CLIError("busy", ExitCode.RATE_LIMITED, http_status=429, retryable=True)
+
+    def record(seconds: float) -> None:
+        slept.append(seconds)
+        clock.sleep(seconds)
+
+    with pytest.raises(CLIError):
+        wait_for_completion(
+            initial={"whisper_hash": "h1"},
+            spec=SPEC,
+            poll=failing,
+            interval=0,
+            timeout=600,
+            sleep=record,
+            now=clock.now,
+        )
+    assert slept and all(seconds > 0 for seconds in slept)

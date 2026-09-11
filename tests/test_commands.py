@@ -233,7 +233,7 @@ def test_the_cli_owns_the_wait_loop(capsys, whisper_client, tmp_path):
         whisper_retrieve={"extraction": {"result_text": "hello"}},
     )
 
-    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0.1")
 
     assert code == int(ExitCode.SUCCESS)
     assert client.kwargs_for("whisper")["wait_for_completion"] is False
@@ -250,7 +250,7 @@ def test_raw_output_prints_the_extracted_text(capsys, whisper_client, tmp_path):
     )
 
     _, out, _ = run(
-        capsys, "-q", "-o", "raw", "whisper", "extract", str(doc), "--interval", "0"
+        capsys, "-q", "-o", "raw", "whisper", "extract", str(doc), "--interval", "0.1"
     )
     assert out.strip() == "hello"
 
@@ -276,7 +276,7 @@ def test_a_failed_extraction_carries_the_handle(capsys, whisper_client, tmp_path
         whisper_status={"status": "error", "message": "bad scan"},
     )
 
-    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0.1")
     assert code == int(ExitCode.VALIDATION)
     assert envelope(out)["error"]["whisper_hash"] == "h1"
 
@@ -293,7 +293,7 @@ def test_a_transport_failure_mid_poll_carries_the_handle(
         whisper_status=ConnectionError("connection dropped"),
     )
 
-    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0.1")
     assert code == int(ExitCode.SERVER_ERROR)
     assert envelope(out)["error"]["whisper_hash"] == "h1"
 
@@ -309,7 +309,7 @@ def test_a_failed_retrieve_carries_the_handle(capsys, whisper_client, tmp_path):
         whisper_retrieve=ConnectionError("connection dropped"),
     )
 
-    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "-q", "whisper", "extract", str(doc), "--interval", "0.1")
     assert code == int(ExitCode.SERVER_ERROR)
     assert envelope(out)["error"]["whisper_hash"] == "h1"
 
@@ -530,7 +530,7 @@ def test_run_queues_the_execution_and_polls_it(capsys, deployment_client, tmp_pa
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
     )
 
     assert code == int(ExitCode.SUCCESS)
@@ -565,7 +565,7 @@ def test_a_run_can_name_its_documents_as_presigned_urls(
         "--presigned-urls",
         "https://example.com/doc.pdf",
         "--interval",
-        "0",
+        "0.1",
     )
 
     assert code == int(ExitCode.SUCCESS)
@@ -900,7 +900,7 @@ def test_a_waited_run_reads_its_result_with_the_flags_it_was_given(
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
         "--include-metrics",
         "--no-include-metadata",
     )
@@ -940,7 +940,7 @@ def test_a_waited_run_reports_which_execution_it_was(capsys, deployment_client, 
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
     )
     assert envelope(out)["meta"]["execution_id"] == "e1"
 
@@ -973,7 +973,7 @@ def test_a_run_only_parameter_is_not_forwarded_to_the_status_read(
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
         "--tags",
         "a,b",
     )
@@ -1083,7 +1083,7 @@ def test_a_waited_extract_keeps_a_result_that_is_not_wrapped(
         whisper_retrieve={"status_code": 200, "result_text": "THE REAL TEXT"},
     )
 
-    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0.1")
 
     assert code == int(ExitCode.SUCCESS)
     assert envelope(out)["data"]["result_text"] == "THE REAL TEXT"
@@ -1102,7 +1102,7 @@ def test_a_waited_extract_calls_an_empty_result_a_failure(
         whisper_retrieve={"extraction": {}},
     )
 
-    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0.1")
 
     assert code == int(ExitCode.SERVER_ERROR)
     assert envelope(out)["ok"] is False
@@ -1119,7 +1119,7 @@ def test_a_waited_extract_reads_the_result_when_it_is_not_wrapped(
         whisper_retrieve={"extraction": {"result_text": "hello"}},
     )
 
-    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0.1")
 
     assert code == int(ExitCode.SUCCESS)
     assert envelope(out)["data"]["result_text"] == "hello"
@@ -1469,7 +1469,7 @@ def test_a_wait_that_runs_out_exits_seven_naming_the_handle(
     monkeypatch.setattr("unstract_cli.core.poll.time.sleep", lambda _seconds: None)
 
     code, out, _ = run(
-        capsys, "whisper", "extract", str(doc), "--interval", "0", "--timeout", "0"
+        capsys, "whisper", "extract", str(doc), "--interval", "0.1", "--timeout", "0"
     )
 
     assert code == int(ExitCode.TIMEOUT) == 7
@@ -1724,7 +1724,7 @@ def test_a_run_that_times_out_names_the_id_its_status_command_takes(
         "my-api",
         str(doc),
         "--interval",
-        "0",
+        "0.1",
         "--timeout",
         "0",
     )
@@ -1733,3 +1733,12 @@ def test_a_run_that_times_out_names_the_id_its_status_command_takes(
     error = envelope(out)["error"]
     assert error["execution_id"] == "e-1"
     assert "deployment status my-api e-1" in error["hint"]
+
+
+def test_a_zero_poll_interval_is_refused(capsys, whisper_client, tmp_path):
+    """Zero seconds between polls is a busy loop against a metered service."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
+    assert code == int(ExitCode.USAGE)
+    assert "interval" in envelope(out)["error"]["message"].lower()

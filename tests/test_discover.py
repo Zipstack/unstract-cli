@@ -61,7 +61,10 @@ def test_full_carries_enough_to_build_a_call(capsys):
         "table",
     ]
     assert params["wait"]["flags"] == ["--wait", "--no-wait"]
+    # The type a caller can map, with the bound as its own key: Click's own
+    # name for a bounded number is "float range", which describes nothing.
     assert params["interval"]["type"] == "float"
+    assert params["interval"]["minimum"] == 0.1
     # Two, because a submission answers with a handle and no text: raw has to
     # name both or it describes only the waited call.
     assert extract["raw_fields"] == ["result_text", "whisper_hash"]

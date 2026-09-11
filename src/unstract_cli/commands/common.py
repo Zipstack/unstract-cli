@@ -14,6 +14,10 @@ from unstract_cli.core.output import emit_result
 DEFAULT_INTERVAL = 3.0
 DEFAULT_TIMEOUT = 300.0
 
+#: The shortest interval worth allowing: below this the polling is closer to a
+#: busy loop against a metered service than to a wait.
+MIN_INTERVAL = 0.1
+
 F = Callable[..., Any]
 
 
@@ -34,7 +38,9 @@ def wait_options(*, default: bool = True) -> Callable[[F], F]:
                 ),
                 click.option(
                     "--interval",
-                    type=float,
+                    # Bounded below: an interval of zero polls a metered service
+                    # as fast as the loop can issue calls.
+                    type=click.FloatRange(min=MIN_INTERVAL),
                     default=DEFAULT_INTERVAL,
                     show_default=True,
                     help="Seconds between polls.",
@@ -42,7 +48,9 @@ def wait_options(*, default: bool = True) -> Callable[[F], F]:
                 click.option(
                     "--timeout",
                     "wait_timeout",
-                    type=float,
+                    # Zero is meaningful -- one poll, then give up -- but a
+                    # negative deadline has already passed.
+                    type=click.FloatRange(min=0),
                     default=DEFAULT_TIMEOUT,
                     show_default=True,
                     help="Seconds to wait before giving up. The job keeps running.",
@@ -100,6 +108,7 @@ def finish(
 __all__ = [
     "DEFAULT_INTERVAL",
     "DEFAULT_TIMEOUT",
+    "MIN_INTERVAL",
     "finish",
     "raw_fields",
     "wait_options",

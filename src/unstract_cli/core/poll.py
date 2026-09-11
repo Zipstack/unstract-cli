@@ -32,6 +32,10 @@ from unstract_cli.core.errors import CLIError, ExitCode
 #: default interval the backoff reaches this count well inside the timeout.
 MAX_TRANSIENT_POLLS = 5
 
+#: Floor on the interval the backoff doubles. A caller reaching this module
+#: directly is not bound by what the flags accept, and doubling zero is zero.
+MIN_BACKOFF = 0.1
+
 
 class PollState(StrEnum):
     """What one poll response says about the job."""
@@ -241,8 +245,10 @@ def wait_for_completion(
     #: Called with the path once a result is on disk, before the caller sees
     #: anything. The ordering it observes is the whole point of --save.
     on_saved: Callable[[Path], None] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-    now: Callable[[], float] = time.monotonic,
+    #: Resolved on the call rather than bound at import, so replacing
+    #: `time.sleep` reaches this loop.
+    sleep: Callable[[float], None] | None = None,
+    now: Callable[[], float] | None = None,
 ) -> Any:
     """Poll until terminal, then retrieve if the operation has a retrieve step.
 
@@ -252,6 +258,8 @@ def wait_for_completion(
     poll: a terminal success is the whole answer and is delivered, anything else
     raises.
     """
+    sleep = sleep or time.sleep
+    now = now or time.monotonic
 
     def deliver(payload: Any) -> Any:
         """Save the result before the caller is told it exists."""
@@ -330,8 +338,9 @@ def wait_for_completion(
             if on_retry is not None:
                 on_retry(exc)
             # Back off so a rate limit is not answered at the same rate that
-            # earned it, but never past the deadline the caller set.
-            sleep(min(interval * 2**transient, remaining))
+            # earned it, but never past the deadline the caller set. Floored
+            # because doubling a zero interval never grows it.
+            sleep(min(max(interval, MIN_BACKOFF) * 2**transient, remaining))
             continue
         transient = 0
         status = extract_status(payload, spec.status_field)
@@ -390,6 +399,7 @@ def wait_for_completion(
 
 __all__ = [
     "MAX_TRANSIENT_POLLS",
+    "MIN_BACKOFF",
     "PollSpec",
     "PollState",
     "classify",

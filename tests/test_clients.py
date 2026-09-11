@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from requests.exceptions import ConnectionError, TooManyRedirects
+from requests.exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    ReadTimeout,
+    TooManyRedirects,
+)
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientException
 
 from unstract_cli.config import ResolvedConfig, load_config
@@ -35,6 +40,19 @@ def test_a_transport_failure_is_not_reported_as_a_local_disk_problem():
     assert err.exit_code is ExitCode.SERVER_ERROR
     assert err.retryable is True
     assert "disk" not in (err.hint or "")
+
+
+def test_a_request_that_timed_out_in_transit_says_the_job_may_still_run():
+    err = _translate(ReadTimeout("read timed out"))
+    assert err.exit_code is ExitCode.TIMEOUT
+    assert err.retryable is True
+    assert "still be running" in (err.hint or "")
+
+
+def test_a_connect_timeout_is_a_timeout_rather_than_a_connection_failure():
+    """`ConnectTimeout` is both, so which arm catches it is decided by their order."""
+    err = _translate(ConnectTimeout("connect timed out"))
+    assert err.exit_code is ExitCode.TIMEOUT
 
 
 def test_an_unreachable_service_is_retryable():

@@ -59,6 +59,32 @@ def test_an_interrupt_exits_one_thirty_with_an_envelope(capsys, monkeypatch):
     assert payload["error"]["code"] == "interrupted"
 
 
+def test_a_reader_that_went_away_does_not_raise_on_the_way_out(capsys, monkeypatch):
+    """`... | head` closes the pipe mid-write; Python flushes stdout again at exit."""
+
+    def gone():
+        raise BrokenPipeError
+
+    monkeypatch.setattr("unstract_cli.commands.config_cmd.load_config", gone)
+
+    assert main(["-o", "json", "config", "doctor"]) == int(ExitCode.GENERIC)
+    # Whatever stdout now points at, writing to it must not raise.
+    print("still writable")
+
+
+def test_an_unwritable_stream_is_an_envelope_rather_than_a_traceback(capsys, monkeypatch):
+    def full_disk():
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr("unstract_cli.commands.config_cmd.load_config", full_disk)
+
+    code, payload, _ = run(capsys, "config", "doctor")
+
+    assert code == int(ExitCode.GENERIC)
+    assert payload["error"]["message"] == "No space left on device"
+    assert "disk" in payload["error"]["hint"]
+
+
 def test_unknown_config_target_exits_two(capsys):
     code, payload, _ = run(capsys, "config", "get", "nosuchproduct", "base_url")
     assert code == int(ExitCode.USAGE)

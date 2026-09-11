@@ -15,6 +15,7 @@ import click
 import httpx
 import pytest
 from requests.exceptions import ConnectionError, InvalidHeader, MissingSchema
+from unstract.clone.exceptions import CloneError, PlatformAPIError
 from unstract.clone.report import CloneReport, Endpoint, PhaseResult
 from unstract.llmwhisperer import client_v2
 from unstract.llmwhisperer.client_v2 import (
@@ -1480,6 +1481,61 @@ def test_a_webhook_token_is_not_printed_back(capsys, whisper_client):
     assert token not in out
 
 
+def test_a_webhook_can_be_updated_and_removed(capsys, whisper_client):
+    """The token reaches the client and never the output, on both commands."""
+    token = "wh-token-abcdefghijk"
+    client = whisper_client(
+        update_webhook_details={"message": "updated"},
+        delete_webhook={"message": "deleted"},
+    )
+
+    code, out, err = run(
+        capsys,
+        "whisper",
+        "webhook",
+        "update",
+        "hook1",
+        "--url",
+        "https://example.com/hook",
+        "--auth-token",
+        token,
+    )
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["message"] == "updated"
+    assert client.calls[0][1] == ("hook1", "https://example.com/hook", token)
+    assert token not in out and token not in err
+
+    code, out, _ = run(capsys, "whisper", "webhook", "delete", "hook1")
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["message"] == "deleted"
+    assert client.calls[-1][1] == ("hook1",)
+
+
+def test_a_token_quoted_back_while_updating_a_webhook_is_scrubbed(capsys, whisper_client):
+    """`remember_secret` runs before the call, so a failure quoting it is covered."""
+    token = "wh-token-abcdefghijk"
+    whisper_client(
+        update_webhook_details=LLMWhispererClientException(
+            f"rejected token {token}", status_code=400
+        )
+    )
+
+    code, out, err = run(
+        capsys,
+        "whisper",
+        "webhook",
+        "update",
+        "hook1",
+        "--url",
+        "https://example.com/hook",
+        "--auth-token",
+        token,
+    )
+
+    assert code == int(ExitCode.VALIDATION)
+    assert token not in out and token not in err
+
+
 def test_a_rate_limited_call_exits_six(capsys, whisper_client):
     whisper_client(
         get_usage_info=LLMWhispererClientException("slow down", status_code=429)
@@ -1624,6 +1680,79 @@ def test_a_clone_url_without_a_scheme_is_a_usage_error(capsys, monkeypatch):
     )
     assert code == int(ExitCode.USAGE)
     assert envelope(out)["error"]["retryable"] is False
+
+
+CLONE_ARGS = (
+    "clone",
+    "--source-url",
+    "https://dev.example.com",
+    "--source-org",
+    "a",
+    "--target-url",
+    "https://prod.example.com",
+    "--target-org",
+    "b",
+)
+
+
+@pytest.fixture
+def clone_raising(monkeypatch):
+    """Run `clone` against an orchestrator that fails the way the test names."""
+
+    def install(exc):
+        def fail(*_args, **_kwargs):
+            raise exc
+
+        monkeypatch.setattr(clone_cmd, "run_clone", fail)
+        monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+        monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    return install
+
+
+def test_a_platform_api_status_decides_the_clone_exit_code(capsys, clone_raising):
+    clone_raising(PlatformAPIError("forbidden", status_code=403, body="no access"))
+    code, out, _ = run(capsys, *CLONE_ARGS)
+
+    assert code == int(ExitCode.AUTH)
+    assert "no access" in json.dumps(envelope(out)["error"]["details"])
+
+
+def test_a_platform_api_that_never_answered_is_retryable(capsys, clone_raising):
+    """No status means no response, which is the case retrying can still fix."""
+    clone_raising(PlatformAPIError("connection reset"))
+    code, out, _ = run(capsys, *CLONE_ARGS)
+
+    assert code == int(ExitCode.SERVER_ERROR)
+    assert envelope(out)["error"]["retryable"] is True
+
+
+def test_a_clone_that_could_not_start_is_a_usage_error(capsys, clone_raising):
+    clone_raising(CloneError("source and target are the same organization"))
+    code, out, _ = run(capsys, *CLONE_ARGS)
+
+    assert code == int(ExitCode.USAGE)
+    assert "same organization" in envelope(out)["error"]["message"]
+
+
+def test_an_aborted_clone_reports_why_it_stopped(capsys, monkeypatch):
+    def fake_clone(source, target, options):
+        return CloneReport(
+            source=Endpoint(source.base_url, source.organization_id),
+            target=Endpoint(target.base_url, target.organization_id),
+            phases=[PhaseResult(name="adapters", created=1)],
+            aborted=True,
+            abort_reason="a name already exists on the target",
+        )
+
+    monkeypatch.setattr(clone_cmd, "run_clone", fake_clone)
+    monkeypatch.setenv("UNSTRACT_SRC_PLATFORM_KEY", "src-key-0123456789")
+    monkeypatch.setenv("UNSTRACT_TGT_PLATFORM_KEY", "tgt-key-0123456789")
+
+    code, out, _ = run(capsys, *CLONE_ARGS)
+
+    assert code == int(ExitCode.GENERIC)
+    assert "already exists on the target" in envelope(out)["error"]["message"]
 
 
 def test_the_clone_size_grammar_matches_the_client_it_mirrors():

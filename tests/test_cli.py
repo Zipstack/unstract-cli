@@ -76,6 +76,25 @@ def test_set_then_get_round_trip(capsys, tmp_path, monkeypatch):
     assert payload["data"]["value"] == "org_A"
 
 
+def test_set_refuses_a_setting_the_product_does_not_have(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+    code, payload, _ = run(capsys, "config", "set", "llmwhisperer", "org_id", "org_A")
+
+    assert code == int(ExitCode.USAGE)
+    assert "org_id" in payload["error"]["message"]
+    assert "base_url" in payload["error"]["hint"]
+    assert not (tmp_path / "c.toml").exists()
+
+
+def test_doctor_reports_a_setting_nothing_reads(capsys, write_config):
+    write_config('default_profile = "p"\n\n[profiles.p.llmwhisperer]\norg_id = "org_A"\n')
+    code, payload, _ = run(capsys, "config", "doctor")
+
+    assert code != 0
+    problems = payload["error"]["details"]["problems"]
+    assert any("llmwhisperer.org_id" in problem for problem in problems)
+
+
 def test_set_warns_when_a_credential_is_stored_literally(capsys, tmp_path, monkeypatch):
     monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
     _, payload, _ = run(capsys, "config", "set", "llmwhisperer", "api_key", "literal-key")

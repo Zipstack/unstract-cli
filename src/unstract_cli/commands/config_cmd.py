@@ -62,6 +62,17 @@ def _check_product(product: str) -> str:
     return product
 
 
+def _check_key(product: str, key: str) -> str:
+    """A setting a product does not have would be written and never read again."""
+    if key not in (known := settings_for(product)):
+        raise CLIError(
+            f"{product} has no setting {key!r}.",
+            ExitCode.USAGE,
+            hint=f"Valid keys for {product}: " + ", ".join(known) + ".",
+        )
+    return key
+
+
 @click.group(name="config", help="Manage CLI configuration profiles (local only).")
 def config_group() -> None:
     """Local configuration management. These commands make no network calls."""
@@ -178,6 +189,7 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
     shell history.
     """
     _check_product(product)
+    _check_key(product, key)
     cfg = _loaded(obj)
     name = profile or getattr(obj, "profile", None) or cfg.default_profile or "cloud-us"
 
@@ -305,6 +317,9 @@ def config_doctor(obj: Any, probe: bool) -> None:
                 entry[key] = {"resolved": False, "source": "unset", "detail": str(exc)}
             if detail := entry[key].get("detail"):
                 problems.append(f"{product}.{key}: {detail}")
+        for stray in resolved.unknown_settings(product):
+            # Nothing reads it, so it is a setting the user believes is in force.
+            problems.append(f"{product}.{stray}: not a setting {product} has.")
         products[product] = entry
 
     try:

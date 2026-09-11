@@ -425,6 +425,14 @@ class ResolvedConfig:
         block = self._profile().get(product)
         return block if isinstance(block, dict) else {}
 
+    def unknown_settings(self, product: str) -> tuple[str, ...]:
+        """Keys written under a product that nothing will ever read back."""
+        try:
+            written = set(self._product_block(product))
+        except ConfigError:
+            return ()
+        return tuple(sorted(written - set(settings_for(product))))
+
     def get(self, product: str, key: str, default: Any = None) -> Any:
         """Resolve one setting: **flag > env > profile > built-in default**."""
         value = self._resolve(product, key, default)

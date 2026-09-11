@@ -94,6 +94,12 @@ under **Settings → API Key Manager** authenticates every API deployment in the
 organisation, so an alias normally carries only its `api_name`. Give an alias its
 own `api_key` when its deployment has a separate key of its own.
 
+An alias sits outside the flag tier for the settings it states itself. Where an
+alias names its own `org_id` or `api_key`, those are the ones used and
+`--org-id`/`--api-key` do not displace them — the flags fill in only what the
+alias leaves to the profile. `--base-url` is not per-alias and always applies,
+which is what points a profile's aliases at another host.
+
 Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is shown
 on the API deployment's own page in the Unstract UI, and an organisation-wide one
 under Settings → API Key Manager. `config init` also writes an

@@ -131,3 +131,28 @@ def test_a_target_that_is_not_an_alias_is_told_which_ones_are(tmp_path):
             _config(tmp_path, CONFIG.replace('org_id = "org_profile"\n', "")), "invoic"
         )
     assert "invoices" in (caught.value.hint or "")
+
+
+def test_a_flag_fills_in_what_an_alias_leaves_out_and_no_more(tmp_path):
+    """The precedence the README states: an alias owns the settings it names,
+    and the connection flags reach only the ones it leaves to the profile."""
+    config = _config(
+        tmp_path,
+        CONFIG + '\n[profiles.p.deployments.plain]\napi_name = "plain-api"\n',
+    )
+    config.overrides = {
+        "docstudio.org_id": "org_flag",
+        "docstudio.api_key": "flag-key",
+        "docstudio.base_url": "https://flag-host",
+    }
+
+    stated = deployment(config, "invoices")
+    assert stated.api_key == "alias-key"
+    assert "/org_alias/" in stated.api_url
+
+    silent = deployment(config, "plain")
+    assert silent.api_key == "flag-key"
+    assert "/org_flag/" in silent.api_url
+
+    # base_url is not a per-alias setting, so the flag reaches both.
+    assert stated.api_url.startswith("https://flag-host")

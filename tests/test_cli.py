@@ -226,3 +226,15 @@ def test_a_clustered_short_option_still_selects_the_failure_format(capsys):
 def test_a_format_named_after_other_short_options_is_still_read(capsys):
     assert main(["-qojson", "whisper", "status"]) == int(ExitCode.USAGE)
     assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+def test_a_bare_invocation_is_a_usage_error_in_a_parseable_format(capsys):
+    """Help on stdout with exit 0 tells a parser the run succeeded, then hands
+    it a page of prose where the envelope should be."""
+    assert main(["-o", "json"]) == int(ExitCode.USAGE)
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage_error"
+
+
+def test_a_bare_invocation_still_prints_help_for_a_person(capsys):
+    assert main(["-o", "table"]) == int(ExitCode.SUCCESS)
+    assert "Commands:" in capsys.readouterr().out

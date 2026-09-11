@@ -181,6 +181,15 @@ def cli(
         emit_result(discover(cli, discover_tier), OutputFormat.JSON)
         ctx.exit(int(ExitCode.SUCCESS))
     if ctx.invoked_subcommand is None:
+        if obj.output is not OutputFormat.TABLE:
+            # stdout carries one envelope and nothing else, and a run naming no
+            # command ran nothing -- printing help there and exiting 0 tells a
+            # parser the work succeeded and hands it a page of prose.
+            raise CLIError(
+                "No command given.",
+                ExitCode.USAGE,
+                hint="`--discover groups` lists what can be run, as JSON.",
+            )
         click.echo(ctx.get_help())
         ctx.exit(int(ExitCode.SUCCESS))
 

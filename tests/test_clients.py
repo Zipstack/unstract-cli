@@ -127,6 +127,13 @@ def test_an_alias_is_built_from_its_own_organisation_and_key(tmp_path):
     assert client.api_key == "alias-key"
 
 
+def test_a_deployment_client_is_built_with_a_socket_timeout_by_default(tmp_path):
+    """The client sets none of its own, so without this a stalled connection
+    is waited on forever."""
+    client = deployment(_config(tmp_path), "some-api")
+    assert client.transport_timeout == 120.0
+
+
 def test_a_bare_api_name_falls_back_to_the_profile(tmp_path):
     client = deployment(_config(tmp_path), "some-api")
     assert client.api_url.endswith("/org_profile/some-api/")

@@ -63,8 +63,16 @@ def deployment_url(base_url: str, org_id: str, api_name: str) -> str:
     return base_url.rstrip("/") + path
 
 
+#: Socket timeout for the deployment client, which sets none of its own. The
+#: same figure the LLMWhisperer client applies, so a stalled connection is given
+#: up on the same way on both paths.
+DEFAULT_TRANSPORT_TIMEOUT = 120.0
+
+
 def deployment(
-    config: ResolvedConfig, target: str, transport_timeout: float | None = None
+    config: ResolvedConfig,
+    target: str,
+    transport_timeout: float | None = DEFAULT_TRANSPORT_TIMEOUT,
 ) -> APIDeploymentsClient:
     """Build a deployment client for an alias, or for a bare API name.
 
@@ -336,6 +344,7 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
 
 
 __all__ = [
+    "DEFAULT_TRANSPORT_TIMEOUT",
     "UNSENDABLE",
     "deployment",
     "deployment_url",

@@ -21,6 +21,7 @@ from unstract_cli.config import (
     load_config,
     set_config_path,
 )
+from unstract_cli.core.clients import DEFAULT_TRANSPORT_TIMEOUT
 from unstract_cli.core.discover import TIERS, discover
 from unstract_cli.core.errors import CLIError, ExitCode, set_warning_sink
 from unstract_cli.core.output import (
@@ -41,7 +42,7 @@ class Context:
     verbosity: int = 0
     profile: str | None = None
     #: Socket timeout for the deployment client, which has none of its own.
-    transport_timeout: float | None = None
+    transport_timeout: float | None = DEFAULT_TRANSPORT_TIMEOUT
     #: Command-line overrides, keyed `product.setting` -- the top tier of
     #: flag > env > profile > default.
     overrides: dict[str, Any] = field(default_factory=dict)
@@ -234,17 +235,17 @@ def whisper_group(ctx: Context, **overrides: str | None) -> None:
 @_connection_options(org_id=True)
 @click.option(
     "--transport-timeout",
-    type=float,
-    default=None,
-    help="Seconds before a stalled connection is given up on. Unset means it "
-    "is not, which is what the client has always done.",
+    type=click.FloatRange(min=0),
+    default=DEFAULT_TRANSPORT_TIMEOUT,
+    show_default=True,
+    help="Seconds before a stalled connection is given up on. 0 waits forever.",
 )
 @pass_context
 def docstudio_group(
-    ctx: Context, transport_timeout: float | None, **overrides: str | None
+    ctx: Context, transport_timeout: float, **overrides: str | None
 ) -> None:
     """Run Document Studio API deployments."""
-    ctx.transport_timeout = transport_timeout
+    ctx.transport_timeout = transport_timeout or None
     ctx.override(DOCSTUDIO, overrides)
 
 

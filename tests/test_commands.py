@@ -589,13 +589,18 @@ def test_a_run_naming_no_documents_at_all_is_refused(capsys, deployment_client):
 
 
 @pytest.mark.parametrize(
-    ("flag", "expected"), [([], None), (["--transport-timeout", "12.5"], 12.5)]
+    ("flag", "expected"),
+    [
+        ([], 120.0),
+        (["--transport-timeout", "12.5"], 12.5),
+        (["--transport-timeout", "0"], None),
+    ],
 )
 def test_the_transport_timeout_flag_reaches_the_client(
     capsys, deployment_client, tmp_path, flag, expected
 ):
-    """Unset means a stalled connection is never given up on, which is what
-    the client has always done."""
+    """Unset means the default, and only zero means a stalled connection is
+    never given up on."""
     doc = tmp_path / "doc.pdf"
     doc.write_bytes(b"%PDF-")
     client = deployment_client(

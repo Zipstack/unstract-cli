@@ -319,8 +319,9 @@ class CLIError(Exception):
             "exit_code": int(self.exit_code),
             "retryable": self.retryable,
             "http_status": self.http_status,
-            # Structural, not opt-in: the details come from a server body that
-            # can echo the request, headers and key included.
+            # Redacted by default: the details come from a server body that can
+            # echo the request, headers and key included. Only a rescued result
+            # that would be destroyed by it opts out.
             "details": self.details
             if self.verbatim_details
             else redact_value(self.details),

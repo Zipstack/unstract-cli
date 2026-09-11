@@ -16,7 +16,7 @@ Move one without the others and the tests say so — which is the point of them.
 |---|---|
 | Exact pins | `pyproject.toml`, `[project].dependencies` |
 | Vendored specs | `src/unstract_cli/specs/{docstudio,llmwhisperer}.json` |
-| Provenance | `src/unstract_cli/specs/provenance.json` (upstream repo, commit, sha256) |
+| Provenance | `src/unstract_cli/specs/provenance.json` (client pin, upstream repo, commit, sha256) |
 | Coherence tests | `tests/test_specs.py`, `tests/test_contract.py`, `tests/derived_flags.json` |
 | Release | `.github/workflows/release.yml`, `workflow_dispatch` |
 
@@ -41,18 +41,22 @@ if any of the below is unclear.
    commit — is what `tests/test_contract.py` guards: a spec parameter the pinned
    client has no argument for cannot become a flag.
 
-4. **Update `provenance.json`** for each spec you moved. Check all four fields
-   against what that client's `tools/gen_sdk.sh` records — `repo` and `path` as
-   well as `commit` — because an upstream that moved its spec file leaves those
-   two stale and the tests cannot see it: they check the `sha256` and the entry
-   names, nothing about where the file came from. The `sha256` is of the file
-   you just wrote (`sha256sum src/unstract_cli/specs/<file>`). This record is
-   what lets the next person tell a current copy from a stale one.
+4. **Update `provenance.json`** for each spec you moved. Set `client` to the
+   exact pin you wrote in `pyproject.toml` (`unstract-client==X.Y.Z`); the
+   tests compare the two, so a pin moved without its spec fails here. Check
+   `repo`, `path` and `commit` against what that client's `tools/gen_sdk.sh`
+   records, because an upstream that moved its spec file leaves `repo` and
+   `path` stale and the tests cannot see it: they check the pin, the `sha256`
+   and the entry names, nothing about where the file came from. The `sha256`
+   is of the file you just wrote (`sha256sum src/unstract_cli/specs/<file>`).
+   This record is what lets the next person tell a current copy from a stale
+   one.
 
 5. **Run the tests:** `uv run pytest -q`.
 
-   - `test_specs.py` fails if a vendored file stops matching its pinned sha256,
-     or if a spec has no provenance entry. It is the cheap check that steps 3 and
+   - `test_specs.py` fails if a vendored file stops matching its recorded
+     sha256, if its `client` no longer equals the pin in `pyproject.toml`, or if
+     a spec has no provenance entry. It is the cheap check that steps 1, 3 and
      4 actually agree.
    - `test_contract.py` fails if a spec parameter the pinned client cannot accept
      would have become a flag, and separately if the derived flags stop matching

@@ -20,6 +20,7 @@ import pytest
 from unstract.api_deployments.client import APIDeploymentsClient
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
 
+from unstract_cli.core.overlay import overlay_for
 from unstract_cli.core.params import derive_params, find_operation, operation_params
 
 #: (product, operationId, client method) per command that derives its flags,
@@ -110,8 +111,17 @@ def _derived_flags() -> dict[str, dict[str, Any]]:
     return {
         f"{product}:{operation}": {
             # Choices as a list: JSON has no tuple, and the snapshot is compared
-            # against what a JSON reader gives back.
-            param.flag: {**asdict(param), "choices": list(param.choices)}
+            # against what a JSON reader gives back. Resolved through the overlay
+            # rather than straight off the spec, so a narrowing or a short flag
+            # that stops applying moves the snapshot too.
+            param.flag: {
+                **asdict(param),
+                "choices": list(
+                    overlay_for(product, operation).get(param.name, {}).get("choices", ())
+                )
+                or list(param.choices),
+                "short": overlay_for(product, operation).get(param.name, {}).get("short"),
+            }
             for param in sorted(
                 derive_params(product, operation, client_method=method),
                 key=lambda param: param.flag,

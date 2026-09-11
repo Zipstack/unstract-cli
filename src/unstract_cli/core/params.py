@@ -31,8 +31,8 @@ from typing import Any
 
 import click
 
-from unstract_cli.core.errors import CLIError, ExitCode
-from unstract_cli.core.overlay import overlay_for
+from unstract_cli.core.errors import CLIError, ExitCode, warn
+from unstract_cli.core.overlay import OVERLAY_FILE, load_overlay, overlay_for
 
 #: Spec file per product, vendored so flags derive with no network and no
 #: dependency on where the client happens to be installed from.
@@ -383,6 +383,42 @@ def _click_type(param: Param) -> click.ParamType:
     return Diverged(param.type)
 
 
+@cache
+def check_overlay() -> tuple[str, ...]:
+    """Name every overlay entry the specs do not declare, once per run.
+
+    An entry that matches nothing is inert rather than wrong-looking: the short
+    flag or the narrowed value list it was written for never reaches the command
+    line, and the file still parses.
+    """
+    problems: list[str] = []
+    for product, operations in load_overlay().items():
+        try:
+            load_spec(product)
+        except KeyError:
+            problems.append(f"[{product}]: no spec is vendored for that product.")
+            continue
+        for operation_id, entries in operations.items():
+            try:
+                declared = {
+                    param.name for param in operation_params(product, operation_id)
+                }
+            except KeyError:
+                problems.append(
+                    f"[{product}.{operation_id}]: the spec declares no such operation."
+                )
+                continue
+            problems += [
+                f"[{product}.{operation_id}.{name}]: the operation takes no such "
+                "parameter."
+                for name in entries
+                if name not in declared
+            ]
+    for problem in problems:
+        warn(f"warning: ignoring {OVERLAY_FILE} entry {problem}")
+    return tuple(problems)
+
+
 def derive_params(
     product: str,
     operation_id: str,
@@ -397,6 +433,7 @@ def derive_params(
     caller gets by omitting the flag. A spec parameter the method does not name
     is dropped rather than offered and then rejected at the call.
     """
+    check_overlay()
     spec_overlay = overlay_for(product, operation_id)
     hidden = {name for name, entry in spec_overlay.items() if entry.get("hidden")}
     accepted = client_params(client_method) if client_method is not None else None
@@ -471,6 +508,7 @@ __all__ = [
     "Diverged",
     "SPEC_FILES",
     "Param",
+    "check_overlay",
     "click_option",
     "client_params",
     "derive_params",

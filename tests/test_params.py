@@ -16,6 +16,7 @@ from unstract_cli.core import params as params_module
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.params import (
     Param,
+    check_overlay,
     click_option,
     derive_params,
     docstring_params,
@@ -218,6 +219,33 @@ def test_choices_come_from_the_spec_unless_the_overlay_narrows_them():
     option = click_option(spec_declared, {"mode": {"choices": ["form", "table"]}})
     assert isinstance(option.type, click.Choice)
     assert option.type.choices == ("form", "table")
+
+
+def test_an_overlay_entry_the_specs_do_not_declare_is_named(monkeypatch, warnings_seen):
+    """An entry that matches nothing applies nothing, and the file still parses."""
+    monkeypatch.setattr(
+        params_module,
+        "load_overlay",
+        lambda: {
+            "nosuchproduct": {"extract": {"mode": {"short": "-m"}}},
+            "llmwhisperer": {
+                "nosuchoperation": {"mode": {"short": "-m"}},
+                "extract": {"nosuchparam": {"short": "-n"}, "mode": {"short": "-m"}},
+            },
+        },
+    )
+    check_overlay.cache_clear()
+    try:
+        problems = check_overlay()
+    finally:
+        check_overlay.cache_clear()
+
+    assert [p.split(":")[0] for p in problems] == [
+        "[nosuchproduct]",
+        "[llmwhisperer.nosuchoperation]",
+        "[llmwhisperer.extract.nosuchparam]",
+    ]
+    assert len(warnings_seen) == 3
 
 
 def test_an_array_becomes_a_repeatable_option():

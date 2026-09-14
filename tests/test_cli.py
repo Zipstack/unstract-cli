@@ -159,6 +159,21 @@ def test_doctor_reports_sources_without_leaking_values(capsys, monkeypatch):
     assert "super-secret-value" not in json.dumps(payload)
 
 
+def test_doctor_reports_the_platform_key_beside_the_deployment_key(capsys, monkeypatch):
+    """Two keys on one block, each with its own row: a platform key is
+    optional, so its absence is a report and not a problem."""
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-super-secret-value")
+    code, payload, _ = run(capsys, "config", "doctor")
+    assert code == 0
+    docstudio = payload["data"]["products"]["docstudio"]
+    assert docstudio["platform_key"] == {
+        "resolved": True,
+        "source": "env:UNSTRACT_PLATFORM_KEY",
+    }
+    assert "platform" not in payload["data"]["products"]
+    assert "pk-super-secret-value" not in json.dumps(payload)
+
+
 def doctor(capsys, *args) -> str:
     """`config doctor` -- a command with no network -- and its raw stdout."""
     main([*args, "config", "doctor"])

@@ -2,8 +2,7 @@
 
 Two products with different hosts, different keys, and `org_id` as a URL *path
 segment* rather than a flag. Named profiles (kubectl/aws style) hold per-product
-host, key and org, plus deployment aliases so a deployment can be named instead
-of spelled out.
+host, key and org, plus a key per deployment for the ones that need their own.
 
 The resolution chain -- **flag > env > profile > built-in default** -- is
 implemented once here and used by every parameter. It is never re-implemented
@@ -32,16 +31,16 @@ from unstract_cli.core.errors import remember_secret, warn
 
 LLMWHISPERER = "llmwhisperer"
 DOCSTUDIO = "docstudio"
-PLATFORM = "platform"
-PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO, PLATFORM)
+PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO)
+
+#: Settings whose values are credentials: registered for scrubbing when
+#: resolved, withheld from a discovered project file, never echoed.
+SECRET_SETTINGS = frozenset({"api_key", "platform_key"})
 
 #: Built-in defaults, lowest precedence.
 DEFAULT_BASE_URLS: dict[str, str] = {
     LLMWHISPERER: "https://llmwhisperer-api.us-central.unstract.com/api/v2",
     DOCSTUDIO: "https://us-central.unstract.com",
-    # The same host as docstudio: one deployment serves both the platform API
-    # and the deployments it manages.
-    PLATFORM: "https://us-central.unstract.com",
 }
 
 #: Environment variables per (product, setting), checked before the config file
@@ -49,19 +48,16 @@ DEFAULT_BASE_URLS: dict[str, str] = {
 #: themselves read: an environment already set up for a client must not leave
 #: the CLI silently on its built-in default, which is production.
 #:
-#: `platform` deliberately has no `org_id` of its own. A platform key carries
-#: its organisation, and `auth whoami` writes the one it resolves to the
-#: docstudio block -- the block everything else already reads. Two `org_id`
-#: settings would mean two rows in `config doctor` that a user has to keep in
-#: agreement by hand.
+#: The platform key sits on the docstudio block beside the deployment key: one
+#: deployment serves both the platform API and the deployments it manages, so
+#: the two keys share a host and an organisation.
 ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (LLMWHISPERER, "api_key"): ("LLMWHISPERER_API_KEY",),
     (LLMWHISPERER, "base_url"): ("LLMWHISPERER_BASE_URL", "LLMWHISPERER_BASE_URL_V2"),
     (DOCSTUDIO, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY", "UNSTRACT_API_DEPLOYMENT_KEY"),
     (DOCSTUDIO, "base_url"): ("UNSTRACT_BASE_URL",),
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
-    (PLATFORM, "api_key"): ("UNSTRACT_PLATFORM_KEY",),
-    (PLATFORM, "base_url"): ("UNSTRACT_BASE_URL",),
+    (DOCSTUDIO, "platform_key"): ("UNSTRACT_PLATFORM_KEY",),
 }
 
 
@@ -81,10 +77,9 @@ KEY_SOURCES = (
 def settings_for(product: str) -> tuple[str, ...]:
     """The settings a product actually has.
 
-    Products differ: `org_id` is a setting only for `docstudio` -- llmwhisperer
-    has no organisation, and `platform` reads docstudio's -- and reporting a
-    setting a user has no way to supply reads as a misconfiguration they cannot
-    fix.
+    Products differ: `org_id` and `platform_key` are settings only for
+    `docstudio` -- llmwhisperer has no organisation -- and reporting a setting a
+    user has no way to supply reads as a misconfiguration they cannot fix.
     """
     return tuple(sorted(key for prod, key in ENV_VARS if prod == product))
 
@@ -202,7 +197,7 @@ def _deref(value: Any, *, allow_env: bool) -> Any:
 #: checkout the user did not write must not choose the host their key is sent
 #: to. Separately, and for every key, such a file may not name an environment
 #: variable to read either -- see `ResolvedConfig._env_refused`.
-UNTRUSTED_PROJECT_KEYS = frozenset({"api_key", "base_url"})
+UNTRUSTED_PROJECT_KEYS = SECRET_SETTINGS | {"base_url"}
 
 
 @dataclass
@@ -452,7 +447,7 @@ class ResolvedConfig:
     def get(self, product: str, key: str, default: Any = None) -> Any:
         """Resolve one setting: **flag > env > profile > built-in default**."""
         value = self._resolve(product, key, default)
-        if key == "api_key":
+        if key in SECRET_SETTINGS:
             remember_secret(value)
         return value
 
@@ -467,19 +462,12 @@ class ResolvedConfig:
         the caller's own choice as silence.
         """
         value = self._explicit(product, key)
-        if key == "api_key":
+        if key in SECRET_SETTINGS:
             remember_secret(value)
         return value
 
-    def explicit_tiers(self, product: str, key: str) -> Iterator[Any]:
+    def _tiers(self, product: str, key: str) -> Iterator[Any]:
         """What each tier says, in order -- flag, env, profile -- unset as `None`.
-
-        For a setting two products share -- one deployment serves both, so
-        `base_url` is really one question asked twice -- picking a product first
-        and then walking its tiers inverts the precedence the whole config layer
-        promises: a profile value on the preferred product beats a *flag* on the
-        other. Walking tier by tier across both products keeps flag > env >
-        profile true regardless of which product a value was written under.
 
         Lazy on purpose: reading the profile block resolves the profile name,
         which raises for one that does not exist. A caller answered by an
@@ -495,7 +483,7 @@ class ResolvedConfig:
 
     def _explicit(self, product: str, key: str) -> Any:
         """The tiers a human supplied: flag, then environment, then profile."""
-        return next((v for v in self.explicit_tiers(product, key) if v is not None), None)
+        return next((v for v in self._tiers(product, key) if v is not None), None)
 
     def _resolve(self, product: str, key: str, default: Any = None) -> Any:
         if (value := self._explicit(product, key)) is not None:
@@ -550,7 +538,7 @@ class ResolvedConfig:
         hints.append(f"or add `{key}` to the [profiles.<name>.{product}] block")
         # `--api-key` exists but is not suggested: a secret on the command line
         # lands in shell history and in the process list.
-        if key != "api_key":
+        if key not in SECRET_SETTINGS:
             hints.append(f"or pass --{key.replace('_', '-')}")
         raise ConfigError(
             f"Missing required setting {product}.{key}. To fix: {'; '.join(hints)}."
@@ -676,10 +664,11 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
     Every credential uses ``env:`` indirection: the generated file is a map of
     where secrets live, never a copy of them.
 
-    One key on the product block, and aliases that carry only ``api_name``: a
-    key can cover every deployment in the organisation, so a key per alias is
-    the exception -- for an organisation whose deployments hold separate keys --
-    rather than the shape to start from.
+    No ``platform_key`` and no ``deployments`` table on purpose: a platform key
+    is optional and an ``env:`` reference to an unset variable is a `config
+    doctor` problem, and one deployment key normally covers the organisation,
+    so a per-deployment key is the exception rather than the shape to start
+    from.
     """
     return {
         "cloud-us": {
@@ -692,12 +681,6 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
-            # No `api_key` on purpose. A platform key is optional -- holding
-            # only a deployment key is the common case -- and an `env:`
-            # reference to an unset variable is a `config doctor` problem,
-            # which would exit 1 for every user who does not hold one.
-            PLATFORM: {"base_url": DEFAULT_BASE_URLS[PLATFORM]},
-            "deployments": {"example": {"api_name": "your-api-deployment-name"}},
         },
         "cloud-eu": {
             LLMWHISPERER: {
@@ -717,8 +700,6 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
-            # No `api_key` -- see the cloud-us block.
-            PLATFORM: {"base_url": "https://unstract.internal.example"},
         },
     }
 
@@ -730,9 +711,9 @@ __all__ = [
     "HOME_CONFIG",
     "KEY_SOURCES",
     "LLMWHISPERER",
-    "PLATFORM",
     "PRODUCTS",
     "PROJECT_CONFIG_NAME",
+    "SECRET_SETTINGS",
     "UNTRUSTED_PROJECT_KEYS",
     "ConfigError",
     "ConfigFile",

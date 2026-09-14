@@ -15,7 +15,7 @@ import pytest
 from unstract_cli.__main__ import main
 from unstract_cli.app import cli
 from unstract_cli.commands import config_cmd
-from unstract_cli.config import PLATFORM
+from unstract_cli.config import DOCSTUDIO
 from unstract_cli.core.discover import discover, exit_codes
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import CONTRACT_VERSION
@@ -206,7 +206,7 @@ def platform_probe_client(monkeypatch):
             # Resolves the key like its sibling in test_commands, so the probe
             # tests exercise the registration that feeds the scrubber.
             lambda config, org_id=None, *, timeout=None: (
-                config.get(PLATFORM, "api_key"),
+                config.get(DOCSTUDIO, "platform_key"),
                 Fake(),
             )[1],
         )

@@ -339,6 +339,7 @@ api_key = "project-literal-key"
 
 [profiles.p.docstudio]
 org_id = "org_from_project"
+platform_key = "project-platform-key"
 
 [profiles.p.deployments.invoices]
 api_name = "invoice-parser"
@@ -361,6 +362,8 @@ def test_a_discovered_project_config_supplies_no_key_and_no_host(tmp_path, monke
 
     assert cfg.get(LLMWHISPERER, "base_url") == DEFAULT_BASE_URLS[LLMWHISPERER]
     assert cfg.get(LLMWHISPERER, "api_key") is None
+    # Both docstudio keys are credentials, whatever they are called.
+    assert cfg.get(DOCSTUDIO, "platform_key") is None
     assert cfg.deployment("invoices")["api_key"] is None
     # Everything the file is legitimately for still applies.
     assert cfg.get(DOCSTUDIO, "org_id") == "org_from_project"
@@ -376,6 +379,7 @@ def test_the_same_file_named_explicitly_is_honoured(tmp_path, monkeypatch):
 
     assert cfg.get(LLMWHISPERER, "base_url") == "https://elsewhere.example/api/v2"
     assert cfg.get(LLMWHISPERER, "api_key") == "project-literal-key"
+    assert cfg.get(DOCSTUDIO, "platform_key") == "project-platform-key"
     assert not any("Ignoring" in w for w in cfg.file.warnings)
 
 

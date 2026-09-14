@@ -224,9 +224,10 @@ def ls(ctx: Context, api_name: str | None, full: bool) -> None:
             "`--api-key` on `docstudio` is a deployment key; "
             "`deployment ls` authenticates with a platform key.",
             ExitCode.USAGE,
-            hint="Drop the flag and set $UNSTRACT_PLATFORM_KEY, or add "
-            "`api_key` to the [profiles.<name>.platform] block. A deployment "
-            "key runs a deployment; a platform key describes the account.",
+            hint="Pass --platform-key instead, set $UNSTRACT_PLATFORM_KEY, or "
+            "add `platform_key` to the [profiles.<name>.docstudio] block. A "
+            "deployment key runs a deployment; a platform key describes the "
+            "account.",
         )
 
     org_id = organisation(ctx.config)

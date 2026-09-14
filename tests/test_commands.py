@@ -27,7 +27,7 @@ from unstract.llmwhisperer.client_v2 import (
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
 from unstract_cli.commands import clone_cmd, docstudio_cmd, platform_cmd, whisper_cmd
-from unstract_cli.config import LLMWHISPERER, PLATFORM
+from unstract_cli.config import DOCSTUDIO, LLMWHISPERER
 from unstract_cli.core.errors import CLIError, ExitCode
 
 
@@ -148,7 +148,7 @@ def platform_client(monkeypatch):
             # factory has to do it too or the seam hides a production path.
             # The signature tracks the real `platform_client` deliberately: a
             # fixture that drifts from it passes while testing nothing.
-            client.built_with["api_key"] = config.get(PLATFORM, "api_key")
+            client.built_with["api_key"] = config.get(DOCSTUDIO, "platform_key")
             client.built_with["org_id"] = org_id
             client.built_with["timeout"] = timeout
             return client
@@ -1907,6 +1907,34 @@ def test_a_deployment_key_flag_is_refused_rather_than_ignored_by_ls(
     assert "platform key" in error["message"]
     assert "UNSTRACT_PLATFORM_KEY" in error["hint"]
     assert "dk-FROM-FLAG" not in json.dumps(envelope(out))
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("auth", "--platform-key", "pk-FROM-FLAG-0123", "whoami", "--no-save"),
+        ("docstudio", "--platform-key", "pk-FROM-FLAG-0123", "deployment", "ls"),
+    ],
+)
+def test_a_platform_key_flag_reaches_the_client_and_is_warned_about(
+    capsys, platform_client, monkeypatch, tmp_path, args
+):
+    """Both groups that run platform-key commands take the key as a flag, and a
+    key on the command line gets the same shell-history warning as `--api-key`.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    client = platform_client(whoami=IDENTITY, list_deployments=_returns(_page()))
+
+    code, out, err = run(capsys, *args)
+
+    assert code == int(ExitCode.SUCCESS)
+    assert client.built_with["api_key"] == "pk-FROM-FLAG-0123"
+    assert "shell history" in err
+    assert "pk-FROM-FLAG-0123" not in out
 
 
 def test_the_platform_key_never_reaches_a_stream(

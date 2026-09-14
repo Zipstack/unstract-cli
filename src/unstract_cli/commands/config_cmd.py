@@ -18,7 +18,6 @@ from unstract_cli.config import (
     DOCSTUDIO,
     KEY_SOURCES,
     LLMWHISPERER,
-    PLATFORM,
     PRODUCTS,
     UNTRUSTED_PROJECT_KEYS,
     ConfigError,
@@ -39,6 +38,10 @@ from unstract_cli.core.output import (
     resolve_format,
 )
 from unstract_cli.core.platform import platform_client
+
+#: The probe entry for docstudio's platform key. Named for the credential,
+#: not the product: the deployment key sits beside it under `docstudio`.
+PLATFORM_KEY = "platform"
 
 #: Keys whose value is never echoed back, even on explicit request: this output
 #: is as likely to land in a log or a transcript as on a screen.
@@ -236,7 +239,7 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
 
 
 def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
-    """Check each product's credentials against the service, where that is possible.
+    """Check each credential against the service, where that is possible.
 
     LLMWhisperer has a read-only usage endpoint, so its key can be verified for
     real, and so does the platform API -- `whoami` reads nothing but the key
@@ -244,6 +247,9 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     call is an execution -- so its entry reports that the settings resolve and
     says plainly that nothing was verified. Claiming otherwise would be worse
     than not checking.
+
+    Keyed by credential rather than by product: docstudio holds two keys that
+    are checked differently.
     """
     out: dict[str, Any] = {}
     try:
@@ -269,7 +275,7 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
         with translated(endpoint="whoami"):
             identity = platform_client(resolved).whoami()
     except CLIError as exc:
-        out[PLATFORM] = {
+        out[PLATFORM_KEY] = {
             "checked": True,
             "ok": False,
             "detail": exc.message,
@@ -279,9 +285,9 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
         # Null, not False: a platform key is optional -- a caller holding only a
         # deployment key is the common case -- so an absent one is a report
         # rather than a failure, and must not decide this command's exit code.
-        out[PLATFORM] = {"checked": False, "ok": None, "detail": str(exc)}
+        out[PLATFORM_KEY] = {"checked": False, "ok": None, "detail": str(exc)}
     else:
-        out[PLATFORM] = {
+        out[PLATFORM_KEY] = {
             "checked": True,
             "ok": True,
             # The organisation is the reason to hold this key, so the probe

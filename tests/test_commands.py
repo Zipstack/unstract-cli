@@ -704,24 +704,44 @@ def test_a_queued_run_reports_the_handle_it_started(capsys, deployment_client, t
     assert capsys.readouterr().out.strip() == "e-1"
 
 
-def test_a_target_that_is_not_a_configured_alias_names_the_ones_that_are(
-    capsys, deployment_client, write_config
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("docstudio", "deployment", "status", "invoice-parser", "e-1"),
+        ("docstudio", "deployment", "run", "invoice-parser", "DOC", "--no-wait"),
+    ],
+    ids=["status", "run"],
+)
+def test_a_rejected_key_names_the_deployment_and_how_to_give_it_its_own(
+    capsys, deployment_client, tmp_path, argv
 ):
-    """A misspelt alias is sent as an API name and comes back not-found, which
-    says nothing about the aliases sitting in the profile."""
-    write_config(
-        'default_profile = "p"\n'
-        "[profiles.p.docstudio]\n"
-        'org_id = "org"\n'
-        'api_key = "k"\n'
-        "[profiles.p.deployments.invoices]\n"
-        'api_name = "invoice-parser"\n'
+    """A 401 is the first moment "this deployment may need its own key" is
+    known to be true, so the hint that says so has to be reachable from both
+    commands that send one."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF")
+    deployment_client(
+        check_execution_status={"status_code": 401, "error": "Unauthorized"},
+        structure_file={"status_code": 401, "error": "Unauthorized"},
     )
+    code, out, _ = run(capsys, *(str(doc) if a == "DOC" else a for a in argv))
+    assert code == int(ExitCode.AUTH)
+    error = envelope(out)["error"]
+    assert "invoice-parser" in error["message"]
+    assert "does not authorize" in error["message"]
+    assert (
+        "config set docstudio api_key <key> --deployment invoice-parser"
+        in (error["hint"])
+    )
+
+
+def test_an_unknown_api_name_is_pointed_at_the_listing(capsys, deployment_client):
+    """A misspelt or renamed API name comes back not-found, and the server is
+    the only authority on what the current names are."""
     deployment_client(check_execution_status={"status_code": 404, "error": "not found"})
     code, out, _ = run(capsys, "docstudio", "deployment", "status", "invoces", "e-1")
     assert code == int(ExitCode.NOT_FOUND)
-    hint = envelope(out)["error"]["hint"]
-    assert "invoces" in hint and "invoices" in hint
+    assert "deployment ls" in envelope(out)["error"]["hint"]
 
 
 def test_highlights_on_an_extraction_without_line_numbers_says_where_to_fix_it(

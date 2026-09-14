@@ -112,6 +112,31 @@ def test_set_refuses_a_setting_the_product_does_not_have(capsys, tmp_path, monke
     assert not (tmp_path / "c.toml").exists()
 
 
+def test_set_can_store_a_key_for_one_deployment(capsys, tmp_path, monkeypatch):
+    """The entry is where a run looks after the environment and before the
+    profile's key, so the write lands under the API name, not the product."""
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+    code, payload, _ = run(
+        capsys, "config", "set", "docstudio", "api_key", "dk-1", "--deployment", "inv"
+    )
+    assert code == 0 and payload["data"]["deployment"] == "inv"
+    text = (tmp_path / "c.toml").read_text(encoding="utf-8")
+    assert "[profiles.cloud-us.deployments.inv]" in text
+    assert "[profiles.cloud-us.docstudio]" not in text
+
+
+def test_set_refuses_to_store_anything_but_a_key_per_deployment(
+    capsys, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+    code, payload, _ = run(
+        capsys, "config", "set", "docstudio", "org_id", "org_A", "--deployment", "inv"
+    )
+    assert code == int(ExitCode.USAGE)
+    assert "--deployment" in payload["error"]["message"]
+    assert not (tmp_path / "c.toml").exists()
+
+
 def test_doctor_reports_a_setting_nothing_reads(capsys, write_config):
     write_config('default_profile = "p"\n\n[profiles.p.llmwhisperer]\norg_id = "org_A"\n')
     code, payload, _ = run(capsys, "config", "doctor")

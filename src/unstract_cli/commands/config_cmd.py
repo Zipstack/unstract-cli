@@ -37,7 +37,7 @@ from unstract_cli.core.output import (
     emit_result,
     resolve_format,
 )
-from unstract_cli.core.platform import platform_client
+from unstract_cli.core.platform import organisation, platform_client
 
 #: The probe entry for docstudio's platform key. Named for the credential,
 #: not the product: the deployment key sits beside it under `docstudio`.
@@ -176,8 +176,21 @@ def config_get(obj: Any, product: str, key: str) -> None:
 @click.argument("key")
 @click.argument("value")
 @click.option("--profile", "-p", "profile", default=None, help="Profile to write to.")
+@click.option(
+    "--deployment",
+    default=None,
+    metavar="API_NAME",
+    help="Store a docstudio api_key for this one deployment only.",
+)
 @click.pass_obj
-def config_set(obj: Any, product: str, key: str, value: str, profile: str | None) -> None:
+def config_set(
+    obj: Any,
+    product: str,
+    key: str,
+    value: str,
+    profile: str | None,
+    deployment: str | None,
+) -> None:
     """Set a value in the config file.
 
     PRODUCT, KEY and VALUE are positional -- not flags. Writes to the active
@@ -187,6 +200,7 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
     Examples:
       unstract config set docstudio org_id org_ABC123
       unstract config set llmwhisperer api_key 'env:LLMWHISPERER_API_KEY'
+      unstract config set docstudio api_key dk_... --deployment invoice-parser
 
     \b
     Prefer `env:VAR_NAME` for credentials: the file then records where the secret
@@ -195,10 +209,21 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
     """
     _check_product(product)
     _check_key(product, key)
+    if deployment is not None and (product, key) != (DOCSTUDIO, "api_key"):
+        raise CLIError(
+            "--deployment only applies to `docstudio api_key`.",
+            ExitCode.USAGE,
+            hint="A deployment entry holds nothing but the key that runs it.",
+        )
     cfg = _loaded(obj)
     name = profile or getattr(obj, "profile", None) or cfg.default_profile or "cloud-us"
 
-    cfg.profiles.setdefault(name, {}).setdefault(product, {})[key] = value
+    block = cfg.profiles.setdefault(name, {})
+    if deployment is not None:
+        block = block.setdefault("deployments", {}).setdefault(deployment, {})
+    else:
+        block = block.setdefault(product, {})
+    block[key] = value
     if not cfg.default_profile:
         cfg.default_profile = name
     written = save_config(cfg)
@@ -231,6 +256,7 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
             "profile": name,
             "product": product,
             "key": key,
+            "deployment": deployment,
             "path": str(written),
             "warning": warning,
         },
@@ -316,6 +342,30 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     return out
 
 
+def _stale_deployments(resolved: ResolvedConfig, names: list[str]) -> list[str] | None:
+    """Which deployment entries name a deployment the server no longer has.
+
+    An API name is editable server-side, so an entry written under one can be
+    orphaned without anything local changing. Answerable only with a platform
+    key and an organisation; without either it is skipped, not failed -- most
+    callers hold neither and the entries are still theirs to keep.
+    """
+    if not names:
+        return None
+    try:
+        org_id = organisation(resolved)
+        client = platform_client(resolved, org_id)
+        with translated(endpoint="api/deployment/"):
+            stale = [
+                name
+                for name in names
+                if not client.list_deployments(org_id, api_name=name).get("results")
+            ]
+    except (CLIError, ConfigError):
+        return None
+    return stale
+
+
 @config_group.command("doctor", help="Diagnose how each setting resolves.")
 @click.option(
     "--probe/--no-probe",
@@ -332,7 +382,9 @@ def config_doctor(obj: Any, probe: bool) -> None:
     login profile the CLI never inherited being the classic trap.
 
     Resolution is answered offline. --probe adds the second question -- does the
-    resolved key work -- which needs the network, so it is opt-in.
+    resolved key work -- which needs the network, so it is opt-in. With a
+    platform key it also checks that every deployment entry still names a
+    deployment the organisation has.
 
     Exits 0 only when nothing it checked failed. A setting that is simply not
     configured is a report, not a failure; a setting that points somewhere and
@@ -357,28 +409,28 @@ def config_doctor(obj: Any, probe: bool) -> None:
         products[product] = entry
 
     try:
-        aliases = list(resolved.deployment_aliases())
+        deployments = list(resolved.deployment_names())
     except ConfigError as exc:
-        aliases = []
+        deployments = []
         problems.append(str(exc))
-    for alias in aliases:
-        # An alias carries a key of its own, so it is a second place a project
-        # file can name one -- and it falls back to the profile's key silently.
-        if detail := resolved.withheld_detail("deployments", alias, "api_key"):
-            problems.append(f"deployment alias {alias}: {detail}")
+    for api_name in deployments:
+        # A deployment entry is a second place a project file can name a key --
+        # and a run falls back to the profile's key silently.
+        if detail := resolved.withheld_detail("deployments", api_name, "api_key"):
+            problems.append(f"deployment {api_name}: {detail}")
         try:
-            # Resolved the way a run resolves it: that an alias is *listed* says
-            # nothing about whether the settings behind it arrive.
-            resolved.deployment(alias)
+            # Resolved the way a run resolves it: that an entry is *listed* says
+            # nothing about whether the key behind it arrives.
+            resolved.deployment_key(api_name)
         except ConfigError as exc:
-            problems.append(f"deployment alias {alias}: {exc}")
+            problems.append(f"deployment {api_name}: {exc}")
 
     report: dict[str, Any] = {
         "active_profile": resolved.active_profile,
         "config_path": str(resolved.file.path),
         "config_exists": resolved.file.exists,
         "products": products,
-        "deployment_aliases": aliases,
+        "deployments": deployments,
     }
     if any(
         not entry["api_key"]["resolved"]
@@ -395,6 +447,17 @@ def config_doctor(obj: Any, probe: bool) -> None:
             for name, result in report["probe"].items()
             if result["ok"] is False
         ]
+        if (stale := _stale_deployments(resolved, deployments)) is not None:
+            # A warning, not a problem: the entry is harmless until it is run,
+            # and the server is the only authority on what it is called now.
+            report["stale_deployments"] = stale
+            for api_name in stale:
+                diagnostic(
+                    f"warning: no deployment is called {api_name!r} any more; "
+                    "run `unstract docstudio deployment ls` for the current names.",
+                    quiet=getattr(obj, "quiet", False),
+                    verbosity=getattr(obj, "verbosity", 0),
+                )
 
     if problems:
         report["problems"] = problems

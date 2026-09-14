@@ -54,8 +54,7 @@ def _store_organisation(ctx: Context, org_id: str) -> dict[str, Any]:
     written into a profile no later command read.
 
     It lands on the docstudio block because that is where every consumer reads
-    it from -- deployment URLs and aliases both -- and a second copy under the
-    platform block would be one more thing to keep in agreement.
+    it from.
     """
     cfg = load_config()
     if cfg.is_project_local:

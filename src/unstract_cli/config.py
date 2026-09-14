@@ -544,60 +544,62 @@ class ResolvedConfig:
             f"Missing required setting {product}.{key}. To fix: {'; '.join(hints)}."
         )
 
-    def deployment(self, alias: str) -> dict[str, Any]:
-        """Resolve a deployment alias to its api_name, org and key.
+    def deployment_names(self) -> tuple[str, ...]:
+        """The deployments the active profile holds a key of its own for."""
+        table = self._profile().get("deployments")
+        return tuple(sorted(table)) if isinstance(table, dict) else ()
 
-        ``org_id`` and ``api_key`` are optional per alias and fall back to the
-        profile's Document Studio block, so the common case is one line per
-        deployment.
+    def deployment_key(self, api_name: str) -> Any:
+        """The key to run one deployment with, or ``None`` if nothing names one.
+
+        **flag > env > per-deployment entry > profile key**. The entry is the
+        most specific value *within* the profile tier, not a tier of its own: a
+        file value that outranked the environment would let a stale entry hijack
+        a run the caller set up with ``$UNSTRACT_DEPLOYMENT_KEY``.
         """
-        aliases = self._profile().get("deployments")
-        entry = aliases.get(alias) if isinstance(aliases, dict) else None
-        if not isinstance(entry, dict):
-            known = (
-                ", ".join(sorted(aliases))
-                if isinstance(aliases, dict) and aliases
-                else "none"
-            )
-            raise ConfigError(
-                f"Deployment alias {alias!r} not found in profile "
-                f"{self.active_profile!r}. Known aliases: {known}."
-            )
-        if not entry.get("api_name"):
-            raise ConfigError(f"Deployment alias {alias!r} has no `api_name`.")
-        api_key = self._alias_setting(alias, entry, "api_key")
-        remember_secret(api_key)
-        return {
-            "api_name": entry["api_name"],
-            "org_id": self._alias_setting(alias, entry, "org_id"),
-            "api_key": api_key,
-        }
+        tiers = self._tiers(DOCSTUDIO, "api_key")
+        flag, env = next(tiers), next(tiers)
+        value = flag if flag is not None else env
+        if value is None:
+            value = self._entry_key(api_name)
+        if value is None:
+            value = next(tiers)
+        remember_secret(value)
+        return value
 
-    def _alias_setting(self, alias: str, entry: dict[str, Any], key: str) -> Any:
-        """One alias setting, falling back to the profile only where the alias is silent.
+    def _entry_key(self, api_name: str) -> Any:
+        """The key the deployment's own entry names, if it names one.
 
         An ``env:`` reference that does not resolve is not silence. Falling back
-        there runs the deployment against the profile's organisation, with the
-        profile's key, and reports success.
+        there runs the deployment with the profile's key and reports success.
         """
-        raw = entry.get(key)
+        table = self._profile().get("deployments")
+        entry = table.get(api_name) if isinstance(table, dict) else None
+        raw = entry.get("api_key") if isinstance(entry, dict) else None
+        # A discovered project file never gets this far: its keys are withheld
+        # at load time, so an `env:` reference seen here is always trusted.
         if isinstance(raw, str) and raw.startswith("env:"):
-            if value := _deref(raw, allow_env=self._env_allowed(raw)):
+            if value := _deref(raw, allow_env=True):
                 return value
-            reason = (
-                self._env_refusal_detail(raw)
-                if self._env_refused(raw)
-                else f"${raw[4:].strip()} is not set in this process's environment"
-            )
             raise ConfigError(
-                f"Deployment alias {alias!r} sets {key} to {raw!r}, and {reason}."
+                f"Deployment {api_name!r} sets api_key to {raw!r}, and "
+                f"${raw[4:].strip()} is not set in this process's environment."
             )
-        return raw or self.get(DOCSTUDIO, key)
+        return raw or None
 
-    def deployment_aliases(self) -> tuple[str, ...]:
-        """Names of the deployment aliases defined in the active profile."""
-        aliases = self._profile().get("deployments")
-        return tuple(sorted(aliases)) if isinstance(aliases, dict) else ()
+    def deployment_key_sources(self, api_name: str) -> tuple[str, ...]:
+        """Every place a key for this deployment could have come from, in order.
+
+        Quoted when none of them did: a caller told only that a key is missing
+        has to guess which of four places the CLI looked in.
+        """
+        profile = self.active_profile or "<name>"
+        return (
+            "--api-key",
+            f"${ENV_VARS[(DOCSTUDIO, 'api_key')][0]}",
+            f'[profiles.{profile}.deployments."{api_name}"] api_key',
+            f"[profiles.{profile}.docstudio] api_key",
+        )
 
     def resolution_source(self, product: str, key: str) -> dict[str, Any]:
         """Report where a setting resolves from, without echoing a secret.
@@ -647,7 +649,7 @@ class ResolvedConfig:
 
         Reporting only where a value came *from* would leave the user staring at
         a setting they can see in the file. Takes a trail rather than a
-        product/key pair so a deployment alias's own key -- nested a level deeper
+        product/key pair so a deployment entry's own key -- nested a level deeper
         -- is answerable too.
         """
         if (self.active_profile, *trail) not in self.file.withheld:

@@ -42,7 +42,13 @@ from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientV2,
 )
 
-from unstract_cli.config import DOCSTUDIO, LLMWHISPERER, ResolvedConfig
+from unstract_cli.config import (
+    DOCSTUDIO,
+    ENV_VARS,
+    KEY_SOURCES,
+    LLMWHISPERER,
+    ResolvedConfig,
+)
 from unstract_cli.core.errors import CLIError, ExitCode, error_from_status
 from unstract_cli.core.params import find_operation
 
@@ -76,37 +82,35 @@ DEFAULT_TRANSPORT_TIMEOUT = 120.0
 
 def deployment(
     config: ResolvedConfig,
-    target: str,
+    api_name: str,
     transport_timeout: float | None = DEFAULT_TRANSPORT_TIMEOUT,
 ) -> APIDeploymentsClient:
-    """Build a deployment client for an alias, or for a bare API name.
+    """Build a client for one deployment, named by its API name.
 
-    An alias carries its own organisation and key; a bare name falls back to the
-    profile's, so an unconfigured caller can still name a deployment directly.
+    Fails before any request when no key or organisation resolves: a credential
+    error from the server would name the wrong fault, and the caller is told
+    every place the CLI looked rather than only that it found nothing.
     """
-    if target in config.deployment_aliases():
-        entry = config.deployment(target)
-        api_name, org_id, api_key = (
-            entry["api_name"],
-            entry["org_id"],
-            entry["api_key"],
-        )
-    else:
-        api_name = target
-        org_id = config.get(DOCSTUDIO, "org_id")
-        api_key = config.get(DOCSTUDIO, "api_key")
-
-    missing = [
-        name for name, value in (("org_id", org_id), ("api_key", api_key)) if not value
-    ]
-    if missing:
+    org_id = config.get(DOCSTUDIO, "org_id")
+    if not org_id:
         raise CLIError(
-            f"Deployment {target!r} is missing {' and '.join(missing)}.",
+            f"No organisation is configured to run {api_name!r} in.",
             ExitCode.USAGE,
-            hint=_alias_hint(config, target)
-            or (
-                "Define the deployment as an alias in the active profile, or set "
-                "$UNSTRACT_ORG_ID and $UNSTRACT_DEPLOYMENT_KEY."
+            hint="Run `unstract auth login`, set $UNSTRACT_ORG_ID, or pass --org-id.",
+        )
+    api_key = config.deployment_key(api_name)
+    if not api_key:
+        looked_in = ", ".join(config.deployment_key_sources(api_name))
+        raise CLIError(
+            f"No key resolves for deployment {api_name!r}. Looked in: {looked_in} "
+            "-- all unset.",
+            ExitCode.USAGE,
+            hint=(
+                f"Set ${ENV_VARS[(DOCSTUDIO, 'api_key')][0]}, or store a key: "
+                "`unstract config set docstudio api_key <key>` for one that covers "
+                "the organisation, or `unstract config set docstudio api_key "
+                f"<key> --deployment {api_name}` for this deployment alone. "
+                f"{KEY_SOURCES}"
             ),
         )
 
@@ -118,34 +122,31 @@ def deployment(
     )
 
 
-def _alias_hint(config: ResolvedConfig, target: str) -> str | None:
-    """What to say when a target is not one of the aliases that are configured.
-
-    A bare API name is a supported way to name a deployment, so a target that is
-    not an alias cannot be rejected outright. It can still be a misspelt one,
-    and a caller who has defined aliases is likelier to have meant one of them
-    than to have typed a raw name, so the ones that exist are worth naming.
-    """
-    if not (aliases := config.deployment_aliases()) or target in aliases:
-        return None
-    return (
-        f"{target!r} is not one of the deployment aliases in the active profile "
-        f"({', '.join(aliases)}), so it was sent as an API name."
-    )
-
-
 @contextmanager
-def naming_aliases(config: ResolvedConfig, target: str) -> Iterator[None]:
-    """Say which aliases exist when a bare API name is not found.
+def deployment_errors(api_name: str) -> Iterator[None]:
+    """Say what a refusal means for *this* deployment, once the server answers.
 
-    Sending a misspelt alias as an API name is indistinguishable from sending a
-    real one until the service answers, so the correction belongs on the answer.
+    A rejected key and an unknown name are both indistinguishable from success
+    until the service answers, so the correction belongs on the answer: a key
+    that works elsewhere may not cover this deployment, and a name that was
+    valid may have been renamed since it was written down.
     """
     try:
         yield
     except CLIError as exc:
-        if exc.exit_code is ExitCode.NOT_FOUND and (hint := _alias_hint(config, target)):
-            exc.hint = f"{exc.hint} {hint}" if exc.hint else hint
+        if exc.exit_code is ExitCode.AUTH:
+            exc.message = (
+                f"The key supplied for deployment {api_name!r} does not authorize "
+                f"it: {exc.message}"
+            )
+            exc.hint = (
+                "This deployment may need a key of its own: "
+                "`unstract config set docstudio api_key <key> --deployment "
+                f"{api_name}`."
+            )
+        elif exc.exit_code is ExitCode.NOT_FOUND:
+            more = "Run `unstract docstudio deployment ls` for the current API names."
+            exc.hint = f"{exc.hint} {more}" if exc.hint else more
         raise
 
 
@@ -408,9 +409,9 @@ __all__ = [
     "DEFAULT_TRANSPORT_TIMEOUT",
     "UNSENDABLE",
     "deployment",
+    "deployment_errors",
     "deployment_url",
     "llmwhisperer",
-    "naming_aliases",
     "raise_for_result",
     "translated",
     "translating",

@@ -145,7 +145,11 @@ def deployment_errors(api_name: str) -> Iterator[None]:
                 f"{api_name}`."
             )
         elif exc.exit_code is ExitCode.NOT_FOUND:
-            more = "Run `unstract docstudio deployment ls` for the current API names."
+            more = (
+                "Run `unstract docstudio deployment ls` for the current API names; "
+                "`unstract config doctor --probe` reports profile entries the "
+                "organisation no longer has."
+            )
             exc.hint = f"{exc.hint} {more}" if exc.hint else more
         raise
 

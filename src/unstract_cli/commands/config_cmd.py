@@ -453,17 +453,29 @@ def config_doctor(obj: Any, probe: bool) -> None:
             for name, result in report["probe"].items()
             if result["ok"] is False
         ]
-        if (stale := _stale_deployments(resolved, deployments)) is not None:
+        notes = []
+        if deployments and not report["probe"][PLATFORM_KEY]["checked"]:
+            # The flag was explicit, so the skip is said rather than silent.
+            notes.append(
+                "probe: deployment entries were not checked against the "
+                f"organisation -- no platform key resolves for profile "
+                f"{resolved.active_profile!r}."
+            )
+        elif (stale := _stale_deployments(resolved, deployments)) is not None:
             # A warning, not a problem: the entry is harmless until it is run,
             # and the server is the only authority on what it is called now.
             report["stale_deployments"] = stale
-            for api_name in stale:
-                diagnostic(
-                    f"warning: no deployment is called {api_name!r} any more; "
-                    "run `unstract docstudio deployment ls` for the current names.",
-                    quiet=getattr(obj, "quiet", False),
-                    verbosity=getattr(obj, "verbosity", 0),
-                )
+            notes += [
+                f"warning: no deployment is called {api_name!r} any more; "
+                "run `unstract docstudio deployment ls` for the current names."
+                for api_name in stale
+            ]
+        for note in notes:
+            diagnostic(
+                note,
+                quiet=getattr(obj, "quiet", False),
+                verbosity=getattr(obj, "verbosity", 0),
+            )
 
     if problems:
         report["problems"] = problems

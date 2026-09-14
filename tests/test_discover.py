@@ -430,6 +430,8 @@ def test_the_probe_skips_the_entry_check_without_a_platform_key(
     assert code == int(ExitCode.SUCCESS)
     assert "stale_deployments" not in json.loads(out)["data"]
     assert "renamed-since" not in err
+    # --probe was explicit, so the skip is explained rather than silent.
+    assert "no platform key" in err
 
 
 def test_doctor_asks_the_server_nothing_without_probe(
@@ -439,10 +441,12 @@ def test_doctor_asks_the_server_nothing_without_probe(
     platform_probe_client(CLIError("must not be called"))
     monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
 
-    code, data = run(capsys, "config", "doctor")
+    code = main(["-o", "json", "config", "doctor"])
+    out, err = capsys.readouterr()
 
     assert code == int(ExitCode.SUCCESS)
-    assert "stale_deployments" not in data
+    assert "stale_deployments" not in json.loads(out)["data"]
+    assert "platform key" not in err  # bare doctor is silent about the skip
 
 
 def test_a_malformed_config_file_is_a_usage_error(capsys, write_config):

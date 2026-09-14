@@ -227,14 +227,17 @@ class TestOutputFormatEndToEnd:
 
     def test_no_isatty_call_decides_a_format(self):
         """A format that depends on a terminal makes a script's output depend on
-        how it was launched."""
+        how it was launched. `auth login` asks the question once, to decide
+        whether it may prompt for keys -- never what it prints in."""
         source = Path(app.__file__).parent
         offenders = [
             path.name
             for path in source.rglob("*.py")
             if "isatty" in path.read_text(encoding="utf-8")
         ]
-        assert offenders == []
+        assert offenders == ["platform_cmd.py"]
+        text = (source / "commands" / "platform_cmd.py").read_text(encoding="utf-8")
+        assert text.count("isatty") == 1 and "sys.stdin.isatty()" in text
 
     def test_an_agent_environment_makes_json_the_default(self, capsys, monkeypatch):
         monkeypatch.setenv("CLAUDECODE", "1")

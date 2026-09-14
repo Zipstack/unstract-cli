@@ -83,12 +83,17 @@ def config_group() -> None:
     """Local configuration management. These commands make no network calls."""
 
 
-@config_group.command("init", help="Create a starter config file with profile stubs.")
+@config_group.command("init")
 @click.option(
     "--force", is_flag=True, default=False, help="Overwrite an existing config file."
 )
 @click.pass_obj
 def config_init(obj: Any, force: bool) -> None:
+    """Create a starter config file with profile stubs.
+
+    The stubs reference environment variables and hold no keys. To store your
+    keys and be done, run `unstract auth login` instead.
+    """
     path = init_path()
     if path.exists() and not force:
         # Never prompt: state the situation and the exact flag that resolves it.
@@ -111,7 +116,8 @@ def config_init(obj: Any, force: bool) -> None:
             "replaced_existing": replaced,
             "note": (
                 "Credentials use env: indirection, so this file holds no secrets. "
-                "Set the referenced environment variables to authenticate. " + KEY_SOURCES
+                "Set the referenced environment variables to authenticate, or run "
+                "`unstract auth login` to store keys in a profile. " + KEY_SOURCES
             ),
         },
         _fmt(obj),

@@ -132,11 +132,12 @@ the exception, not the starting point — plus a `cloud-eu` profile and an
 `onprem-example` shape to copy for a self-hosted install; only the *active*
 profile is ever resolved.
 
-`auth login` writes keys literally; `env:VAR_NAME` indirection is what
-`config init` writes and what the example uses, so the file records where a
-secret lives rather than the secret itself and stays safe to copy or commit.
-Either way the file is created `0600`, and `config doctor` warns when its mode
-is wider than that.
+Either form works for a credential. `auth login` writes keys literally, having
+checked them at the moment it writes. `env:VAR_NAME` indirection — what `config
+init` writes and what the example above uses — keeps the secret out of the file,
+so it stays safe to copy or commit; that is the form for a shared machine or a
+CI checkout. Either way the file is created `0600`, and `config doctor` warns
+when its mode is wider than that.
 
 `unstract config doctor` reports where each setting resolved from — including
 whether an `env:` reference is actually set in the current process — without

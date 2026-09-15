@@ -209,9 +209,10 @@ def config_set(
       unstract config set docstudio api_key dk_... --deployment invoice-parser
 
     \b
-    Prefer `env:VAR_NAME` for credentials: the file then records where the secret
-    lives rather than the secret itself, and a literal value also lands in your
-    shell history.
+    A credential can be stored either way. `env:VAR_NAME` records where the
+    secret lives rather than the secret itself, which is what a shared machine
+    or a CI checkout wants; a literal value is what `auth login` writes, into a
+    file created `0600`. Passed here a literal also lands in your shell history.
     """
     _check_product(product)
     _check_key(product, key)
@@ -237,8 +238,8 @@ def config_set(
     warnings = []
     if _is_secret(key) and not value.startswith("env:"):
         warnings.append(
-            "Value stored literally. Prefer `env:VAR_NAME` so the config file holds "
-            "a reference rather than the secret itself."
+            "Value stored literally, in a file created 0600. Write "
+            "`env:VAR_NAME` instead to hold a reference rather than the secret."
         )
     if cfg.is_project_local and key in UNTRUSTED_PROJECT_KEYS:
         warnings.append(

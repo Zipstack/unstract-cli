@@ -343,8 +343,6 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
 
     org_id = str(identity["organization_id"]) if identity.get("organization_id") else None
     if keys["platform"] and not org_id:
-        # The key was accepted but resolved no organisation, and every other
-        # docstudio command needs one: silence here reads as a complete login.
         diagnostic(
             "warning: the platform API returned no organization_id; the key is "
             "stored without one.",
@@ -463,8 +461,6 @@ def whoami(ctx: Context, save: bool) -> None:
 
     org_id = identity.get("organization_id")
     if not org_id:
-        # Distinguished from --no-save: the caller asked to store and there was
-        # nothing to store, which the next command will fail on.
         diagnostic(
             "warning: the platform API returned no organization_id; nothing was stored.",
             quiet=ctx.quiet,
@@ -476,8 +472,8 @@ def whoami(ctx: Context, save: bool) -> None:
     try:
         written = _store_organisation(ctx, str(org_id))
     except SaveDeclinedError as exc:
-        # The identity is what was asked for and the write was a convenience,
-        # so failing the whole command would throw the answer away with it.
+        # The write is a convenience; failing the command would discard the
+        # identity it was asked for.
         diagnostic(
             f"note: org_id was not stored -- {exc.reason}. {exc.hint}",
             quiet=ctx.quiet,
@@ -486,8 +482,6 @@ def whoami(ctx: Context, save: bool) -> None:
         finish(ctx, identity, meta={"saved": False, "reason": exc.reason})
         return
     except (OSError, ConfigError) as exc:
-        # The read succeeded and only the convenience write failed, which is
-        # the shape SAVE_FAILED exists for.
         raise CLIError(
             f"Resolved the organisation but could not write it: {exc}",
             ExitCode.SAVE_FAILED,
@@ -496,8 +490,7 @@ def whoami(ctx: Context, save: bool) -> None:
             f"`unstract config set docstudio org_id {org_id}`.",
         ) from exc
 
-    # `meta` is not rendered by `-o table` or `-o raw`, so a human would
-    # otherwise see nothing about a file this command just wrote.
+    # `meta` is not rendered by `-o table` or `-o raw`, so the write is said here.
     diagnostic(
         f"wrote org_id={org_id} to profile {written['profile']!r} in {written['path']}",
         quiet=ctx.quiet,

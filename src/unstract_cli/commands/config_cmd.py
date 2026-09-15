@@ -314,16 +314,12 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
             "exit_code": int(exc.exit_code),
         }
     except ConfigError as exc:
-        # Null, not False: a platform key is optional -- a caller holding only a
-        # deployment key is the common case -- so an absent one is a report
-        # rather than a failure, and must not decide this command's exit code.
+        # An absent platform key is optional; it must not decide the exit code.
         out[PLATFORM_KEY] = {"checked": False, "ok": None, "detail": str(exc)}
     else:
         out[PLATFORM_KEY] = {
             "checked": True,
             "ok": True,
-            # The organisation is the reason to hold this key, so the probe
-            # reports which one answered rather than only that one did.
             "organization_id": identity.get("organization_id"),
             "detail": "The key was accepted, and resolved to an organisation.",
         }

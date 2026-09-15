@@ -26,6 +26,7 @@ from unstract_cli.config import (
     set_config_path,
     starter_profiles,
 )
+from unstract_cli.core.output import diagnostic
 
 PROFILE_TOML = """
 default_profile = "p"
@@ -159,6 +160,17 @@ def test_a_deployment_entry_key_beats_the_profile_key(write_config):
     write_config(PROFILE_TOML.replace("env:UNSTRACT_DEPLOYMENT_KEY", "profile-key"))
     assert resolved().deployment_key("receipt-parser") == "entry-key"
     assert resolved().deployment_key("some-api") == "profile-key"
+
+
+def test_a_key_from_a_deployment_entry_is_registered_for_scrubbing(write_config, capsys):
+    """It is resolved on a path of its own, so registering the profile key is
+    not enough: an entry key would reach a diagnostic in full."""
+    write_config(PROFILE_TOML.replace("entry-key", "dk-entry-abcdefghij"))
+
+    assert resolved().deployment_key("receipt-parser") == "dk-entry-abcdefghij"
+    diagnostic("rejected key dk-entry-abcdefghij")
+
+    assert "dk-entry-abcdefghij" not in capsys.readouterr().err
 
 
 def test_a_deployment_entry_may_point_at_the_environment(write_config, monkeypatch):

@@ -1522,6 +1522,23 @@ def test_a_rejected_platform_key_exits_on_the_auth_code(
     assert envelope(out)["ok"] is False
 
 
+def test_whoami_stores_nothing_when_no_organisation_comes_back(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """The key was accepted but resolved nothing to store, which the next
+    command fails on -- so it is said rather than reported as a save."""
+    _platform_env(monkeypatch, tmp_path)
+    platform_client(whoami={"organization_name": "Acme"})
+
+    code, out, err = run(capsys, "auth", "whoami")
+    meta = envelope(out)["meta"]
+
+    assert code == int(ExitCode.SUCCESS)
+    assert (meta["saved"], meta["reason"]) == (False, "no organization_id")
+    assert "no organization_id" in err
+    assert not (tmp_path / "config.toml").exists()
+
+
 def test_whoami_without_a_key_is_a_usage_error(capsys, monkeypatch, tmp_path):
     monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
     code, out, _ = run(capsys, "auth", "whoami")
@@ -2535,6 +2552,52 @@ def test_login_writes_the_profile_named_and_checks_against_its_own_host(
     assert "[profiles.staging.docstudio]" in text
     assert 'base_url = "https://staging.example/"' in text
     assert 'org_id = "org_X"' in text  # the other profile is untouched
+
+
+def test_login_that_cannot_write_exits_on_the_save_code(
+    capsys, login_seams, monkeypatch, tmp_path
+):
+    """The keys were checked and accepted; only the write failed, and a setup
+    script branching on the exit code needs to tell that from a bad key."""
+    login_seams([])
+    monkeypatch.setattr(
+        platform_cmd,
+        "save_config",
+        lambda *a, **k: (_ for _ in ()).throw(OSError(28, "no space left on device")),
+    )
+
+    code, out, _ = run(capsys, "auth", "login", "--platform-key", PK)
+
+    assert code == int(ExitCode.SAVE_FAILED)
+    assert "no space left on device" in envelope(out)["error"]["message"]
+
+
+def test_login_moves_an_existing_profile_to_the_host_it_checked_against(
+    capsys, login_seams, tmp_path
+):
+    """The key was verified against the flag's host; leaving the old one in
+    place would send it to a server it was never checked against."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "p"\n[profiles.p.docstudio]\n'
+        'base_url = "https://old.example/"\norg_id = "org_ABC123"\n',
+        encoding="utf-8",
+    )
+    login_seams([])
+
+    code, _, _ = run(
+        capsys,
+        "auth",
+        "--base-url",
+        "https://new.example/",
+        "login",
+        "--platform-key",
+        PK,
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    text = _written(tmp_path)
+    assert 'base_url = "https://new.example/"' in text
+    assert "old.example" not in text
 
 
 def test_login_does_not_write_a_discovered_project_config(

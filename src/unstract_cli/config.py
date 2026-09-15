@@ -15,9 +15,9 @@ environment variables; that is the expected mode in CI and agent sandboxes.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import stat
+import sys
 import tempfile
 import tomllib
 from copy import deepcopy
@@ -370,12 +370,22 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
         os.replace(tmp, target)
         # And the rename is itself a directory change that has to be persisted;
         # syncing the file does not cover the entry that now points at it.
-        with contextlib.suppress(OSError):  # not every platform syncs a directory
-            dir_fd = os.open(target.parent, os.O_RDONLY)
+        # Windows cannot open a directory to sync it; anywhere else a failure
+        # here is real, and the config has landed, so it is reported rather
+        # than raised or hidden.
+        if sys.platform != "win32":
             try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+                dir_fd = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError as exc:
+                warn(
+                    f"warning: config written to {target}, but its directory "
+                    f"could not be synced ({exc.strerror}); the write may not "
+                    "survive a crash."
+                )
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

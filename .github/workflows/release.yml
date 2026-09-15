@@ -128,11 +128,12 @@ jobs:
       - name: Build package
         run: uv build
 
-      # Everything revertible runs first: a tag, a branch and a release can all
-      # be deleted, and publishing cannot. Failing here leaves nothing on PyPI
-      # to reconcile; failing the other way around leaves a released version
-      # that no tag names.
-      - name: Commit version bump and create release
+      # Publishing is the one step that cannot be undone, so it runs last, and
+      # the release is created as a draft so a publish that fails leaves
+      # nothing public. What a failure before the publish leaves behind, in
+      # cleanup order: the draft release, the tag, the release branch, and the
+      # bump commit on main.
+      - name: Commit version bump and create draft release
         env:
           RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
           GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
@@ -157,19 +158,26 @@ jobs:
             gh release create "v$NEW_VERSION" \
               --title "Release v$NEW_VERSION" \
               --generate-notes \
+              --draft \
               ${{ github.event.inputs.pre_release == 'true' && '--prerelease' || '' }}
           else
             gh release create "v$NEW_VERSION" \
               --title "Release v$NEW_VERSION" \
               --notes "$RELEASE_NOTES" \
               --generate-notes \
+              --draft \
               ${{ github.event.inputs.pre_release == 'true' && '--prerelease' || '' }}
           fi
 
-          echo "Created release v$NEW_VERSION"
+          echo "Created draft release v$NEW_VERSION"
 
       - name: Publish to PyPI
         run: uv publish
+
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: gh release edit "v${{ steps.version.outputs.version }}" --draft=false
 
       - name: Success message
         run: |

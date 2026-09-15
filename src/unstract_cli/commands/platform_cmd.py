@@ -385,6 +385,7 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
             cfg.profiles[name] = {}
 
     block = cfg.profiles.setdefault(name, {})
+    noticed: set[str] = set()
     for credential, _flag, _label, (product, key) in _CREDENTIALS:
         if not keys[credential]:
             continue
@@ -394,7 +395,8 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
         # environment, or the profile the login started from. A profile that
         # records any other host, or none, would send the key somewhere it was
         # never checked.
-        decided_by = resolved.resolution_source(product, "base_url")["source"]
+        host_source = resolved.resolution_source(product, "base_url")
+        decided_by = host_source["source"]
         if (
             name != checked_as
             or "base_url" not in product_block
@@ -402,6 +404,22 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
             or decided_by.startswith("env:")
         ):
             product_block["base_url"] = resolved.get(product, "base_url")
+        elif (
+            host_source["resolved"]
+            and decided_by.startswith("profile -> env:")
+            and product not in noticed
+        ):
+            # The profile holds a reference rather than a host, so the host the
+            # keys were checked against can change without the file changing.
+            noticed.add(product)
+            diagnostic(
+                f"{product} base_url resolves through "
+                f"${decided_by.removeprefix('profile -> env:')}; the keys were "
+                f"checked against {resolved.get(product, 'base_url')}. Run "
+                "`unstract auth login` again if that variable changes.",
+                quiet=ctx.quiet,
+                verbosity=ctx.verbosity,
+            )
     if org_id:
         block.setdefault(DOCSTUDIO, {})["org_id"] = org_id
     if not cfg.default_profile:

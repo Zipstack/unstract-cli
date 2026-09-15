@@ -2730,6 +2730,27 @@ def test_login_moves_an_existing_profile_to_the_host_the_environment_chose(
     assert "stored.example" not in text
 
 
+def test_login_says_when_the_host_it_checked_against_came_from_a_reference(
+    capsys, login_seams, monkeypatch, tmp_path
+):
+    """A profile holding `env:VAR` keeps holding it; the keys are stored beside
+    a host that can change without the file changing, and that is worth saying."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "p"\n[profiles.p.docstudio]\n'
+        'base_url = "env:DOCSTUDIO_HOST"\norg_id = "org_ABC123"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DOCSTUDIO_HOST", "https://referenced.example/")
+    login_seams([])
+
+    code, _, err = run(capsys, "auth", "login", "--platform-key", PK)
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "$DOCSTUDIO_HOST" in err
+    assert "https://referenced.example/" in err
+    assert 'base_url = "env:DOCSTUDIO_HOST"' in _written(tmp_path)
+
+
 def test_login_does_not_write_a_discovered_project_config(
     capsys, login_seams, monkeypatch, tmp_path
 ):

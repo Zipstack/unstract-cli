@@ -149,9 +149,8 @@ _SINK: Callable[[str], None] | None = None
 def warn(message: str) -> None:
     """A note from a module that cannot reach the output layer.
 
-    The config, overlay and credential registries are all imported by it, so
-    they cannot import it back; this is the seam that keeps their notes subject
-    to the same `--quiet` as every other diagnostic.
+    This is the seam that keeps such notes subject to the same `--quiet` as
+    every other diagnostic.
     """
     if _SINK is None:
         _HELD.append(message)

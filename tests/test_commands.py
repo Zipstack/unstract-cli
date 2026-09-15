@@ -2231,6 +2231,20 @@ def test_login_flags_take_values_and_one_of_them_from_stdin(
     assert f'platform_key = "{PK}"' in _written(tmp_path)
 
 
+def test_a_key_quoted_back_by_a_rejected_login_is_scrubbed(capsys, login_seams):
+    """The deployment key is stored without being sent anywhere, so nothing
+    else in the run would ever register it for scrubbing."""
+    login_seams([], whoami=PlatformClientError(f"whoami failed with 400: sent {DK}"))
+
+    code, out, err = run(
+        capsys, "auth", "login", "--platform-key", PK, "--deployment-key", DK
+    )
+
+    assert code != int(ExitCode.SUCCESS)
+    assert DK not in out and DK not in err
+    assert "***REDACTED***" in out
+
+
 def test_login_reads_at_most_one_key_from_stdin(capsys, login_seams, tmp_path):
     login_seams([])
 

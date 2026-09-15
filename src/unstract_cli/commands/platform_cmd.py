@@ -31,7 +31,7 @@ from unstract_cli.config import (
     save_config,
 )
 from unstract_cli.core.clients import llmwhisperer, translated
-from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
 from unstract_cli.core.output import diagnostic
 from unstract_cli.core.platform import organisation, platform_client
 
@@ -307,6 +307,11 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
         raise CLIError(
             "No key was given; at least one is needed.", ExitCode.USAGE, hint=KEY_SOURCES
         )
+    # A key given here is never read back through the config layer that
+    # registers one, and the deployment key is never sent anywhere either, so
+    # without this nothing would scrub it out of a later error payload.
+    for value in keys.values():
+        remember_secret(value)
 
     try:
         cfg = _writable_config()

@@ -33,7 +33,6 @@ LLMWHISPERER = "llmwhisperer"
 DOCSTUDIO = "docstudio"
 PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO)
 
-#: Built-in defaults, lowest precedence.
 DEFAULT_BASE_URLS: dict[str, str] = {
     LLMWHISPERER: "https://llmwhisperer-api.us-central.unstract.com/api/v2",
     DOCSTUDIO: "https://us-central.unstract.com",

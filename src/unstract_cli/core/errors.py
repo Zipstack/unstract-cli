@@ -178,9 +178,7 @@ def remember_secret(value: Any) -> None:
     if not isinstance(value, str) or not value:
         return
     if len(value) < _MIN_SECRET_LEN:
-        # Said rather than dropped silently: registering a credential is what
-        # the caller expects to protect it. Once per value, since a key
-        # resolves several times in one run.
+        # Once per value: a key resolves several times in one run.
         if value not in _REPORTED_SHORT:
             _REPORTED_SHORT.add(value)
             warn(

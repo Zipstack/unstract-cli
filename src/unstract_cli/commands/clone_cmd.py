@@ -270,13 +270,10 @@ def _finish(ctx: Context, report: CloneReport) -> None:
         "unsupported files": skipped["unsupported_files"],
     }
     if named := ", ".join(f"{what} {n}" for what, n in counts.items() if n):
-        # On stderr in every format: a skip does not fail the run, so the exit
-        # code says nothing about what never arrived.
+        # On stderr in every format: a skip does not fail the run.
         diagnostic(f"Skipped: {named}.", quiet=ctx.quiet, verbosity=ctx.verbosity)
 
     payload = {**report.as_dict(), "skipped": skipped}
-    # A person reads the report itself; every other format gets the envelope,
-    # which carries the same content as data.
     rendered = ctx.output is OutputFormat.TABLE
     if rendered:
         emit_text(report.render(), secrets=ctx.secrets())

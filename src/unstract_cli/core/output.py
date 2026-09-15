@@ -143,7 +143,6 @@ def _rows_and_columns(
     reads poorly.
     """
     if isinstance(data, dict):
-        # Unwrap a single list-valued envelope, e.g. {"results": [...]}.
         for key in ("results", "message", "members", "data", "highlights"):
             inner = data.get(key)
             if isinstance(inner, list) and inner:

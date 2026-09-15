@@ -155,9 +155,12 @@ def run(
             if exc.exit_code is ExitCode.TIMEOUT and (
                 found := handle.get("execution_id")
             ):
+                # The status read is one-shot, so a resume that drops --save
+                # spends it with nothing on disk.
+                saving = f" --save {save}" if save else ""
                 exc.hint = (
                     f"Resume with `unstract docstudio deployment status {target} "
-                    f"{found}` rather than resubmitting the document."
+                    f"{found}{saving}` rather than resubmitting the document."
                 )
             raise
     handle = _handle_meta(started)

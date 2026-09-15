@@ -2085,6 +2085,43 @@ def test_a_run_that_times_out_names_the_id_its_status_command_takes(
     assert "deployment status my-api e-1" in error["hint"]
 
 
+def test_a_timed_out_run_asked_to_save_says_to_save_on_resume(
+    capsys, deployment_client, tmp_path, monkeypatch
+):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    target = tmp_path / "out.json"
+    deployment_client(
+        structure_file=ACK,
+        check_execution_status={
+            "status_code": 200,
+            "execution_status": "EXECUTING",
+            "extraction_result": "",
+        },
+    )
+    monkeypatch.setattr("unstract_cli.core.poll.time.sleep", lambda _seconds: None)
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0.1",
+        "--timeout",
+        "0",
+        "--save",
+        str(target),
+    )
+
+    assert code == int(ExitCode.TIMEOUT)
+    assert (
+        f"deployment status my-api e-1 --save {target}`" in envelope(out)["error"]["hint"]
+    )
+
+
 def test_a_zero_poll_interval_is_refused(capsys, whisper_client, tmp_path):
     """Zero seconds between polls is a busy loop against a metered service."""
     doc = tmp_path / "doc.pdf"

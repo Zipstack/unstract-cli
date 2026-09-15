@@ -218,8 +218,12 @@ _PLATFORM_STATUS = re.compile(r"failed with (\d{3})\b")
 
 
 @contextmanager
-def translated(endpoint: str | None = None) -> Iterator[None]:
-    """Turn a client failure into a CLIError with an exit code and a hint."""
+def translated(endpoint: str | None = None, *, one_shot: bool = False) -> Iterator[None]:
+    """Turn a client failure into a CLIError with an exit code and a hint.
+
+    ``one_shot`` marks a read the service serves exactly once, which changes
+    what a 406 from it means.
+    """
     try:
         yield
     except LLMWhispererClientException as exc:
@@ -229,7 +233,11 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
         )
         if status:
             raise error_from_status(
-                int(status), message, details=details, endpoint=endpoint
+                int(status),
+                message,
+                details=details,
+                endpoint=endpoint,
+                one_shot=one_shot,
             ) from exc
         raise CLIError(message, details=details, endpoint=endpoint) from exc
     except PlatformClientError as exc:
@@ -247,7 +255,7 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
         # mapping, which is what the `_PLATFORM_STATUS` test pins.
         if match := _PLATFORM_STATUS.search(str(exc)):
             raise error_from_status(
-                int(match.group(1)), str(exc), endpoint=endpoint
+                int(match.group(1)), str(exc), endpoint=endpoint, one_shot=one_shot
             ) from exc
         # Unparseable: the failure is real and the status is unknown, so report
         # it as a server-side failure rather than blaming the caller's usage.
@@ -269,6 +277,7 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
                 message,
                 details=exc.body,
                 endpoint=endpoint,
+                one_shot=one_shot,
             ) from exc
         raise CLIError(message, details=exc.body, endpoint=endpoint) from exc
     except Timeout as exc:
@@ -344,7 +353,7 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
 
 
 def translating(
-    call: Callable[..., Any], endpoint: str | None = None
+    call: Callable[..., Any], endpoint: str | None = None, *, one_shot: bool = False
 ) -> Callable[..., Any]:
     """Wrap one call so its failures are CLIErrors where they happen.
 
@@ -354,13 +363,15 @@ def translating(
     """
 
     def wrapped(*args: Any, **kwargs: Any) -> Any:
-        with translated(endpoint=endpoint):
+        with translated(endpoint=endpoint, one_shot=one_shot):
             return call(*args, **kwargs)
 
     return wrapped
 
 
-def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> None:
+def raise_for_result(
+    result: dict[str, Any], endpoint: str | None = None, *, one_shot: bool = False
+) -> None:
     """Fail on a deployment response that reports an error status.
 
     The deployment client returns its status code instead of raising, so a
@@ -394,6 +405,7 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
             str(reported or f"Request failed with status {status}"),
             details=result,
             endpoint=endpoint,
+            one_shot=one_shot,
         )
     if reported:
         # HTTP success carrying a failure in the body. Not retryable: a re-run

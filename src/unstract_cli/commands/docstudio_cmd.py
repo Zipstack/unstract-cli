@@ -232,10 +232,10 @@ def _status_poller(
         # A retryable status is left to the client's own retry policy, which has
         # already run; the client reports those as still pending.
         if not result.get("pending"):
-            raise_for_result(result, endpoint=client.api_url)
+            raise_for_result(result, endpoint=client.api_url, one_shot=True)
         return result
 
-    return translating(poll, client.api_url)
+    return translating(poll, client.api_url, one_shot=True)
 
 
 @raw_fields(*STATUS_RAW)
@@ -265,10 +265,12 @@ def status(
     # Quoted rather than trusted: the id comes from the caller and would
     # otherwise be able to carry query syntax of its own.
     endpoint = f"{client.api_url}?execution_id={quote(execution_id, safe='')}"
-    with deployment_errors(target), translated(endpoint=client.api_url):
+    # The status read serves a result exactly once, which is what a 406 from
+    # it means.
+    with deployment_errors(target), translated(endpoint=client.api_url, one_shot=True):
         result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
-            raise_for_result(result, endpoint=client.api_url)
+            raise_for_result(result, endpoint=client.api_url, one_shot=True)
     # A finished-and-failed execution is reported inside an HTTP 200, so the
     # status code alone would call this a success.
     if classify(result, RUN_POLL) is PollState.FAILURE:

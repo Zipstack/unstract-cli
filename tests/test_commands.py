@@ -744,6 +744,19 @@ def test_an_unknown_api_name_is_pointed_at_the_listing(capsys, deployment_client
     assert "deployment ls" in envelope(out)["error"]["hint"]
 
 
+def test_a_status_read_of_a_consumed_result_has_its_own_exit_code(
+    capsys, deployment_client
+):
+    """A deployment hands its result over once, so a 406 from the status read
+    means it is gone rather than that the request was malformed."""
+    deployment_client(
+        check_execution_status={"status_code": 406, "error": "already retrieved"}
+    )
+    code, out, _ = run(capsys, "docstudio", "deployment", "status", "my-api", "e-1")
+    assert code == int(ExitCode.ALREADY_CONSUMED)
+    assert "--save" in envelope(out)["error"]["hint"]
+
+
 def test_highlights_on_an_extraction_without_line_numbers_says_where_to_fix_it(
     capsys, whisper_client
 ):

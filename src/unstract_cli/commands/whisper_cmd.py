@@ -123,6 +123,7 @@ def extract(
             retrieve=translating(
                 lambda handle: _extraction(client.whisper_retrieve(handle)),
                 "whisper-retrieve",
+                one_shot=True,
             ),
             save=save,
             interval=interval,
@@ -216,7 +217,7 @@ def retrieve(ctx: Context, whisper_hash: str, save: str | None) -> None:
     client = llmwhisperer(ctx.config)
     if save:
         preflight(save)
-    with translated(endpoint="whisper-retrieve"):
+    with translated(endpoint="whisper-retrieve", one_shot=True):
         payload = client.whisper_retrieve(whisper_hash)
     result = _extraction(payload)
     if save:

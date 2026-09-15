@@ -39,12 +39,6 @@ _STATUS_MAP: dict[int, ExitCode] = {
     401: ExitCode.AUTH,
     403: ExitCode.AUTH,
     404: ExitCode.NOT_FOUND,
-    # The deployment status endpoint is the one that answers 406 meaningfully;
-    # the whisper equivalent is a 400 whose body says so, which is prose we do
-    # not translate on. A 406 from anywhere else -- DRF returns one on content
-    # negotiation failure -- lands on this code too, and reads as a one-shot
-    # read that was already consumed.
-    406: ExitCode.ALREADY_CONSUMED,
     408: ExitCode.TIMEOUT,
     409: ExitCode.VALIDATION,
     422: ExitCode.VALIDATION,
@@ -76,8 +70,16 @@ def error_codes() -> dict[ExitCode, str]:
     return dict(_ERROR_CODES)
 
 
-def exit_code_for_status(status: int) -> ExitCode:
-    """Map an HTTP status onto its exit code."""
+def exit_code_for_status(status: int, *, one_shot: bool = False) -> ExitCode:
+    """Map an HTTP status onto its exit code.
+
+    ``one_shot`` marks a read the service serves exactly once, which is the
+    only place a 406 means the result is gone. Everywhere else it is content
+    negotiation -- a proxy or a misaimed host -- and reporting that as a
+    consumed result sends the reader after a command they never ran.
+    """
+    if status == 406 and one_shot:
+        return ExitCode.ALREADY_CONSUMED
     if (code := _STATUS_MAP.get(status)) is not None:
         return code
     if 500 <= status < 600:
@@ -340,16 +342,21 @@ class CLIError(Exception):
 
 
 def error_from_status(
-    status: int, message: str, *, details: Any = None, endpoint: str | None = None
+    status: int,
+    message: str,
+    *,
+    details: Any = None,
+    endpoint: str | None = None,
+    one_shot: bool = False,
 ) -> CLIError:
     """Build a CLIError from an HTTP status, with its exit code, hint and retryability."""
     return CLIError(
         message,
-        exit_code_for_status(status),
+        exit_code_for_status(status, one_shot=one_shot),
         http_status=status,
         details=details,
         endpoint=endpoint,
-        hint=hint_for(status),
+        hint=hint_for(status, one_shot=one_shot),
         retryable=is_retryable(status),
     )
 
@@ -372,8 +379,17 @@ def undeclared_status_error(
     )
 
 
-def hint_for(status: int) -> str | None:
+def hint_for(status: int, *, one_shot: bool = False) -> str | None:
     """A short, actionable next step for a common failure."""
+    if status == 406:
+        return (
+            "This execution result was already retrieved. A deployment serves "
+            "its result exactly once; re-running the status call cannot "
+            "recover it. Pass --save to `deployment run` to keep the next one."
+            if one_shot
+            else "The service would not answer in the format asked for. Check "
+            "that `base_url` names the API rather than a proxy or web app."
+        )
     match status:
         case 400:
             return (
@@ -397,12 +413,6 @@ def hint_for(status: int) -> str | None:
             return (
                 "Verify the resource id, and that the organisation matches the "
                 "resource's own. For deployments, confirm the API name."
-            )
-        case 406:
-            return (
-                "This execution result was already retrieved. A deployment serves "
-                "its result exactly once; re-running the status call cannot "
-                "recover it. Pass --save to `deployment run` to keep the next one."
             )
         case 402:
             return (

@@ -333,8 +333,7 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     )
     out[DOCSTUDIO] = {
         "checked": False,
-        # Null, not True: nothing was called, and `true` beside `checked:
-        # false` reads as a live check that passed.
+        # Null, not True: beside `checked: false` a true reads as a passed check.
         "ok": None,
         "resolved": resolves,
         "detail": (
@@ -404,7 +403,6 @@ def config_doctor(obj: Any, probe: bool) -> None:
             if detail := entry[key].get("detail"):
                 problems.append(f"{product}.{key}: {detail}")
         for stray in resolved.unknown_settings(product):
-            # Nothing reads it, so it is a setting the user believes is in force.
             problems.append(f"{product}.{stray}: not a setting {product} has.")
         products[product] = entry
 
@@ -419,8 +417,8 @@ def config_doctor(obj: Any, probe: bool) -> None:
         if detail := resolved.withheld_detail("deployments", api_name, "api_key"):
             problems.append(f"deployment {api_name}: {detail}")
         try:
-            # Being listed says nothing about whether the key behind it
-            # arrives, so resolve it the way a run would.
+            # Resolved the way a run would: being listed says nothing about
+            # whether the key behind it arrives.
             resolved.deployment_key(api_name)
         except ConfigError as exc:
             problems.append(f"deployment {api_name}: {exc}")
@@ -437,8 +435,7 @@ def config_doctor(obj: Any, probe: bool) -> None:
         for entry in products.values()
         if "api_key" in entry
     ):
-        # The next question after "no key" is where one comes from. The field
-        # name avoids the word the payload scrubber redacts on.
+        # The field name avoids the word the payload scrubber redacts on.
         report["getting_started"] = KEY_SOURCES
     if probe:
         report["probe"] = _probe(resolved)

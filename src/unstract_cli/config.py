@@ -37,7 +37,6 @@ PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO)
 #: resolved, withheld from a discovered project file, never echoed.
 SECRET_SETTINGS = frozenset({"api_key", "platform_key"})
 
-#: Built-in defaults, lowest precedence.
 DEFAULT_BASE_URLS: dict[str, str] = {
     LLMWHISPERER: "https://llmwhisperer-api.us-central.unstract.com/api/v2",
     DOCSTUDIO: "https://us-central.unstract.com",

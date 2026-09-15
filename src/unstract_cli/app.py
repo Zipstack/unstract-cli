@@ -185,8 +185,7 @@ def cli(
         lambda message: diagnostic(message, quiet=obj.quiet, verbosity=obj.verbosity)
     )
     if discover_tier:
-        # Discovery has to answer before any configuration exists, and only a
-        # machine reads a machine-readable description.
+        # Discovery has to answer before any configuration exists.
         emit_result(discover(cli, discover_tier), OutputFormat.JSON)
         ctx.exit(int(ExitCode.SUCCESS))
     if ctx.invoked_subcommand is None:

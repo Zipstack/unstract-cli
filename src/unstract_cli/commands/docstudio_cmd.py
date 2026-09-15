@@ -66,8 +66,8 @@ _SHARED_WITH_STATUS = ("include_metadata", "include_metrics", "include_extracted
     PRODUCT,
     "execute",
     client_method=APIDeploymentsClient.structure_file,
-    # `files` is the FILES argument; `timeout` selects the server's own
-    # execution mode and would fight the CLI's polling for the same job.
+    # `timeout` selects the server's own execution mode and would fight the
+    # CLI's polling for the same job.
     exclude=("files", "timeout"),
 )
 @pass_context
@@ -113,8 +113,6 @@ def run(
         preflight(save)
     key_source = ctx.config.deployment_key_source(target)
     with deployment_errors(target, key_source), translated(endpoint=client.api_url):
-        # Queued execution: the request returns a handle instead of holding the
-        # connection open for the length of the job.
         started = client.structure_file(list(files), timeout=0, **sent)
         raise_for_result(started, endpoint=client.api_url)
 

@@ -213,6 +213,26 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+def _new_profile_name(cfg: ConfigFile, org_id: str, org_name: Any) -> str:
+    """Ask for the profile to hold this organisation, until the answer is safe.
+
+    A typed name that already belongs to another organisation would let the
+    guard's own remedy do the overwrite it exists to prevent, so such a name
+    needs a second confirmation of its own.
+    """
+    suggested = _slug(str(org_name or "")) or org_id
+    while True:
+        name = _prompt("Profile name", default=suggested)
+        other = cfg.profiles.get(name, {}).get(DOCSTUDIO, {}).get("org_id")
+        if not other or other == org_id:
+            return name
+        if _confirm(
+            f"Profile {name!r} belongs to organisation {other}. Overwrite it?",
+            default=False,
+        ):
+            return name
+
+
 @auth_group.command("login")
 @click.option("--profile", "-p", "profile", default=None, help="Profile to write.")
 @click.option(
@@ -340,22 +360,22 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
             f"to {found}. Create a new profile for it instead of overwriting?",
             default=True,
         ):
-            name = _prompt(
-                "Profile name",
-                default=_slug(str(identity.get("organization_name") or "")) or org_id,
-            )
+            name = _new_profile_name(cfg, org_id, identity.get("organization_name"))
             result["profile"] = name
 
     block = cfg.profiles.setdefault(name, {})
     for credential, _flag, _label, (product, key) in _CREDENTIALS:
-        if keys[credential]:
-            block.setdefault(product, {})[key] = keys[credential]
+        if not keys[credential]:
+            continue
+        product_block = block.setdefault(product, {})
+        product_block[key] = keys[credential]
+        # The key was checked against the host the run resolved -- a flag, or
+        # the profile the login started from. A profile that does not record
+        # that host would send the key to the built-in default instead.
+        if "base_url" not in product_block or ctx.overrides.get(f"{product}.base_url"):
+            product_block["base_url"] = resolved.get(product, "base_url")
     if org_id:
         block.setdefault(DOCSTUDIO, {})["org_id"] = org_id
-    if base_url := ctx.overrides.get(f"{DOCSTUDIO}.base_url"):
-        # Given explicitly for this login, so the profile records the host the
-        # keys were checked against rather than the built-in default.
-        block.setdefault(DOCSTUDIO, {})["base_url"] = base_url
     if not cfg.default_profile:
         cfg.default_profile = name
     try:

@@ -348,28 +348,22 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     return out
 
 
-def _stale_deployments(resolved: ResolvedConfig, names: list[str]) -> list[str] | None:
+def _stale_deployments(resolved: ResolvedConfig, names: list[str]) -> list[str]:
     """Which deployment entries name a deployment the server no longer has.
 
     An API name is editable server-side, so an entry written under one can be
-    orphaned without anything local changing. Answerable only with a platform
-    key and an organisation; without either it is skipped, not failed -- most
-    callers hold neither and the entries are still theirs to keep.
+    orphaned without anything local changing. Raises when the listing cannot
+    be asked: a check that was requested and did not run must not read as a
+    check that passed.
     """
-    if not names:
-        return None
-    try:
-        org_id = organisation(resolved)
-        client = platform_client(resolved, org_id)
-        with translated(endpoint="api/deployment/"):
-            stale = [
-                name
-                for name in names
-                if not client.list_deployments(org_id, api_name=name).get("results")
-            ]
-    except (CLIError, ConfigError):
-        return None
-    return stale
+    org_id = organisation(resolved)
+    client = platform_client(resolved, org_id)
+    with translated(endpoint="api/deployment/"):
+        return [
+            name
+            for name in names
+            if not client.list_deployments(org_id, api_name=name).get("results")
+        ]
 
 
 @config_group.command("doctor", help="Diagnose how each setting resolves.")
@@ -461,15 +455,21 @@ def config_doctor(obj: Any, probe: bool) -> None:
                 f"organisation -- no platform key resolves for profile "
                 f"{resolved.active_profile!r}."
             )
-        elif (stale := _stale_deployments(resolved, deployments)) is not None:
-            # A warning, not a problem: the entry is harmless until it is run,
-            # and the server is the only authority on what it is called now.
-            report["stale_deployments"] = stale
-            notes += [
-                f"warning: no deployment is called {api_name!r} any more; "
-                "run `unstract docstudio deployment ls` for the current names."
-                for api_name in stale
-            ]
+        elif deployments:
+            try:
+                stale = _stale_deployments(resolved, deployments)
+            except (CLIError, ConfigError) as exc:
+                problems.append(f"probe deployments: {exc}")
+            else:
+                # A warning, not a problem: the entry is harmless until it is
+                # run, and the server is the only authority on what it is
+                # called now.
+                report["stale_deployments"] = stale
+                notes += [
+                    f"warning: no deployment is called {api_name!r} any more; "
+                    "run `unstract docstudio deployment ls` for the current names."
+                    for api_name in stale
+                ]
         for note in notes:
             diagnostic(
                 note,

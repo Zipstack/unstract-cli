@@ -2041,8 +2041,9 @@ def login_seams(monkeypatch, platform_client, tmp_path):
     """Both client factories faked, prompts scripted, and a config file of our own.
 
     Returns a function that scripts the terminal: `answers` are what each prompt
-    returns in order, `confirm` what the one yes/no question returns, and
-    `tty` whether stdin counts as a terminal at all.
+    returns in order, `confirm` what the yes/no questions return (one value for
+    all of them, or a list consumed in order), and `tty` whether stdin counts
+    as a terminal at all.
     """
     monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.delenv("UNSTRACT_PLATFORM_KEY", raising=False)
@@ -2056,7 +2057,14 @@ def login_seams(monkeypatch, platform_client, tmp_path):
         state["answers"], state["prompts"] = list(answers), []
         monkeypatch.setattr(platform_cmd, "_interactive", lambda: tty)
         monkeypatch.setattr(platform_cmd, "_prompt", prompt)
-        monkeypatch.setattr(platform_cmd, "_confirm", lambda text, **kw: confirm)
+        confirms = list(confirm) if isinstance(confirm, list) else None
+
+        def confirm_answer(text, **kwargs):
+            state["confirms"].append(text)
+            return confirms.pop(0) if confirms is not None else confirm
+
+        state["confirms"] = []
+        monkeypatch.setattr(platform_cmd, "_confirm", confirm_answer)
         client = platform_client(whoami=whoami or IDENTITY)
         build_platform = platform_cmd.platform_client
 
@@ -2312,6 +2320,60 @@ def test_login_offers_a_new_profile_named_after_the_organisation(
     assert "[profiles.beta-corp.docstudio]" in text and 'org_id = "org_NEW"' in text
     assert 'org_id = "org_OLD"' in text
     assert seams["prompts"][-1] == "Profile name"
+
+
+def test_a_new_profile_offered_by_the_guard_keeps_the_host_the_key_was_checked_on(
+    capsys, login_seams, tmp_path
+):
+    """The key was verified against the profile the login started from; a new
+    profile that does not record that host would send it to the built-in
+    default next time."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "onprem"\n[profiles.onprem.docstudio]\n'
+        'base_url = "https://onprem.example/"\norg_id = "org_OLD"\n',
+        encoding="utf-8",
+    )
+    seams = login_seams(
+        [PK, "", "", "beta"],
+        confirm=True,
+        whoami={**IDENTITY, "organization_id": "org_NEW"},
+    )
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["platform"].built_with["base_url"] == "https://onprem.example/"
+    text = _written(tmp_path)
+    assert text.count('base_url = "https://onprem.example/"') == 2
+    assert "[profiles.beta.docstudio]" in text
+
+
+def test_a_new_profile_name_that_belongs_to_a_third_organisation_is_confirmed(
+    capsys, login_seams, tmp_path
+):
+    """The guard's own remedy must not be the overwrite it exists to prevent:
+    a typed name that is another organisation's profile is asked about again,
+    and declining re-prompts."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "cloud-us"\n'
+        '[profiles.cloud-us.docstudio]\norg_id = "org_OLD"\n'
+        '[profiles.partner.docstudio]\norg_id = "org_PARTNER"\n',
+        encoding="utf-8",
+    )
+    seams = login_seams(
+        [PK, "", "", "partner", "fresh"],
+        confirm=[True, False],
+        whoami={**IDENTITY, "organization_id": "org_NEW"},
+    )
+
+    code, out, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["profile"] == "fresh"
+    assert "partner" in seams["confirms"][1] and "org_PARTNER" in seams["confirms"][1]
+    text = _written(tmp_path)
+    assert 'org_id = "org_PARTNER"' in text and 'org_id = "org_OLD"' in text
+    assert "[profiles.fresh.docstudio]" in text and 'org_id = "org_NEW"' in text
 
 
 def test_login_overwrites_when_a_new_profile_is_declined(capsys, login_seams, tmp_path):

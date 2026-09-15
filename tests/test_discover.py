@@ -201,6 +201,8 @@ def platform_probe_client(monkeypatch):
                 return reply or {}
 
             def list_deployments(self, org_id, api_name=None):
+                if isinstance(live, Exception):
+                    raise live
                 results = [{"api_name": n} for n in live if n == api_name]
                 return {"count": len(results), "results": results}
 
@@ -413,6 +415,27 @@ def test_the_probe_reports_entries_the_organisation_no_longer_has(
     assert code == int(ExitCode.SUCCESS)
     assert json.loads(out)["data"]["stale_deployments"] == ["renamed-since"]
     assert "renamed-since" in err and "deployment ls" in err
+
+
+def test_a_listing_that_fails_is_a_failed_check_not_a_clean_one(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """The check was asked for and did not run; exiting 0 would tell a setup
+    script the entries were verified."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(
+        {"organization_id": "org_ABC"},
+        live=CLIError("listing timed out", ExitCode.TIMEOUT),
+    )
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    report = json.loads(capsys.readouterr().out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert "stale_deployments" not in report
+    assert any("listing timed out" in p for p in report["problems"])
 
 
 def test_the_probe_skips_the_entry_check_without_a_platform_key(

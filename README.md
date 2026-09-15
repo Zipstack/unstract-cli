@@ -79,7 +79,8 @@ Three keys, each for one job:
   console.
 - **Deployment key** — runs deployments (`deployment run`, `deployment status`).
   Shown on the API deployment's own page in the Unstract UI; one minted under
-  **Settings → API Key Manager** covers every deployment in the organisation.
+  **Settings → Platform → Global API Deployment Keys** covers every deployment
+  in the organisation.
 - **Platform key** — identifies the organisation and lists what is in it
   (`auth whoami`, `deployment ls`). Minted by an organisation admin under
   **Settings → Platform API Keys**.

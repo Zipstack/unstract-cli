@@ -66,9 +66,10 @@ KEY_SOURCES = (
     "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
     "shown on the API deployment's own page in the Unstract UI, and a key "
     "covering every deployment in the organisation is minted under "
-    "Settings -> API Key Manager. A platform key, which identifies the "
-    "organisation and lists what is in it but cannot run a deployment, is "
-    "minted by an organisation admin under Settings -> Platform API Keys."
+    "Settings -> Platform -> Global API Deployment Keys. A platform key, "
+    "which identifies the organisation and lists what is in it but cannot run "
+    "a deployment, is minted by an organisation admin under "
+    "Settings -> Platform API Keys."
 )
 
 

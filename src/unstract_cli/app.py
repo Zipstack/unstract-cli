@@ -251,9 +251,7 @@ def whisper_group(ctx: Context, **overrides: str | None) -> None:
     type=click.FloatRange(min=0),
     default=DEFAULT_TRANSPORT_TIMEOUT,
     show_default=True,
-    help="Seconds before a stalled connection is given up on. 0 removes the "
-    "bound for `deployment run` and `status`, and leaves `deployment ls` on the "
-    "platform client's own 60s default.",
+    help="Seconds before a stalled connection is given up on. 0 waits forever.",
 )
 @pass_context
 def docstudio_group(
@@ -273,10 +271,10 @@ def deployment_group() -> None:
 @_connection_options("platform_key")
 @click.option(
     "--transport-timeout",
-    type=float,
-    default=None,
-    help="Seconds before a stalled connection is given up on. Unset means the "
-    "client's own default, which is 60.",
+    type=click.FloatRange(min=0),
+    default=DEFAULT_TRANSPORT_TIMEOUT,
+    show_default=True,
+    help="Seconds before a stalled connection is given up on. 0 waits forever.",
 )
 @pass_context
 def auth_group(
@@ -288,7 +286,9 @@ def auth_group(
     which organisation it belongs to. A deployment key does not: it authenticates
     against the deployment it was minted for and never reaches this endpoint.
     """
-    ctx.transport_timeout = transport_timeout
+    # The same spelling as every other group: the clients are given no bound
+    # of their own, so an unset flag would wait on a black-holed host forever.
+    ctx.transport_timeout = transport_timeout or None
     ctx.override(DOCSTUDIO, overrides)
 
 

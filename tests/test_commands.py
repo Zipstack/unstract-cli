@@ -1886,10 +1886,12 @@ def test_whoami_does_not_rewrite_a_discovered_project_config(
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (["auth", "whoami"], None),
+        (["auth", "whoami"], 120.0),
         (["auth", "--transport-timeout", "12.5", "whoami"], 12.5),
+        (["auth", "--transport-timeout", "0", "whoami"], None),
         (["docstudio", "deployment", "ls"], 120.0),
         (["docstudio", "--transport-timeout", "12.5", "deployment", "ls"], 12.5),
+        (["docstudio", "--transport-timeout", "0", "deployment", "ls"], None),
     ],
 )
 def test_the_transport_timeout_flag_reaches_the_platform_client(
@@ -1912,14 +1914,12 @@ def test_the_transport_timeout_flag_reaches_the_platform_client(
     assert client.built_with["timeout"] == expected
 
 
-@pytest.mark.parametrize("value", ["0", "0.0", "-1"])
-def test_a_non_positive_transport_timeout_is_a_usage_error_not_a_traceback(
+@pytest.mark.parametrize("value", ["-1", "-0.5"])
+def test_a_negative_transport_timeout_is_a_usage_error_not_a_traceback(
     capsys, monkeypatch, tmp_path, value
 ):
-    """urllib3 raises a bare `ValueError` for a non-positive timeout, which
-    matches no arm in `__main__` -- a traceback and no envelope. The flag is
-    `type=float`, so anything in (0, 1) truncated to that same 0.
-    """
+    """A bound below zero is refused at the flag, where it is still a usage
+    error about something the caller typed."""
     _config_with(tmp_path, monkeypatch, "")
 
     code, out, _ = run(capsys, "auth", "--transport-timeout", value, "whoami")

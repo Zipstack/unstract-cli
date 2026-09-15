@@ -32,7 +32,7 @@ def _resolved(profiles, **overrides):
 
 def test_the_factory_threads_a_timeout() -> None:
     """`--transport-timeout` was accepted on `deployment ls` and ignored: the
-    parent's own default is 60s, spent per page.
+    client applies no bound of its own, so a stalled connection never returns.
     """
     config = _resolved({"p": {DOCSTUDIO: KEY}})
 

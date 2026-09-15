@@ -40,8 +40,8 @@ from unstract_cli.core.errors import (
 #: Major version of the stdout envelope, published in every ``meta``.
 CONTRACT_VERSION = 1
 
-#: Environment markers the coding agents set for the tools they drive. Patterns,
-#: so a family of variables can be named once.
+#: Environment markers coding agents set for the tools they drive. Patterns, so
+#: a family of variables can be named once.
 AGENT_ENV = ("CLAUDECODE", "CURSOR_AGENT", "CODEX_*", "AI_AGENT")
 
 
@@ -57,8 +57,8 @@ class AgentMode(StrEnum):
     NO = "no"
 
 
-#: Values a tool uses to say "set, but not on". Treating these as present would
-#: read `CLAUDECODE=0` as the opposite of what it says.
+#: Values that mean "set, but not on": treating them as present would read a
+#: marker set to `0` as the opposite of what it says.
 _DISABLED_VALUES = {"", "0", "false", "no", "off"}
 
 
@@ -208,13 +208,13 @@ def render_table(
                     natural[i], max((len(p) for p in cell.split("\n")), default=0)
                 )
 
-    # Shrink only the widest columns, and only as far as the terminal requires,
-    # so a narrow column is never squeezed on behalf of a wide neighbour.
+    # Only the widest columns shrink, and only as far as the terminal
+    # requires, so a narrow column is never squeezed for a wide neighbour.
     widths = list(natural)
     budget = total_width - gutter * (len(headers) - 1)
     if sum(widths) > budget:
-        # Cap the widest columns at a common ceiling -- the same result as
-        # shaving the widest one character at a time, without the O(width) walk.
+        # A common ceiling gives the same result as shaving the widest column
+        # one character at a time, without the O(width) walk.
         floor, ceiling = _MIN_COLUMN, max(widths)
         while floor < ceiling:
             cap = (floor + ceiling + 1) // 2
@@ -257,10 +257,8 @@ def _payload(env: Envelope) -> Any:
     return env["data"] if env["error"] is None else env["error"]
 
 
-#: Fields the deployment client spells as `""` while the job is still running.
-#: Only for these does empty mean "not yet": for any other field an empty
-#: string is the answer, and printing the next field instead would hand a
-#: caller a job handle where the text belongs.
+#: Fields a client spells as `""` while the job is still running. Only for
+#: these does empty mean "not yet"; anywhere else an empty string is the answer.
 EMPTY_MEANS_PENDING = frozenset({"extraction_result"})
 
 

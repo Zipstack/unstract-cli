@@ -90,9 +90,8 @@ class Context:
                 if value := self.config.get(product, "api_key"):
                     out.append(str(value))
             except (ConfigError, CLIError):
-                # A credential that cannot be resolved is one that cannot be
-                # printed either. Raising here would replace a finished report
-                # with a config error, after the work it describes is done.
+                # Unresolvable means unprintable too, and raising would
+                # replace a finished report with a config error.
                 continue
         return out
 
@@ -100,8 +99,8 @@ class Context:
 pass_context = click.make_pass_decorator(Context, ensure=True)
 
 
-# `invoke_without_command` so `--discover` is answerable on its own: it is
-# how a caller learns which commands exist, so it cannot require one.
+# `invoke_without_command` so `--discover` answers on its own: it is how a
+# caller learns which commands exist.
 @click.group(
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
@@ -168,29 +167,27 @@ def cli(
     running anything.
     """
     set_config_path(config_file)
-    # Filled in rather than replaced: the entry point holds this object so that
-    # a failure anywhere below renders in the format resolved here.
+    # Filled in rather than replaced: the entry point holds this object, so a
+    # failure anywhere below renders in the format resolved here.
     obj = ctx.ensure_object(Context)
     obj.output = resolve_format(output, agent)
     obj.quiet = quiet
     obj.verbosity = verbose
     obj.profile = profile
     # Modules the output layer imports cannot import it back, so their notes
-    # reach it through here rather than going straight to stderr unfiltered.
+    # reach it through this sink rather than stderr unfiltered.
     set_warning_sink(
         lambda message: diagnostic(message, quiet=obj.quiet, verbosity=obj.verbosity)
     )
     if discover_tier:
-        # Discovery is how a caller learns what to run, so it has to answer
-        # before any configuration exists -- and always as JSON, because the
-        # only consumer of a machine-readable description is a machine.
+        # Discovery has to answer before any configuration exists, and only a
+        # machine reads a machine-readable description.
         emit_result(discover(cli, discover_tier), OutputFormat.JSON)
         ctx.exit(int(ExitCode.SUCCESS))
     if ctx.invoked_subcommand is None:
         if obj.output is not OutputFormat.TABLE:
-            # stdout carries one envelope and nothing else, and a run naming no
-            # command ran nothing -- printing help there and exiting 0 tells a
-            # parser the work succeeded and hands it a page of prose.
+            # stdout carries one envelope and nothing else: help printed there
+            # with exit 0 tells a parser that work it never did succeeded.
             raise CLIError(
                 "No command given.",
                 ExitCode.USAGE,
@@ -256,8 +253,8 @@ def deployment_group() -> None:
 
 cli.add_command(config_group)
 
-# Imported for their side effect of registering commands, and imported last
-# because those modules hang their commands off the groups declared just above.
+# Imported for the side effect of registering commands, and last because they
+# hang those commands off the groups declared above.
 from unstract_cli.commands import clone_cmd, docstudio_cmd, whisper_cmd  # noqa: E402,F401
 
 

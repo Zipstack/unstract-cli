@@ -38,8 +38,8 @@ from unstract_cli.core.output import (
     resolve_format,
 )
 
-#: Keys whose value is never echoed back, even on explicit request: this output
-#: is as likely to land in a log or a transcript as on a screen.
+#: Keys never echoed back: this output lands in logs and transcripts as often
+#: as on a screen.
 _SECRET_KEY_HINTS = ("key", "token", "secret")
 
 
@@ -211,8 +211,8 @@ def config_set(obj: Any, product: str, key: str, value: str, profile: str | None
             f"--config {written} to use it, or write it to the home config."
         )
     if cfg.is_project_local and value.startswith("env:"):
-        # Refused for every key, not only the withheld ones, so writing it
-        # without a word would report success for a setting that never resolves.
+        # Refused for every key here, so a silent write would report success
+        # for a setting that never resolves.
         warnings.append(
             f"{written} was found by searching upwards rather than named, so it "
             f"may not choose which environment variable is read and `{value}` is "
@@ -239,8 +239,7 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     LLMWhisperer has a read-only usage endpoint, so its key can be verified for
     real. A deployment has no side-effect-free endpoint -- the only thing to call
     is an execution -- so its entry reports that the settings resolve and says
-    plainly that nothing was verified. Claiming otherwise would be worse than
-    not checking.
+    plainly that nothing was verified.
     """
     out: dict[str, Any] = {}
     try:
@@ -267,8 +266,8 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     )
     out[DOCSTUDIO] = {
         "checked": False,
-        # Null, not True: nothing was called, so there is no verdict to report.
-        # A `true` beside `checked: false` reads as a live check that passed.
+        # Null, not True: nothing was called, and `true` beside `checked:
+        # false` reads as a live check that passed.
         "ok": None,
         "resolved": resolves,
         "detail": (
@@ -328,13 +327,13 @@ def config_doctor(obj: Any, probe: bool) -> None:
         aliases = []
         problems.append(str(exc))
     for alias in aliases:
-        # An alias carries a key of its own, so it is a second place a project
-        # file can name one -- and it falls back to the profile's key silently.
+        # An alias may carry a key of its own, and falls back to the profile's
+        # key silently.
         if detail := resolved.withheld_detail("deployments", alias, "api_key"):
             problems.append(f"deployment alias {alias}: {detail}")
         try:
-            # Resolved the way a run resolves it: that an alias is *listed* says
-            # nothing about whether the settings behind it arrive.
+            # Being listed says nothing about whether the settings behind it
+            # arrive, so resolve it the way a run would.
             resolved.deployment(alias)
         except ConfigError as exc:
             problems.append(f"deployment alias {alias}: {exc}")
@@ -351,8 +350,8 @@ def config_doctor(obj: Any, probe: bool) -> None:
         for entry in products.values()
         if "api_key" in entry
     ):
-        # The next question after "no key" is always where one comes from. The
-        # field name avoids the word the payload scrubber redacts on.
+        # The next question after "no key" is where one comes from. The field
+        # name avoids the word the payload scrubber redacts on.
         report["getting_started"] = KEY_SOURCES
     if probe:
         report["probe"] = _probe(resolved)

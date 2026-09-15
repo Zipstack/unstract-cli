@@ -32,8 +32,8 @@ from unstract_cli.core.errors import (
 )
 from unstract_cli.core.output import OutputFormat, diagnostic, emit_text
 
-# Mirrors the table and grammar `unstract.clone.cli` uses, single-letter
-# spellings included, so both spellings of this command accept the same strings.
+# Mirrors the units `unstract.clone.cli` accepts, so both spellings of this
+# command take the same strings.
 _SIZE_UNITS = {
     "B": 1,
     "K": 1024,
@@ -198,9 +198,8 @@ def clone(
             hint="The clone could not start. Check the URLs, orgs and keys.",
         ) from exc
     except InvalidHeader as exc:
-        # The message quotes the offending header value, and that value is the
-        # platform key. It arrives `repr`-escaped, so the literal scrub cannot
-        # match it either -- say what happened instead of quoting it.
+        # The message quotes the offending header value -- the key -- and it
+        # arrives `repr`-escaped, so the scrub cannot match it either.
         raise CLIError(
             "A request header could not be built.",
             ExitCode.USAGE,
@@ -271,14 +270,13 @@ def _finish(ctx: Context, report: CloneReport) -> None:
         "unsupported files": skipped["unsupported_files"],
     }
     if named := ", ".join(f"{what} {n}" for what, n in counts.items() if n):
-        # On stderr in every format: a skip does not fail the run, so a caller
-        # reading the exit code alone is told nothing about what never arrived,
-        # and a machine format is not read by eye.
+        # On stderr in every format: a skip does not fail the run, so the exit
+        # code says nothing about what never arrived.
         diagnostic(f"Skipped: {named}.", quiet=ctx.quiet, verbosity=ctx.verbosity)
 
     payload = {**report.as_dict(), "skipped": skipped}
-    # A person running this reads the report itself; every other format gets the
-    # single envelope, which carries the same content as data.
+    # A person reads the report itself; every other format gets the envelope,
+    # which carries the same content as data.
     rendered = ctx.output is OutputFormat.TABLE
     if rendered:
         emit_text(report.render(), secrets=ctx.secrets())

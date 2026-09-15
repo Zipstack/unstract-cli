@@ -30,8 +30,8 @@ from unstract_cli.core.poll import (
 
 PRODUCT = "llmwhisperer"
 
-#: Terminal states as the body reports them. `unknown` is one: the service
-#: returns it for a hash it no longer knows, which no amount of polling changes.
+#: Terminal states as the body reports them. `unknown` is one: it means the
+#: service no longer knows the hash, which polling cannot change.
 EXTRACT_POLL = PollSpec(
     handle_field="whisper_hash",
     terminal_success=("processed",),
@@ -39,12 +39,11 @@ EXTRACT_POLL = PollSpec(
     status_field="status",
 )
 
-#: `--output raw` prints one field rather than the whole payload. Extraction
-#: results carry the text under this name.
+#: `--output raw` prints one field rather than the whole payload.
 RAW_TEXT = ("result_text",)
 
-#: What a submission prints, best answer first: an accepted job answers with a
-#: handle and no text, so the handle is the answer until there is one.
+#: What a submission prints, best answer first: an accepted job carries a
+#: handle and no text.
 EXTRACT_RAW = (*RAW_TEXT, "whisper_hash")
 
 
@@ -104,7 +103,7 @@ def extract(
         )
 
     with translated(endpoint="whisper"):
-        # The CLI's own poll loop is used over the client's so that waiting
+        # The CLI's own poll loop rather than the client's, so that waiting
         # behaves the same for every product.
         accepted = client.whisper(
             **({"url": source} if _is_url(source) else {"file_path": source}),
@@ -137,8 +136,8 @@ def extract(
                 f"saved: {path}", quiet=ctx.quiet, verbosity=ctx.verbosity
             ),
         )
-    # Waiting returns the text, which identifies the job nowhere; the hash is
-    # what a later status, retrieve or highlights call needs.
+    # The text identifies the job nowhere, and the hash is what a later status,
+    # retrieve or highlights call needs.
     finish(
         ctx,
         result,
@@ -179,8 +178,8 @@ def status(ctx: Context, whisper_hash: str) -> None:
     client = llmwhisperer(ctx.config)
     with translated(endpoint="whisper-status"):
         result = client.whisper_status(whisper_hash)
-    # A failed extraction is reported inside an HTTP 200, so the status code
-    # alone would call this a success.
+    # A failed extraction arrives inside an HTTP 200, so the status code alone
+    # would call it a success.
     if classify(result, EXTRACT_POLL) is PollState.FAILURE:
         raise CLIError(
             f"Extraction finished with status {extract_status(result)!r}.",
@@ -283,8 +282,8 @@ def highlights(
             data = client.get_highlight_data(whisper_hash, **sent)
     except CLIError as exc:
         if exc.exit_code is ExitCode.VALIDATION:
-            # Line metadata is recorded during extraction or not at all, so the
-            # fix belongs to a call that has already been made and paid for.
+            # Line metadata is recorded during extraction or not at all, so
+            # the fix belongs to an earlier, already billed call.
             exc.hint = (
                 "Line metadata exists only for an extraction run with "
                 "--add-line-nos. It cannot be added to this call: re-run "
@@ -312,8 +311,8 @@ def _line_metadata(value: Any) -> list[int] | None:
         isinstance(value, list)
         and len(value) >= 4
         and all(isinstance(item, (int, float)) for item in value)
-        # The page height is a divisor in the scaling, and the service reports a
-        # line it has no geometry for as all zeros.
+        # The page height divides in the scaling, and a line with no geometry
+        # is reported as all zeros.
         and value[3]
     ):
         return value

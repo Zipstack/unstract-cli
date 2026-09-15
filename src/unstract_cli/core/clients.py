@@ -63,9 +63,8 @@ def deployment_url(base_url: str, org_id: str, api_name: str) -> str:
     return base_url.rstrip("/") + path
 
 
-#: Socket timeout for the deployment client, which sets none of its own. The
-#: same figure the LLMWhisperer client applies, so a stalled connection is given
-#: up on the same way on both paths.
+#: Socket timeout for the deployment client, which sets none of its own. Same
+#: figure as the LLMWhisperer client, so both paths stall alike.
 DEFAULT_TRANSPORT_TIMEOUT = 120.0
 
 
@@ -179,8 +178,8 @@ def _unresolved_host(exc: BaseException) -> str | None:
     if not any(isinstance(cause, socket.gaierror) for cause in _causes(exc)):
         return None
     for cause in _causes(exc):
-        # httpx keeps the request on the error it raises; urllib3 keeps the
-        # connection. Either names the host without parsing a message.
+        # httpx keeps the request on its error and urllib3 the connection;
+        # either names the host without parsing a message.
         url = getattr(getattr(cause, "request", None), "url", None)
         if host := getattr(url, "host", "") or getattr(
             getattr(cause, "conn", None), "host", ""
@@ -190,9 +189,8 @@ def _unresolved_host(exc: BaseException) -> str | None:
 
 
 #: Failures that mean the request was never sendable, so the fault is in the
-#: caller's configuration rather than in the service. `InvalidHeader` is not
-#: among them: every handler takes it first, to keep the credential it quotes
-#: out of the message. `InvalidProxyURL` is an `InvalidURL`.
+#: caller's configuration rather than in the service. `InvalidHeader` is handled
+#: before these, to keep the credential it quotes out of the message.
 UNSENDABLE = (
     MissingSchema,
     InvalidSchema,
@@ -242,9 +240,8 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
             hint="Could not reach the service. Check the base URL and connectivity.",
         ) from exc
     except InvalidHeader as exc:
-        # The message quotes the offending header value, and that value is the
-        # credential. It arrives `repr`-escaped, so the literal scrub cannot
-        # match it either -- say what happened instead of quoting it.
+        # The message quotes the offending header value -- the credential --
+        # and it arrives `repr`-escaped, so the scrub cannot match it either.
         raise CLIError(
             "A request header could not be built.",
             ExitCode.USAGE,
@@ -255,9 +252,8 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
             ),
         ) from exc
     except UNSENDABLE as exc:
-        # These say the request could never be sent -- a base URL without a
-        # scheme is the usual one. Retrying is the wrong advice, and the fault
-        # is in the caller's configuration rather than in the service.
+        # The request could never be sent, so retrying is the wrong advice and
+        # the fault is in the configuration rather than in the service.
         raise CLIError(
             str(exc) or type(exc).__name__,
             ExitCode.USAGE,
@@ -331,7 +327,7 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
         )
     if reported:
         # HTTP success carrying a failure in the body. Not retryable: a re-run
-        # starts a second billed execution rather than retrying the first.
+        # starts a second billed execution rather than retrying this one.
         raise CLIError(
             str(reported),
             ExitCode.VALIDATION,

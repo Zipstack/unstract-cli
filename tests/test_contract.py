@@ -110,10 +110,9 @@ def _derived_flags() -> dict[str, dict[str, Any]]:
     """
     return {
         f"{product}:{operation}": {
-            # Choices as a list: JSON has no tuple, and the snapshot is compared
-            # against what a JSON reader gives back. Resolved through the overlay
-            # rather than straight off the spec, so a narrowing or a short flag
-            # that stops applying moves the snapshot too.
+            # Choices as a list, since the snapshot is compared against what a
+            # JSON reader gives back, and resolved through the overlay so a
+            # narrowing that stops applying moves the snapshot too.
             param.flag: {
                 **asdict(param),
                 "choices": list(

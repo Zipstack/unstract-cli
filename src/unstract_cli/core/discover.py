@@ -26,14 +26,12 @@ from unstract_cli.core.params import Diverged
 
 TIERS = ("groups", "summary", "full")
 
-#: Click's marker for "no default was given". It stopped being `None` in 8.2 and
-#: is not exported, so it is read off a bare option and tracks whichever version
-#: is installed -- serialised, it would publish a string that reads as a value.
+#: Click's marker for "no default was given": not exported, and not the same
+#: value across versions, so it is read off a bare option rather than named.
 _NO_DEFAULT = click.Option(["--unset"]).default
 
-#: The same question for a paired on/off flag declared with `default=None`, the
-#: way this CLI declares one it does not send unless asked: some versions report
-#: `False` here and others their own sentinel, and neither is a real default.
+#: The same marker for a paired on/off flag declared with `default=None`, which
+#: is how this CLI declares a flag it does not send unless asked.
 _NO_FLAG_DEFAULT = click.Option(["--unset/--no-unset"], default=None).default
 
 
@@ -86,9 +84,8 @@ def _param(param: click.Parameter) -> dict[str, Any]:
         entry["help"] = param.help or ""
         entry["repeatable"] = bool(param.multiple)
     if isinstance(param.type, click.IntRange | click.FloatRange):
-        # Click names a bounded number "integer range" or "float range", which
-        # is not a type a caller can map onto anything. Publish the type it
-        # really is, and the bounds as their own keys.
+        # Click names a bounded number "integer range", which a caller cannot
+        # map onto anything: publish the real type and the bounds separately.
         entry["type"] = "integer" if isinstance(param.type, click.IntRange) else "float"
         if param.type.min is not None:
             entry["minimum"] = param.type.min
@@ -97,24 +94,22 @@ def _param(param: click.Parameter) -> dict[str, Any]:
     if isinstance(param.type, click.Choice):
         entry["choices"] = list(param.type.choices)
     if isinstance(param.type, Diverged):
-        # Otherwise a flag the CLI cannot convert reads exactly like one it can,
-        # and the caller only finds out by passing it.
+        # Otherwise a flag the CLI cannot convert reads like one it can, and
+        # the caller finds out only by passing it.
         entry["unsupported"] = True
-    # What omitting the flag actually gets you, which is not what Click reports:
-    # the same declaration answers differently across the supported range, so
-    # reading `param.default` straight publishes a contract per version.
+    # What omitting the flag gets you, which is not what Click reports: the
+    # same declaration answers differently from version to version.
     default = param.default
     if param.secondary_opts and default is _NO_FLAG_DEFAULT:
-        # An on/off flag the CLI declares with no default means "not passed, so
-        # not sent". Publishing the `False` some versions report here would
-        # promise a value the CLI does not send.
+        # No default on a paired flag means "not passed, so not sent";
+        # publishing the `False` reported here would promise a value.
         default = None
     elif default is _NO_DEFAULT:
         default = False if getattr(param, "is_flag", False) else None
     if default is not None and not isinstance(param, click.Argument):
         entry["default"] = default
-    # For a spec-derived flag: what the client or the service applies when it is
-    # not passed. The CLI never resends it, so it is not the flag's own default.
+    # For a spec-derived flag: what the service applies when it is not passed.
+    # The CLI never resends it, so it is not the flag's own default.
     if (fallback := getattr(param, "server_default", None)) is not None:
         entry["server_default"] = fallback
     return entry
@@ -133,9 +128,8 @@ def _describe(command: click.Command, tier: str) -> dict[str, Any]:
     entry: dict[str, Any] = {"help": (command.help or "").strip().split("\n")[0]}
     if tier == "full":
         entry["params"] = _params(command)
-        # What `--output raw` prints for this command, best answer first: the
-        # first of these the answer carries is the one printed, and an answer
-        # carrying none of them fails rather than printing something else.
+        # What `--output raw` prints, best answer first: the first field the
+        # answer carries wins, and an answer carrying none of them fails.
         if raw := getattr(command, "raw_fields", ()):
             entry["raw_fields"] = list(raw)
     if isinstance(command, click.Group):
@@ -170,8 +164,8 @@ def discover(root: click.Group, tier: str) -> dict[str, Any]:
             "groups": [
                 summary(name, sub) for name, sub in top if isinstance(sub, click.Group)
             ],
-            # Leaf commands are listed apart from the groups, so a consumer
-            # walking groups for their commands does not drop them.
+            # Listed apart from the groups, so a consumer walking groups for
+            # their commands does not drop them.
             "commands": [
                 summary(name, sub)
                 for name, sub in top

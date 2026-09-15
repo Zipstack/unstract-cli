@@ -27,8 +27,8 @@ class ExitCode(IntEnum):
     SERVER_ERROR = 8
     ALREADY_CONSUMED = 9
     SAVE_FAILED = 10
-    #: 128 + SIGINT, the value a shell and every job runner already read as
-    #: "the user stopped it" rather than as a failure of the command.
+    #: 128 + SIGINT, which a shell already reads as "the user stopped it"
+    #: rather than as a failure of the command.
     INTERRUPTED = 130
 
 
@@ -137,9 +137,8 @@ def _to_stderr(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-#: Notes written before a sink was bound. The command tree is built at import,
-#: so a warning about the overlay is raised before there is a run to ask whether
-#: it was told to be quiet.
+#: Notes written before a sink was bound: the command tree is built at import,
+#: so a warning can be raised before there is a run to ask whether to be quiet.
 _HELD: list[str] = []
 
 #: Where a note goes once a run owns the streams. Unbound until then.
@@ -179,9 +178,9 @@ def remember_secret(value: Any) -> None:
     if not isinstance(value, str) or not value:
         return
     if len(value) < _MIN_SECRET_LEN:
-        # Say so rather than drop it silently: the caller has every reason to
-        # believe registering a credential is what protects it. Once per value:
-        # a key resolves several times in one run.
+        # Said rather than dropped silently: registering a credential is what
+        # the caller expects to protect it. Once per value, since a key
+        # resolves several times in one run.
         if value not in _REPORTED_SHORT:
             _REPORTED_SHORT.add(value)
             warn(
@@ -235,7 +234,7 @@ def redact_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {
             # Collapsed whole rather than walked: nothing under a key that
-            # names a credential is worth more than the risk of missing one.
+            # names a credential is worth the risk of missing one.
             k: (REDACTED if names_a_secret(k) else redact_value(v))
             for k, v in value.items()
         }
@@ -299,9 +298,8 @@ class CLIError(Exception):
     retryable: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
     #: Set where `details` is the only surviving copy of something the service
-    #: will not serve again. Redacting by field name would destroy the part of
-    #: the result the caller most needs; the literal scrub of every resolved
-    #: credential still applies on the way out.
+    #: will not serve again, so redacting by field name would destroy the part
+    #: the caller most needs. The literal scrub still applies on the way out.
     verbatim_details: bool = False
 
     def __post_init__(self) -> None:
@@ -311,25 +309,23 @@ class CLIError(Exception):
 
     def to_dict(self) -> dict[str, Any]:
         # Written out whole, then thinned: one list of the names this owns, so
-        # a field added here cannot be forgotten in the guard below.
+        # a field added here cannot be missed by the guard below.
         payload: dict[str, Any] = {
             "code": error_code_for(self.exit_code),
             "message": self.message,
             "exit_code": int(self.exit_code),
             "retryable": self.retryable,
             "http_status": self.http_status,
-            # Redacted by default: the details come from a server body that can
-            # echo the request, headers and key included. Only a rescued result
-            # that would be destroyed by it opts out.
+            # Redacted by default: a server body can echo the request back,
+            # headers and key included.
             "details": self.details
             if self.verbatim_details
             else redact_value(self.details),
             "endpoint": self.endpoint or None,
             "hint": self.hint or None,
         }
-        # `extra` carries server-named keys (a poll handle, say), so it may not
-        # be allowed to rewrite a field a caller branches on -- including one
-        # omitted from this payload for being unset.
+        # `extra` carries server-named keys, which may not rewrite a field a
+        # caller branches on -- including one omitted here for being unset.
         reserved = payload.keys()
         extra = {k: v for k, v in self.extra.items() if k not in reserved}
         return {k: v for k, v in payload.items() if v is not None} | extra
@@ -379,10 +375,8 @@ def hint_for(status: int) -> str | None:
                 "that read cannot be repeated, so pass --save to keep the next one."
             )
         case 401 | 403:
-            # Wrong, revoked and not-permitted all arrive as the same response,
-            # so the hint cannot settle on one of them. A key from another
-            # organisation is not among them: the resource is resolved within
-            # its organisation first, so that answers 404 instead.
+            # Wrong, revoked and not-permitted all arrive as the same
+            # response, so the hint cannot settle on one of them.
             return (
                 "The key was rejected. Keys are per-product: `unstract config "
                 "doctor` reports which one resolved and from where. A key that "

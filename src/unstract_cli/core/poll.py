@@ -28,11 +28,10 @@ from typing import Any
 from unstract_cli.core.errors import CLIError, ExitCode
 
 #: Consecutive transient poll failures tolerated before the wait gives up.
-#: Retrying stops at whichever comes first, this count or the deadline -- at the
-#: default interval the backoff reaches this count well inside the timeout.
+#: Retrying stops at whichever comes first, this count or the deadline.
 MAX_TRANSIENT_POLLS = 5
 
-#: Floor on the interval the backoff doubles. A caller reaching this module
+#: Floor on the interval the backoff doubles: a caller reaching this module
 #: directly is not bound by what the flags accept, and doubling zero is zero.
 MIN_BACKOFF = 0.1
 
@@ -55,12 +54,12 @@ class PollSpec:
     handle_field: str
     terminal_success: tuple[str, ...]
     terminal_failure: tuple[str, ...]
-    #: One name, or candidates tried in order: the run POST and the status GET
-    #: spell the state differently.
+    #: One name, or candidates tried in order, since one operation's responses
+    #: can spell the state differently.
     status_field: str | tuple[str, ...] = "status"
 
-    #: The terminal states case-folded, since every comparison against them is
-    #: case-insensitive. Derived, not declared -- see `__post_init__`.
+    #: The terminal states case-folded: every comparison against them is
+    #: case-insensitive. Derived in `__post_init__`, not declared.
     failed: frozenset[str] = field(init=False, repr=False, compare=False)
     succeeded: frozenset[str] = field(init=False, repr=False, compare=False)
 
@@ -72,8 +71,7 @@ class PollSpec:
         both = succeeded & failed
         if both:
             # A CLIError rather than a ValueError: specs are module-level, so
-            # this fires during import, and only a CLIError renders an envelope
-            # on the stream contracted to always carry one.
+            # this fires during import, and only a CLIError renders an envelope.
             raise CLIError(
                 f"{sorted(both)} is named as both success and failure; "
                 "classify tests failure first, so a success would be reported "
@@ -120,8 +118,8 @@ def preflight(path: str | Path) -> Path:
     flag must not have.
     """
     target = Path(path).expanduser()
-    # Saving here would replace the link itself, so it stops being a link and
-    # whatever it stands for stops being updated.
+    # Saving here would replace the link itself, so whatever it stands for
+    # stops being updated.
     if target.is_symlink():
         raise CLIError(
             f"--save target {path!r} is a symlink to {os.readlink(target)}: the "
@@ -134,10 +132,9 @@ def preflight(path: str | Path) -> Path:
         )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        # The write `persist` will do, not a stand-in for it: the result is
-        # written to a temporary sibling and moved over the target, so it is the
-        # directory that has to be writable. Opening the target itself passes in
-        # a read-only directory and fails after the read this protects.
+        # The same write `persist` does: a temporary sibling moved over the
+        # target, so it is the directory that has to be writable. Opening the
+        # target instead passes in a read-only directory.
         probe_fd, probe = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
         os.close(probe_fd)
         os.unlink(probe)
@@ -183,10 +180,9 @@ def persist(path: str | Path, payload: Any) -> Path:
     tmp: Path | None = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        # A predictable sibling in a directory someone else can write is a
-        # symlink waiting to be planted, and the write would follow it. `mkstemp`
-        # names it unpredictably and creates it exclusively; the 0600 it opens
-        # with is what `os.replace` then gives the result.
+        # A predictable sibling in a writable directory is a symlink waiting to
+        # be planted. `mkstemp` names it unpredictably and creates it 0600,
+        # which is the mode `os.replace` then gives the result.
         handle_fd, name = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
         tmp = Path(name)
         with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
@@ -224,7 +220,7 @@ def classify(payload: Any, spec: PollSpec) -> PollState:
     if status in spec.succeeded:
         return PollState.SUCCESS
     if not status or _dig(payload, "error"):
-        # Not progress: polling on regardless reports a server fault as "still
+        # Not progress: polling on would report a server fault as "still
         # running" until the deadline.
         return PollState.UNKNOWN
     return PollState.PENDING
@@ -241,11 +237,10 @@ def wait_for_completion(
     timeout: float = 300.0,
     on_status: Callable[[str | None], None] | None = None,
     #: Called with the failure being retried. Separate from `on_status` so a
-    #: server-authored error is never rendered as a job status, and so the
-    #: caller can scrub it the way it scrubs any other untrusted text.
+    #: server-authored error is never rendered as a job status.
     on_retry: Callable[[CLIError], None] | None = None,
-    #: Called with the path once a result is on disk, before the caller sees
-    #: anything. The ordering it observes is the whole point of --save.
+    #: Called once a result is on disk, before the caller sees anything: that
+    #: ordering is the whole point of --save.
     on_saved: Callable[[Path], None] | None = None,
     #: Resolved on the call rather than bound at import, so replacing
     #: `time.sleep` reaches this loop.
@@ -273,8 +268,8 @@ def wait_for_completion(
 
     handle = extract_handle(initial, spec.handle_field)
     if not handle:
-        # No handle means nothing can be polled, so this response is the whole
-        # answer -- it still has to be judged, and saved if it is a result.
+        # Nothing to poll, so this response is the whole answer: it still has
+        # to be judged, and saved if it is a result.
         state = classify(initial, spec)
         if state is PollState.SUCCESS:
             return deliver(initial)
@@ -314,16 +309,14 @@ def wait_for_completion(
         except CLIError as exc:
             exc.extra.setdefault(spec.handle_field, handle)
             if not retryable and exc.http_status not in (408, 429):
-                # A step that must not be repeated has to be un-marked here or
-                # the envelope invites the retry. Refusals are the exception:
-                # they mean the request was never served, so the one-shot read
-                # is still there to collect.
+                # A step that must not be repeated is un-marked, or the
+                # envelope invites the retry. A refusal is the exception: the
+                # request was never served, so the read is still there.
                 exc.retryable = False
             raise
         except Exception as exc:
-            # Everything the service can raise on purpose is already a CLIError
-            # by here, so what reaches this is a fault on this side. Calling it
-            # a retryable server error spends the retry budget repeating it.
+            # Deliberate service failures are already CLIErrors, so this is a
+            # fault on this side, and retrying it only spends the budget.
             raise CLIError(
                 str(exc) or type(exc).__name__,
                 ExitCode.GENERIC,
@@ -341,9 +334,9 @@ def wait_for_completion(
             transient += 1
             if on_retry is not None:
                 on_retry(exc)
-            # Back off so a rate limit is not answered at the same rate that
-            # earned it, but never past the deadline the caller set. Floored
-            # because doubling a zero interval never grows it.
+            # Back off rather than answer a rate limit at the rate that earned
+            # it, but never past the deadline. Floored because doubling a zero
+            # interval never grows it.
             sleep(min(max(interval, MIN_BACKOFF) * 2**transient, remaining))
             continue
         transient = 0
@@ -392,8 +385,8 @@ def wait_for_completion(
                 extra={spec.handle_field: handle, "last_status": status},
             )
 
-        # Never sleep past the deadline: --wait 30 that returns at 35s has lied,
-        # and the last poll should land on the deadline, not after it.
+        # Never sleep past the deadline: the last poll should land on it, not
+        # after it.
         sleep(min(interval, remaining))
 
     if retrieve is not None:

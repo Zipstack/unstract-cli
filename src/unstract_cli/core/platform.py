@@ -11,7 +11,7 @@ beside it: one host, two keys.
 
 from __future__ import annotations
 
-from unstract.api_deployments.client import PlatformKeyClient
+from unstract.api_deployments.client import PlatformClientError, PlatformKeyClient
 
 from unstract_cli.config import DOCSTUDIO, ResolvedConfig
 from unstract_cli.core.errors import CLIError, ExitCode
@@ -39,12 +39,24 @@ def platform_client(
             ExitCode.USAGE,
             hint="Omit the flag to leave the connection unbounded.",
         )
-    return PlatformKeyClient(
-        base_url=config.require(DOCSTUDIO, "base_url"),
-        api_key=config.require(DOCSTUDIO, "platform_key"),
-        transport_timeout=timeout,
-        logging_level="ERROR",
-    )
+    try:
+        return PlatformKeyClient(
+            base_url=config.require(DOCSTUDIO, "base_url"),
+            api_key=config.require(DOCSTUDIO, "platform_key"),
+            transport_timeout=timeout,
+            logging_level="ERROR",
+        )
+    except PlatformClientError as exc:
+        # The client validates the host and the key before it sends anything,
+        # and that failure reaches no arm of the entry point: a traceback with
+        # no envelope, where a script is parsing one. It is what the caller
+        # configured, so it is a usage error.
+        raise CLIError(
+            str(exc),
+            ExitCode.USAGE,
+            hint="Check `base_url` and the platform key: the host needs a "
+            "scheme, e.g. https://host, and the key cannot be blank.",
+        ) from exc
 
 
 def organisation(config: ResolvedConfig) -> str:

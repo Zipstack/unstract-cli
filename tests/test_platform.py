@@ -13,6 +13,7 @@ import pytest
 from unstract_cli.config import (
     DEFAULT_BASE_URLS,
     DOCSTUDIO,
+    ConfigError,
     ConfigFile,
     ResolvedConfig,
 )
@@ -76,12 +77,30 @@ def test_the_platform_key_is_not_the_deployment_key() -> None:
 
 
 def test_a_missing_platform_key_names_where_one_goes() -> None:
-    with pytest.raises(Exception, match="docstudio.platform_key") as caught:
+    with pytest.raises(ConfigError, match="docstudio.platform_key") as caught:
         platform_client(_resolved({"p": {}}))
 
     assert "UNSTRACT_PLATFORM_KEY" in str(caught.value)
     # A secret flag exists but is never suggested: it lands in shell history.
     assert "--platform-key" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {DOCSTUDIO: {**KEY, "base_url": "us-central.unstract.com"}},
+        {DOCSTUDIO: {"platform_key": "   ", "base_url": "https://host.example"}},
+    ],
+    ids=["base_url without a scheme", "a blank key"],
+)
+def test_a_client_the_settings_cannot_build_is_a_usage_error(profile) -> None:
+    """The client checks the host and the key before it sends anything, and
+    that failure reaches no arm of the entry point: a traceback instead of an
+    envelope, on the one message a misconfigured caller most needs."""
+    with pytest.raises(CLIError) as caught:
+        platform_client(_resolved({"p": profile}))
+
+    assert caught.value.exit_code == ExitCode.USAGE
 
 
 @pytest.mark.parametrize("value", [0, 0.0, -1])

@@ -1673,7 +1673,32 @@ def test_ls_runs_inside_the_configured_organisation(
 
     run(capsys, "docstudio", "deployment", "ls")
 
-    assert client.built_with["org_id"] == "org_ABC123"
+    _, args, _ = next(call for call in client.calls if call[0] == "list_deployments")
+    # The factory takes an organisation and ignores it: the listing call is
+    # where the wrong one would actually reach the server.
+    assert args[0] == "org_ABC123"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["auth", "--base-url", "localhost:8000", "whoami"],
+        ["docstudio", "--base-url", "localhost:8000", "deployment", "ls"],
+    ],
+    ids=["whoami", "ls"],
+)
+def test_a_client_that_cannot_be_built_is_an_envelope_not_a_traceback(
+    capsys, monkeypatch, tmp_path, argv
+):
+    """The real factory, not the fixture: the client validates the host before
+    it sends anything, and every test that replaces the factory replaces that
+    check with it."""
+    _listing_env(monkeypatch, tmp_path)
+
+    code, out, _ = run(capsys, *argv)
+
+    assert code == int(ExitCode.USAGE)
+    assert envelope(out)["ok"] is False
 
 
 def test_ls_without_an_organisation_says_how_to_get_one(

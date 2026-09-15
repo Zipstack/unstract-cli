@@ -15,6 +15,7 @@ import pytest
 from unstract_cli.__main__ import main
 from unstract_cli.app import cli
 from unstract_cli.commands import config_cmd
+from unstract_cli.config import DOCSTUDIO
 from unstract_cli.core.discover import discover, exit_codes
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import CONTRACT_VERSION
@@ -30,7 +31,12 @@ def test_groups_names_the_products_and_stops_there(capsys):
     """The cheap question stays cheap: no command list, no flags."""
     code, data = run(capsys, "--discover", "groups")
     assert code == int(ExitCode.SUCCESS)
-    assert {g["name"] for g in data["groups"]} == {"config", "docstudio", "whisper"}
+    assert {g["name"] for g in data["groups"]} == {
+        "auth",
+        "config",
+        "docstudio",
+        "whisper",
+    }
     # A leaf listed among the groups is a group a consumer finds empty.
     assert [c["name"] for c in data["commands"]] == ["clone"]
     assert all(entry["help"] for entry in [*data["groups"], *data["commands"]])
@@ -185,6 +191,37 @@ def probe_client(monkeypatch):
     return install
 
 
+@pytest.fixture
+def platform_probe_client(monkeypatch):
+    def install(reply=None, live=()):
+        class Fake:
+            def whoami(self):
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply or {}
+
+            def list_deployments(self, org_id, api_name=None):
+                if isinstance(live, Exception):
+                    raise live
+                if isinstance(live, dict):
+                    return live
+                results = [{"api_name": n} for n in live if n == api_name]
+                return {"count": len(results), "results": results}
+
+        monkeypatch.setattr(
+            config_cmd,
+            "platform_client",
+            # Requires the key like the real factory, so an absent one is the
+            # ConfigError the probe reports rather than a call on the fake.
+            lambda config, org_id=None, *, timeout=None: (
+                config.require(DOCSTUDIO, "platform_key"),
+                Fake(),
+            )[1],
+        )
+
+    return install
+
+
 def test_doctor_makes_no_call_without_probe(capsys, probe_client):
     probe_client(CLIError("must not be called"))
     code, data = run(capsys, "config", "doctor")
@@ -234,6 +271,85 @@ def test_the_deployment_probe_says_it_verified_nothing(capsys, probe_client, mon
     assert "NOT verified" in entry["detail"]
 
 
+def test_the_platform_probe_verifies_the_key_and_names_the_organisation(
+    capsys, probe_client, platform_probe_client, monkeypatch
+):
+    """`whoami` reads nothing but the key, so unlike a deployment it can be
+    checked for real -- and the organisation it resolves is the reason to
+    hold the key at all.
+    """
+    probe_client({"quota": 1})
+    platform_probe_client({"organization_id": "org_ABC123"})
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    _, data = run(capsys, "config", "doctor", "--probe")
+
+    assert data["probe"]["platform"] == {
+        "checked": True,
+        "ok": True,
+        "organization_id": "org_ABC123",
+        "detail": "The key was accepted, and resolved to an organisation.",
+    }
+
+
+def test_an_absent_platform_key_is_reported_not_failed(capsys, probe_client):
+    """A platform key is optional -- holding only a deployment key is the
+    common case -- so not having one must not decide the exit code.
+    """
+    probe_client({"quota": 1})
+
+    code, data = run(capsys, "config", "doctor", "--probe")
+
+    assert code == int(ExitCode.SUCCESS)
+    entry = data["probe"]["platform"]
+    assert entry["checked"] is False
+    assert entry["ok"] is None
+
+
+def test_a_rejected_platform_key_fails_the_probe(
+    capsys, probe_client, platform_probe_client, monkeypatch
+):
+    """A key that is set and wrong is a real misconfiguration, unlike one that
+    is simply absent."""
+    probe_client({"quota": 1})
+    platform_probe_client(CLIError("bad key", ExitCode.AUTH))
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    report = json.loads(capsys.readouterr().out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert report["probe"]["platform"] == {
+        "checked": True,
+        "ok": False,
+        "detail": "bad key",
+        "exit_code": int(ExitCode.AUTH),
+    }
+
+
+def test_config_init_then_doctor_exits_zero_without_a_platform_key(
+    capsys, monkeypatch, tmp_path
+):
+    """The property `test_an_absent_platform_key_is_reported_not_failed` claims,
+    checked the way a real user reaches it.
+
+    That test runs with no config file. The starter profile written by
+    `config init` used to carry `api_key = "env:UNSTRACT_PLATFORM_KEY"`, and an
+    `env:` reference to an unset variable is a doctor *problem* -- so the test
+    passed while every user who ran the documented first command got exit 1.
+    """
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("LLMWHISPERER_API_KEY", "lw-123456789")
+    monkeypatch.setenv("UNSTRACT_DEPLOYMENT_KEY", "dk-123456789")
+    monkeypatch.setenv("UNSTRACT_ORG_ID", "acme")
+    monkeypatch.delenv("UNSTRACT_PLATFORM_KEY", raising=False)
+
+    assert main(["-o", "json", "config", "init"]) == int(ExitCode.SUCCESS)
+    capsys.readouterr()
+
+    assert main(["-o", "json", "config", "doctor"]) == int(ExitCode.SUCCESS)
+
+
 def test_an_unknown_tier_is_a_usage_error_rather_than_a_traceback():
     with pytest.raises(CLIError) as caught:
         discover(cli, "everything")
@@ -246,21 +362,20 @@ def test_success_publishes_no_error_code():
     assert all(code for name, code in table.items() if name != "success")
 
 
-def test_doctor_reports_an_alias_whose_settings_do_not_arrive(
+def test_doctor_reports_a_deployment_entry_whose_key_does_not_arrive(
     capsys, write_config, monkeypatch
 ):
-    """A listed alias says nothing about whether the settings behind it
-    resolve, and the failure only shows up when a run is attempted."""
+    """A listed entry says nothing about whether the key behind it resolves,
+    and a run would otherwise find out only from the server."""
     write_config(
         """
         default_profile = "p"
         [profiles.p.docstudio]
         api_key = "dk-configured-key"
         org_id = "org_ABC"
-        [profiles.p.deployments.invoices]
-        api_name = "invoice-parser"
-        [profiles.p.deployments.broken]
-        api_name = "no-key"
+        [profiles.p.deployments."invoice-parser"]
+        api_key = "dk-entry-key"
+        [profiles.p.deployments."broken"]
         api_key = "env:NOT_SET_ANYWHERE"
         """
     )
@@ -271,8 +386,137 @@ def test_doctor_reports_an_alias_whose_settings_do_not_arrive(
 
     assert code != int(ExitCode.SUCCESS)
     report = payload["error"]["details"]
-    assert set(report["deployment_aliases"]) == {"invoices", "broken"}
+    assert set(report["deployments"]) == {"invoice-parser", "broken"}
     assert any("broken" in problem for problem in report["problems"])
+
+
+STALE_CONFIG = """
+default_profile = "p"
+[profiles.p.docstudio]
+org_id = "org_ABC"
+[profiles.p.deployments."invoice-parser"]
+api_key = "dk-1"
+[profiles.p.deployments."renamed-since"]
+api_key = "dk-2"
+"""
+
+
+def test_the_probe_reports_entries_the_organisation_no_longer_has(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """An orphaned entry is a warning, not a failure: it does no harm until it
+    is run, and the exit code is what setup scripts branch on."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client({"organization_id": "org_ABC"}, live={"invoice-parser"})
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    out, err = capsys.readouterr()
+
+    assert code == int(ExitCode.SUCCESS)
+    assert json.loads(out)["data"]["stale_deployments"] == ["renamed-since"]
+    assert "renamed-since" in err and "deployment ls" in err
+
+
+def test_a_listing_that_fails_is_a_failed_check_not_a_clean_one(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """The check was asked for and did not run; exiting 0 would tell a setup
+    script the entries were verified."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(
+        {"organization_id": "org_ABC"},
+        live=CLIError("listing timed out", ExitCode.TIMEOUT),
+    )
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    report = json.loads(capsys.readouterr().out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert "stale_deployments" not in report
+    assert any("listing timed out" in p for p in report["problems"])
+
+
+def test_a_rejected_platform_key_is_not_sent_again_for_the_entry_check(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """The listing would carry the key that was just refused, so it can only
+    fail the same way and report the same failure twice."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(
+        CLIError("key rejected", ExitCode.AUTH),
+        live=CLIError("must not be called"),
+    )
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    out, err = capsys.readouterr()
+    report = json.loads(out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert "stale_deployments" not in report
+    assert [p for p in report["problems"] if "key rejected" in p] == [
+        "probe platform: key rejected"
+    ]
+    assert "did not pass" in err
+
+
+def test_a_listing_that_is_not_a_list_fails_the_entry_check(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """A proxy answering in the API's place would otherwise read as an
+    organisation that has none of these deployments any more."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(
+        {"organization_id": "org_ABC"}, live={"results": "<html>Sign in</html>"}
+    )
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    report = json.loads(capsys.readouterr().out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert "stale_deployments" not in report
+    assert any("list of deployments" in p for p in report["problems"])
+
+
+def test_the_probe_skips_the_entry_check_without_a_platform_key(
+    capsys, write_config, probe_client, platform_probe_client
+):
+    """Only the platform key can answer the question, and most callers hold
+    none -- their entries are still theirs to keep."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(CLIError("must not be called"))
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    out, err = capsys.readouterr()
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "stale_deployments" not in json.loads(out)["data"]
+    assert "renamed-since" not in err
+    # --probe was explicit, so the skip is explained rather than silent.
+    assert "no platform key" in err
+
+
+def test_doctor_asks_the_server_nothing_without_probe(
+    capsys, write_config, platform_probe_client, monkeypatch
+):
+    write_config(STALE_CONFIG)
+    platform_probe_client(CLIError("must not be called"))
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor"])
+    out, err = capsys.readouterr()
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "stale_deployments" not in json.loads(out)["data"]
+    assert "platform key" not in err  # bare doctor is silent about the skip
 
 
 def test_a_malformed_config_file_is_a_usage_error(capsys, write_config):

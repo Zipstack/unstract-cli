@@ -5,14 +5,17 @@ crash should look like a crash. Everything a client raises on purpose is
 expected, so it is translated here into a ``CLIError`` carrying an exit code, a
 hint and the response detail.
 
-The two clients report failure differently -- LLMWhisperer raises with a status
-code attached, the deployment client returns a dict containing one -- so both
-shapes converge here rather than in each command. The deployment client also
-raises for a request it will not send at all, which is always a usage error.
+The clients report failure differently -- LLMWhisperer raises with a status
+code attached, the deployment client returns a dict containing one, the platform
+client spells one into its message -- so every shape converges here rather than
+in each command. The deployment client also raises for a request it will not
+send at all, which is always a usage error.
 """
 
 from __future__ import annotations
 
+import json
+import re
 import socket
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -31,13 +34,20 @@ from requests.exceptions import (
 from unstract.api_deployments.client import (
     APIDeploymentsClient,
     APIDeploymentsClientException,
+    PlatformClientError,
 )
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
     LLMWhispererClientV2,
 )
 
-from unstract_cli.config import DOCSTUDIO, LLMWHISPERER, ResolvedConfig
+from unstract_cli.config import (
+    DOCSTUDIO,
+    ENV_VARS,
+    KEY_SOURCES,
+    LLMWHISPERER,
+    ResolvedConfig,
+)
 from unstract_cli.core.errors import CLIError, ExitCode, error_from_status
 from unstract_cli.core.params import find_operation
 
@@ -63,44 +73,42 @@ def deployment_url(base_url: str, org_id: str, api_name: str) -> str:
     return base_url.rstrip("/") + path
 
 
-#: Socket timeout for the deployment client, which sets none of its own. Same
-#: figure as the LLMWhisperer client, so both paths stall alike.
+#: Transport timeout for the clients that set none of their own. Same figure
+#: as the LLMWhisperer client, so every path stalls alike.
 DEFAULT_TRANSPORT_TIMEOUT = 120.0
 
 
 def deployment(
     config: ResolvedConfig,
-    target: str,
+    api_name: str,
     transport_timeout: float | None = DEFAULT_TRANSPORT_TIMEOUT,
 ) -> APIDeploymentsClient:
-    """Build a deployment client for an alias, or for a bare API name.
+    """Build a client for one deployment, named by its API name.
 
-    An alias carries its own organisation and key; a bare name falls back to the
-    profile's, so an unconfigured caller can still name a deployment directly.
+    Fails before any request when no key or organisation resolves: a credential
+    error from the server would name the wrong fault, and the caller is told
+    every place the CLI looked rather than only that it found nothing.
     """
-    if target in config.deployment_aliases():
-        entry = config.deployment(target)
-        api_name, org_id, api_key = (
-            entry["api_name"],
-            entry["org_id"],
-            entry["api_key"],
-        )
-    else:
-        api_name = target
-        org_id = config.get(DOCSTUDIO, "org_id")
-        api_key = config.get(DOCSTUDIO, "api_key")
-
-    missing = [
-        name for name, value in (("org_id", org_id), ("api_key", api_key)) if not value
-    ]
-    if missing:
+    org_id = config.get(DOCSTUDIO, "org_id")
+    if not org_id:
         raise CLIError(
-            f"Deployment {target!r} is missing {' and '.join(missing)}.",
+            f"No organisation is configured to run {api_name!r} in.",
             ExitCode.USAGE,
-            hint=_alias_hint(config, target)
-            or (
-                "Define the deployment as an alias in the active profile, or set "
-                "$UNSTRACT_ORG_ID and $UNSTRACT_DEPLOYMENT_KEY."
+            hint="Run `unstract auth login`, set $UNSTRACT_ORG_ID, or pass --org-id.",
+        )
+    api_key = config.deployment_key(api_name)
+    if not api_key:
+        looked_in = ", ".join(config.deployment_key_sources(api_name))
+        raise CLIError(
+            f"No key resolves for deployment {api_name!r}. Looked in: {looked_in} "
+            "-- all unset.",
+            ExitCode.USAGE,
+            hint=(
+                f"Set ${ENV_VARS[(DOCSTUDIO, 'api_key')][0]}, or store a key: "
+                "`unstract config set docstudio api_key <key>` for one that covers "
+                "the organisation, or `unstract config set docstudio api_key "
+                f"<key> --deployment {api_name}` for this deployment alone. "
+                f"{KEY_SOURCES}"
             ),
         )
 
@@ -112,34 +120,49 @@ def deployment(
     )
 
 
-def _alias_hint(config: ResolvedConfig, target: str) -> str | None:
-    """What to say when a target is not one of the aliases that are configured.
+def _rejected_key_hint(api_name: str, source: str | None) -> str:
+    """What to do about a key this deployment refused, where it came from.
 
-    A bare API name is a supported way to name a deployment, so a target that is
-    not an alias cannot be rejected outright. It can still be a misspelt one,
-    and a caller who has defined aliases is likelier to have meant one of them
-    than to have typed a raw name, so the ones that exist are worth naming.
+    Advising a per-deployment key is only useful to a caller who does not have
+    one: told to the caller whose per-deployment key was just rejected, it is
+    the step that has already failed.
     """
-    if not (aliases := config.deployment_aliases()) or target in aliases:
-        return None
-    return (
-        f"{target!r} is not one of the deployment aliases in the active profile "
-        f"({', '.join(aliases)}), so it was sent as an API name."
-    )
+    stored = f"`unstract config set docstudio api_key <key> --deployment {api_name}`"
+    if source == "entry":
+        return f"The key stored for {api_name!r} was rejected. Replace it: {stored}."
+    if source == "flag":
+        return "The key passed with --api-key was rejected."
+    if source == "env":
+        env_var = ENV_VARS[(DOCSTUDIO, "api_key")][0]
+        return f"The key in ${env_var} was rejected."
+    return f"This deployment may need a key of its own: {stored}."
 
 
 @contextmanager
-def naming_aliases(config: ResolvedConfig, target: str) -> Iterator[None]:
-    """Say which aliases exist when a bare API name is not found.
+def deployment_errors(api_name: str, key_source: str | None = None) -> Iterator[None]:
+    """Say what a refusal means for *this* deployment, once the server answers.
 
-    Sending a misspelt alias as an API name is indistinguishable from sending a
-    real one until the service answers, so the correction belongs on the answer.
+    A rejected key and an unknown name are both indistinguishable from success
+    until the service answers, so the correction belongs on the answer: a key
+    that works elsewhere may not cover this deployment, and a name that was
+    valid may have been renamed since it was written down.
     """
     try:
         yield
     except CLIError as exc:
-        if exc.exit_code is ExitCode.NOT_FOUND and (hint := _alias_hint(config, target)):
-            exc.hint = f"{exc.hint} {hint}" if exc.hint else hint
+        if exc.exit_code is ExitCode.AUTH:
+            exc.message = (
+                f"The key supplied for deployment {api_name!r} does not authorize "
+                f"it: {exc.message}"
+            )
+            exc.hint = _rejected_key_hint(api_name, key_source)
+        elif exc.exit_code is ExitCode.NOT_FOUND:
+            more = (
+                "Run `unstract docstudio deployment ls` for the current API names; "
+                "`unstract config doctor --probe` reports profile entries the "
+                "organisation no longer has."
+            )
+            exc.hint = f"{exc.hint} {more}" if exc.hint else more
         raise
 
 
@@ -199,9 +222,19 @@ UNSENDABLE = (
 )
 
 
+#: The status inside a `PlatformClientError` message: the client spells it into
+#: prose rather than carrying it, so this is the only route from a refused
+#: platform call to the right exit code.
+_PLATFORM_STATUS = re.compile(r"failed with (\d{3})\b")
+
+
 @contextmanager
-def translated(endpoint: str | None = None) -> Iterator[None]:
-    """Turn a client failure into a CLIError with an exit code and a hint."""
+def translated(endpoint: str | None = None, *, one_shot: bool = False) -> Iterator[None]:
+    """Turn a client failure into a CLIError with an exit code and a hint.
+
+    ``one_shot`` marks a read the service serves exactly once, which changes
+    what a 406 from it means.
+    """
     try:
         yield
     except LLMWhispererClientException as exc:
@@ -211,9 +244,25 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
         )
         if status:
             raise error_from_status(
-                int(status), message, details=details, endpoint=endpoint
+                int(status),
+                message,
+                details=details,
+                endpoint=endpoint,
+                one_shot=one_shot,
             ) from exc
         raise CLIError(message, details=details, endpoint=endpoint) from exc
+    except PlatformClientError as exc:
+        # Ordered before `APIDeploymentsClientException`, which it derives
+        # from: caught there, a rejected key would exit USAGE rather than AUTH,
+        # which a setup script branches on. The status is read back out of the
+        # message because the exception does not carry one.
+        if match := _PLATFORM_STATUS.search(str(exc)):
+            raise error_from_status(
+                int(match.group(1)), str(exc), endpoint=endpoint, one_shot=one_shot
+            ) from exc
+        # Unparseable: the failure is real and the status is unknown, so report
+        # it as a server-side failure rather than blaming the caller's usage.
+        raise CLIError(str(exc), ExitCode.SERVER_ERROR, endpoint=endpoint) from exc
     except APIDeploymentsClientException as exc:
         raise CLIError(str(exc), ExitCode.USAGE, endpoint=endpoint) from exc
     except Timeout as exc:
@@ -263,6 +312,19 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
                 "proxy variables, for a typo."
             ),
         ) from exc
+    except json.JSONDecodeError as exc:
+        # A client that parses the body itself raises this on a 2xx carrying
+        # HTML from a proxy or SPA host. The base class, not the `requests`
+        # subclass: only one of the clients raises that one.
+        raise CLIError(
+            str(exc),
+            ExitCode.SERVER_ERROR,
+            endpoint=endpoint,
+            hint=(
+                "The service answered, but not with JSON. Check that "
+                "`base_url` names the API rather than a proxy or web app."
+            ),
+        ) from exc
     except RequestException as exc:
         raise CLIError(
             str(exc) or type(exc).__name__,
@@ -274,7 +336,7 @@ def translated(endpoint: str | None = None) -> Iterator[None]:
 
 
 def translating(
-    call: Callable[..., Any], endpoint: str | None = None
+    call: Callable[..., Any], endpoint: str | None = None, *, one_shot: bool = False
 ) -> Callable[..., Any]:
     """Wrap one call so its failures are CLIErrors where they happen.
 
@@ -284,13 +346,15 @@ def translating(
     """
 
     def wrapped(*args: Any, **kwargs: Any) -> Any:
-        with translated(endpoint=endpoint):
+        with translated(endpoint=endpoint, one_shot=one_shot):
             return call(*args, **kwargs)
 
     return wrapped
 
 
-def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> None:
+def raise_for_result(
+    result: dict[str, Any], endpoint: str | None = None, *, one_shot: bool = False
+) -> None:
     """Fail on a deployment response that reports an error status.
 
     The deployment client returns its status code instead of raising, so a
@@ -324,6 +388,7 @@ def raise_for_result(result: dict[str, Any], endpoint: str | None = None) -> Non
             str(reported or f"Request failed with status {status}"),
             details=result,
             endpoint=endpoint,
+            one_shot=one_shot,
         )
     if reported:
         # HTTP success carrying a failure in the body. Not retryable: a re-run
@@ -343,9 +408,9 @@ __all__ = [
     "DEFAULT_TRANSPORT_TIMEOUT",
     "UNSENDABLE",
     "deployment",
+    "deployment_errors",
     "deployment_url",
     "llmwhisperer",
-    "naming_aliases",
     "raise_for_result",
     "translated",
     "translating",

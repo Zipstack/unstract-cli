@@ -38,7 +38,7 @@ from unstract_cli.core.errors import (
         (401, ExitCode.AUTH),
         (403, ExitCode.AUTH),
         (404, ExitCode.NOT_FOUND),
-        (406, ExitCode.ALREADY_CONSUMED),
+        (406, ExitCode.GENERIC),
         (408, ExitCode.TIMEOUT),
         (409, ExitCode.VALIDATION),
         (418, ExitCode.GENERIC),
@@ -75,8 +75,18 @@ def test_not_retryable(status):
 
 
 def test_one_shot_status_carries_its_own_hint():
-    assert "already retrieved" in hint_for(406)
-    assert "--save" in hint_for(406)
+    assert exit_code_for_status(406, one_shot=True) is ExitCode.ALREADY_CONSUMED
+    assert "already retrieved" in hint_for(406, one_shot=True)
+    assert "--save" in hint_for(406, one_shot=True)
+
+
+def test_a_406_outside_a_one_shot_read_is_not_reported_as_consumed():
+    # Every other endpoint answers a 406 when it cannot serve the format asked
+    # for, which no resend of the same request will fix and no --save averts.
+    err = error_from_status(406, "Not Acceptable")
+    assert err.exit_code is ExitCode.GENERIC
+    assert "already retrieved" not in (err.hint or "")
+    assert "base_url" in (err.hint or "")
 
 
 def test_error_from_status_fills_code_hint_and_retryability():

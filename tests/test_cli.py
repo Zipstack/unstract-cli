@@ -121,6 +121,31 @@ def test_set_refuses_a_setting_the_product_does_not_have(capsys, tmp_path, monke
     assert not (tmp_path / "c.toml").exists()
 
 
+def test_set_can_store_a_key_for_one_deployment(capsys, tmp_path, monkeypatch):
+    """The entry is where a run looks after the environment and before the
+    profile's key, so the write lands under the API name, not the product."""
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+    code, payload, _ = run(
+        capsys, "config", "set", "docstudio", "api_key", "dk-1", "--deployment", "inv"
+    )
+    assert code == 0 and payload["data"]["deployment"] == "inv"
+    text = (tmp_path / "c.toml").read_text(encoding="utf-8")
+    assert "[profiles.cloud-us.deployments.inv]" in text
+    assert "[profiles.cloud-us.docstudio]" not in text
+
+
+def test_set_refuses_to_store_anything_but_a_key_per_deployment(
+    capsys, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+    code, payload, _ = run(
+        capsys, "config", "set", "docstudio", "org_id", "org_A", "--deployment", "inv"
+    )
+    assert code == int(ExitCode.USAGE)
+    assert "--deployment" in payload["error"]["message"]
+    assert not (tmp_path / "c.toml").exists()
+
+
 def test_doctor_reports_a_setting_nothing_reads(capsys, write_config):
     write_config('default_profile = "p"\n\n[profiles.p.llmwhisperer]\norg_id = "org_A"\n')
     code, payload, _ = run(capsys, "config", "doctor")
@@ -168,6 +193,21 @@ def test_doctor_reports_sources_without_leaking_values(capsys, monkeypatch):
     assert "super-secret-value" not in json.dumps(payload)
 
 
+def test_doctor_reports_the_platform_key_beside_the_deployment_key(capsys, monkeypatch):
+    """Two keys on one block, each with its own row: a platform key is
+    optional, so its absence is a report and not a problem."""
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-super-secret-value")
+    code, payload, _ = run(capsys, "config", "doctor")
+    assert code == 0
+    docstudio = payload["data"]["products"]["docstudio"]
+    assert docstudio["platform_key"] == {
+        "resolved": True,
+        "source": "env:UNSTRACT_PLATFORM_KEY",
+    }
+    assert "platform" not in payload["data"]["products"]
+    assert "pk-super-secret-value" not in json.dumps(payload)
+
+
 def doctor(capsys, *args) -> str:
     """`config doctor` -- a command with no network -- and its raw stdout."""
     main([*args, "config", "doctor"])
@@ -196,14 +236,17 @@ class TestOutputFormatEndToEnd:
 
     def test_no_isatty_call_decides_a_format(self):
         """A format that depends on a terminal makes a script's output depend on
-        how it was launched."""
+        how it was launched. `auth login` asks the question once, to decide
+        whether it may prompt for keys -- never what it prints in."""
         source = Path(app.__file__).parent
         offenders = [
             path.name
             for path in source.rglob("*.py")
             if "isatty" in path.read_text(encoding="utf-8")
         ]
-        assert offenders == []
+        assert offenders == ["platform_cmd.py"]
+        text = (source / "commands" / "platform_cmd.py").read_text(encoding="utf-8")
+        assert text.count("isatty") == 1 and "sys.stdin.isatty()" in text
 
     def test_an_agent_environment_makes_json_the_default(self, capsys, monkeypatch):
         monkeypatch.setenv("CLAUDECODE", "1")

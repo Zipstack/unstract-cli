@@ -16,6 +16,7 @@ from unstract_cli.commands.config_cmd import config_group
 from unstract_cli.config import (
     DOCSTUDIO,
     LLMWHISPERER,
+    SECRET_SETTINGS,
     ConfigError,
     ResolvedConfig,
     load_config,
@@ -41,7 +42,7 @@ class Context:
     quiet: bool = False
     verbosity: int = 0
     profile: str | None = None
-    #: Socket timeout for the deployment client, which has none of its own.
+    #: Transport timeout for the clients that have none of their own.
     transport_timeout: float | None = DEFAULT_TRANSPORT_TIMEOUT
     #: Command-line overrides, keyed `product.setting` -- the top tier of
     #: flag > env > profile > default.
@@ -72,7 +73,7 @@ class Context:
         for key, value in values.items():
             if value is None:
                 continue
-            if key == "api_key":
+            if key in SECRET_SETTINGS:
                 diagnostic(
                     "warning: a key passed on the command line lands in shell "
                     "history and in the process list. Prefer the environment "
@@ -85,9 +86,13 @@ class Context:
     def secrets(self) -> list[str]:
         """Resolved credentials, for scrubbing anything on its way to a stream."""
         out: list[str] = []
-        for product in (LLMWHISPERER, DOCSTUDIO):
+        for product, key in (
+            (LLMWHISPERER, "api_key"),
+            (DOCSTUDIO, "api_key"),
+            (DOCSTUDIO, "platform_key"),
+        ):
             try:
-                if value := self.config.get(product, "api_key"):
+                if value := self.config.get(product, key):
                     out.append(str(value))
             except (ConfigError, CLIError):
                 # Unresolvable means unprintable too, and raising would
@@ -196,20 +201,28 @@ def cli(
         ctx.exit(int(ExitCode.SUCCESS))
 
 
-def _connection_options(*, org_id: bool = False) -> Callable[[Any], Any]:
+#: The connection flags a product group can carry, named after the setting
+#: each one overrides.
+_CONNECTION_FLAGS: dict[str, str] = {
+    "base_url": "Service URL to use.",
+    "api_key": "API key to use.",
+    "org_id": "Organisation to run against.",
+    "platform_key": "Platform key to use, for the commands that take one.",
+}
+
+
+def _connection_options(*settings: str) -> Callable[[Any], Any]:
     """The per-product connection settings, as flags.
 
     They sit on the product group rather than on each command: they say where to
     connect, which is the same question for every command underneath.
     """
     options = [
-        click.option("--base-url", default=None, help="Service URL to use."),
-        click.option("--api-key", default=None, help="API key to use."),
-    ]
-    if org_id:
-        options.append(
-            click.option("--org-id", default=None, help="Organisation to run against.")
+        click.option(
+            f"--{name.replace('_', '-')}", default=None, help=_CONNECTION_FLAGS[name]
         )
+        for name in ("base_url", *settings)
+    ]
 
     def decorate(func: Any) -> Any:
         for option in reversed(options):
@@ -220,7 +233,7 @@ def _connection_options(*, org_id: bool = False) -> Callable[[Any], Any]:
 
 
 @cli.group("whisper")
-@_connection_options()
+@_connection_options("api_key")
 @pass_context
 def whisper_group(ctx: Context, **overrides: str | None) -> None:
     """Extract text and layout from documents with LLMWhisperer."""
@@ -228,7 +241,7 @@ def whisper_group(ctx: Context, **overrides: str | None) -> None:
 
 
 @cli.group("docstudio")
-@_connection_options(org_id=True)
+@_connection_options("api_key", "org_id", "platform_key")
 @click.option(
     "--transport-timeout",
     type=click.FloatRange(min=0),
@@ -250,11 +263,41 @@ def deployment_group() -> None:
     """Work with a deployed API."""
 
 
+@cli.group("auth")
+@_connection_options("platform_key")
+@click.option(
+    "--transport-timeout",
+    type=click.FloatRange(min=0),
+    default=DEFAULT_TRANSPORT_TIMEOUT,
+    show_default=True,
+    help="Seconds before a stalled connection is given up on. 0 waits forever.",
+)
+@pass_context
+def auth_group(
+    ctx: Context, transport_timeout: float | None, **overrides: str | None
+) -> None:
+    """Sign in, and identify the credential you are using.
+
+    Its flags configure the platform key, which is the credential that knows
+    which organisation it belongs to. A deployment key does not: it authenticates
+    against the deployment it was minted for and never reaches this endpoint.
+    """
+    # The same spelling as every other group: the clients are given no bound
+    # of their own, so an unset flag would wait on a black-holed host forever.
+    ctx.transport_timeout = transport_timeout or None
+    ctx.override(DOCSTUDIO, overrides)
+
+
 cli.add_command(config_group)
 
 # Imported for the side effect of registering commands, and last because they
 # hang those commands off the groups declared above.
-from unstract_cli.commands import clone_cmd, docstudio_cmd, whisper_cmd  # noqa: E402,F401
+from unstract_cli.commands import (  # noqa: E402,F401
+    clone_cmd,
+    docstudio_cmd,
+    platform_cmd,
+    whisper_cmd,
+)
 
 
 def command_tree() -> dict[str, Any]:

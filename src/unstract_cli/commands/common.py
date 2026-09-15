@@ -14,8 +14,7 @@ from unstract_cli.core.output import emit_result
 DEFAULT_INTERVAL = 3.0
 DEFAULT_TIMEOUT = 300.0
 
-#: The shortest interval worth allowing: below this the polling is closer to a
-#: busy loop against a metered service than to a wait.
+#: Below this, polling is a busy loop against a metered service, not a wait.
 MIN_INTERVAL = 0.1
 
 F = Callable[..., Any]

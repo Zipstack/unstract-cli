@@ -44,9 +44,8 @@ DEFAULT_BASE_URLS: dict[str, str] = {
 }
 
 #: Environment variables per (product, setting), checked before the config file
-#: and in the order given. The trailing names are the ones the published clients
-#: themselves read: an environment already set up for a client must not leave
-#: the CLI silently on its built-in default, which is production.
+#: and in the order given. The trailing names are the published clients' own,
+#: so an environment set up for a client does not leave the CLI on its default.
 #:
 #: The platform key sits on the docstudio block beside the deployment key: one
 #: deployment serves both the platform API and the deployments it manages, so
@@ -61,9 +60,8 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
 }
 
 
-#: Where the three credentials are minted. Quoted by `config doctor`, by the
-#: starter file `config init` writes, and wherever the CLI reports one as
-#: missing: knowing a key is unset is no help without knowing where one is made.
+#: Where the credentials are minted: knowing a key is unset is no help without
+#: knowing where one is made.
 KEY_SOURCES = (
     "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
     "shown on the API deployment's own page in the Unstract UI, and a key "
@@ -95,8 +93,7 @@ class ConfigError(Exception):
     """Configuration could not be loaded or resolved."""
 
 
-#: Set by the root `--config` flag. Highest precedence, matching the
-#: flag > env > file ordering used for every other setting.
+#: Set by the root `--config` flag, and highest precedence like every flag.
 _config_override: Path | None = None
 
 
@@ -195,8 +192,8 @@ def _deref(value: Any, *, allow_env: bool) -> Any:
 
 #: Settings a *discovered* project-local file may not supply as literals: a
 #: checkout the user did not write must not choose the host their key is sent
-#: to. Separately, and for every key, such a file may not name an environment
-#: variable to read either -- see `ResolvedConfig._env_refused`.
+#: to. Such a file may not name an environment variable to read either --
+#: see `ResolvedConfig._env_refused`.
 UNTRUSTED_PROJECT_KEYS = SECRET_SETTINGS | {"base_url"}
 
 
@@ -280,8 +277,8 @@ def load_config(path: Path | None = None) -> ConfigFile:
     if not isinstance(profiles, dict):
         raise ConfigError(f"`profiles` in {target} must be a table.")
 
-    # Said out loud rather than dropped in silence; the rest of the file still
-    # applies.
+    # Withheld keys are reported rather than dropped in silence; the rest of
+    # the file still applies.
     withheld: dict[tuple[str, ...], Any] = {}
     if project_local:
         withheld = _strip_untrusted(profiles)
@@ -334,9 +331,8 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     target = path or cfg.path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    # Started from the file as it was read: a table this CLI does not know about
-    # is not a table it may delete, and `config set` would otherwise drop
-    # whatever else the user or a later version keeps here.
+    # Started from the file as it was read: a table this CLI does not know
+    # about is not a table it may delete.
     doc: dict[str, Any] = {k: v for k, v in cfg.raw.items() if k != "profiles"}
     doc.pop("default_profile", None)
     if cfg.default_profile:
@@ -352,18 +348,15 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
             "of the real file."
         )
 
-    # Written through a temporary file and renamed into place. Truncating the
-    # real one first would destroy a working config if anything below it failed,
-    # and `mkstemp` both names the temporary unpredictably -- a guessable
-    # sibling in a shared directory is a symlink waiting to be planted -- and
-    # creates it 0600, which is the mode the rename then gives the config, with
-    # no window in which the new credential is readable more widely.
+    # Written to a temporary file and renamed into place, so a failed write
+    # cannot destroy a working config. `mkstemp` names the temporary
+    # unpredictably -- a guessable sibling is a symlink waiting to be planted --
+    # and creates it 0600, the mode the rename then gives the config.
     try:
         handle_fd, name = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
     except OSError as exc:
-        # Renaming into place is what makes the write atomic, and that needs the
-        # directory, not just the file. Writing the file in place instead would
-        # put back the truncate this replaced.
+        # The atomic rename needs a writable directory, not just a writable
+        # file.
         raise ConfigError(
             f"Cannot write {target}: its directory {target.parent} is not "
             f"writable, and the config is replaced rather than overwritten so a "
@@ -373,17 +366,14 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
     try:
         with os.fdopen(handle_fd, "wb") as fh:
             tomli_w.dump(doc, fh)
-            # The rename only replaces one whole config with another if the new
-            # bytes are on the disk before it happens. Without this a crash can
-            # leave the rename standing over content that never landed.
+            # The rename replaces one whole config with another only if the
+            # new bytes reached the disk before it.
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, target)
-        # And the rename is itself a directory change that has to be persisted;
-        # syncing the file does not cover the entry that now points at it.
-        # Windows cannot open a directory to sync it; anywhere else a failure
-        # here is real, and the config has landed, so it is reported rather
-        # than raised or hidden.
+        # Syncing the file does not cover the directory entry now pointing at
+        # it. Windows cannot open a directory to sync it; elsewhere the config
+        # has already landed, so a failure is reported rather than raised.
         if sys.platform != "win32":
             try:
                 dir_fd = os.open(target.parent, os.O_RDONLY)
@@ -441,8 +431,8 @@ class ResolvedConfig:
         return profile if isinstance(profile, dict) else {}
 
     def _product_block(self, product: str) -> dict[str, Any]:
-        # One accepted shape only, settings nested under the product name: a
-        # config that looks applied but is not fails later with no obvious cause.
+        # Settings nested under the product name and nowhere else: a config
+        # that looks applied but is not fails later with no obvious cause.
         block = self._profile().get(product)
         return block if isinstance(block, dict) else {}
 

@@ -180,8 +180,8 @@ def client_params(method: Callable[..., Any]) -> dict[str, inspect.Parameter]:
     }
 
 
-#: Python annotation -> OpenAPI type. A source-derived spec describes the wire,
-#: which can differ from what the client method takes.
+#: Python annotation -> OpenAPI type. A spec describes the wire, which can
+#: differ from what the client method takes.
 _ANNOTATIONS: dict[str, str] = {
     "bool": "boolean",
     "int": "integer",
@@ -225,13 +225,11 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
     if (mapped := _annotation_type(signature.annotation)) is not None:
         updates["type"] = mapped
     # Whether a flag is mandatory is the spec's answer, not the signature's: a
-    # signature with no default says only that the *call* cannot omit the
-    # argument, which the command answers by supplying one.
+    # signature with no default says only that the call cannot omit it.
     if signature.default is not inspect.Parameter.empty and not _is_unset(
         signature.default
     ):
-        # What omitting the flag gets you: an `Unset` default sends nothing, so
-        # the spec's default is the one that applies.
+        # An `Unset` default sends nothing, so the spec's default applies.
         updates["default"] = signature.default
     return replace(param, **updates)
 
@@ -240,8 +238,8 @@ def _from_signature(param: Param, signature: inspect.Parameter) -> Param:
 #: docstring, which is how both clients document their parameters.
 _ARG_LINE = re.compile(r"^\s*(\w+)\s*(\([^)]*\))?\s*:\s*(.*)$")
 
-#: Sentences a description restates from elsewhere, stripped in the order they
-#: appear. Each pattern ends at its own sentence, so prose after it survives.
+#: Sentences a description restates from elsewhere. Each pattern ends at its
+#: own sentence, so prose after it survives.
 _RESTATED = (
     re.compile(r"\s*Defaults to .*?\.(?=\s+[A-Z]|\s*$)"),
     re.compile(r'\s*Can be ".*?"\s*\.'),
@@ -274,8 +272,8 @@ def docstring_params(method: Callable[..., Any]) -> dict[str, str]:
             out[current] = match.group(3).strip()
         elif current:
             out[current] = f"{out[current]} {line.strip()}".strip()
-    # Default and allowed values are rendered from the signature and the spec;
-    # the docstring's own copy of them would disagree as soon as either moves.
+    # Defaults and allowed values are rendered from the signature and the
+    # spec; the docstring's own copy would disagree as soon as either moves.
     return {name: _strip_restated(text) for name, text in out.items() if text}
 
 
@@ -300,8 +298,8 @@ def _help_text(param: Param, choices: tuple[str, ...]) -> str:
     leave this out", which is the only question a default can honestly answer
     here: the CLI does not resend it, the client or the server does.
     """
-    # The spec states some defaults in prose of its own. Left in, the flag
-    # carries two statements of one default, free to disagree.
+    # Some specs state a default in prose too, which would leave the flag
+    # carrying two statements of one default.
     parts = [_strip_restated(param.description)] if param.description else []
     if choices:
         parts.append(f"One of: {', '.join(choices)}.")
@@ -318,20 +316,20 @@ def _help_text(param: Param, choices: tuple[str, ...]) -> str:
 def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
     """Build one Click option from a spec parameter and its overlay entry."""
     entry = spec_overlay.get(param.name, {})
-    # Falling back to the spec's own enum, so a hand-written list is needed only
-    # to narrow one on purpose -- a copy of it goes stale as the service grows.
+    # Falls back to the spec's own enum: a hand-written list is needed only to
+    # narrow one on purpose, and goes stale as the service grows.
     choices = tuple(entry.get("choices", ())) or param.choices
     help_text = entry.get("help") or _help_text(param, choices)
     short = entry.get("short")
 
-    # A required option is left without one: from Click 8.2 an explicit default
-    # counts as a value the caller supplied, and `required` stops being enforced.
+    # A required option is left without a default: an explicit one counts as a
+    # value the caller supplied, and `required` stops being enforced.
     absent: dict[str, Any] = {} if param.required else {"default": None}
 
     if param.type == "boolean":
-        # A paired flag, not `is_flag`: a default-true parameter cannot be
-        # turned off by an on-only flag, and `None` keeps "not passed" apart
-        # from "passed false".
+        # A paired flag, not `is_flag`: an on-only flag cannot turn off a
+        # default-true parameter, and `None` keeps "not passed" apart from
+        # "passed false".
         decls = [f"{param.flag}/--no-{param.name.replace('_', '-')}"]
         if short:
             decls.insert(0, short)
@@ -348,9 +346,8 @@ def click_option(param: Param, spec_overlay: dict[str, Any]) -> click.Option:
             help=help_text,
             **absent,
         )
-    # What omitting the flag gets you. It cannot be Click's own default, which
-    # the CLI leaves unset so that nothing is resent -- and a caller building a
-    # call needs it as a value, not as a sentence inside the help.
+    # What omitting the flag gets you, as a value rather than as a sentence in
+    # the help. Click's own default stays unset so that nothing is resent.
     option.server_default = param.default
     return option
 

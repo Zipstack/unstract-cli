@@ -3,8 +3,8 @@
 The committed specs are generated from server code, so they describe the API but
 not the command line: no short flags, no wording aimed at someone typing, no
 way to narrow a value list or hide a parameter a caller should not reach for.
-Those four live here rather than in the derivation, so adding one is an edit to
-a data file instead of a special case in code.
+Those live here rather than in the derivation, so adding one is an edit to a
+data file instead of a special case in code.
 
 TOML, read with the stdlib, for the same reason the config file is TOML: no
 parser dependency, and the file stays editable without a code change.

@@ -45,23 +45,21 @@ RUN_POLL = PollSpec(
     status_field=("execution_status", "status"),
 )
 
-#: What `--output raw` prints, best answer first. A queued run answers with a
-#: handle and no result, and a status read answers with a state until there is
-#: one, so a single field would be wrong for two of the three shapes.
+#: What `--output raw` prints, best answer first: a queued run carries a handle
+#: and no result, so a single field would be wrong for some of the shapes.
 RUN_RAW = ("extraction_result", "execution_id")
 STATUS_RAW = ("extraction_result", "execution_status")
 
-#: Parameters the run POST and the status GET share: what was asked for in the
-#: run has to be asked for again when the result is read.
+#: Shared by the run POST and the status GET: what the run asked for has to be
+#: asked for again when the result is read.
 _SHARED_WITH_STATUS = ("include_metadata", "include_metrics", "include_extracted_text")
 
 
 @raw_fields(*RUN_RAW)
 @deployment_group.command("run")
 @click.argument("target")
-# Optional because a run can name its documents as `--presigned-urls`
-# instead; the two are checked together below, since neither alone is
-# required and a run naming no documents at all is the real error.
+# Optional because a run can name its documents as `--presigned-urls` instead;
+# the two are checked together below.
 @click.argument("files", nargs=-1, type=click.Path(exists=True))
 @wait_options()
 @spec_options(
@@ -90,8 +88,8 @@ def run(
     default) this polls until the execution finishes and returns its result.
     """
     sent = requested(params)
-    # Before the client is built: what the caller typed is wrong whatever the
-    # config resolves to, and a credential error here would name the wrong fault.
+    # Checked before the client is built: this is wrong whatever the config
+    # resolves to, and a credential error would name the wrong fault.
     if not files and not sent.get("presigned_urls"):
         raise CLIError(
             "A run needs at least one document.",
@@ -115,15 +113,14 @@ def run(
         preflight(save)
     key_source = ctx.config.deployment_key_source(target)
     with deployment_errors(target, key_source), translated(endpoint=client.api_url):
-        # Queued execution, so the request returns a handle instead of holding
-        # the connection open for the length of the job.
+        # Queued execution: the request returns a handle instead of holding the
+        # connection open for the length of the job.
         started = client.structure_file(list(files), timeout=0, **sent)
         raise_for_result(started, endpoint=client.api_url)
 
         if not wait:
-            # The ack names no execution of its own: the handle has to be read
-            # back out of the endpoint it hands you, and `meta` is where the
-            # CLI puts what it had to derive.
+            # The ack names no execution of its own, so the handle is derived
+            # from the endpoint it hands back and reported as meta.
             finish(ctx, started, raw_fields=RUN_RAW, meta=_handle_meta(started))
             return
 
@@ -148,15 +145,14 @@ def run(
                 ),
             )
         except CLIError as exc:
-            # This job polls on a status URL, which is not what the status
-            # command takes; without the id the caller is told to resume with
-            # something they cannot pass to it.
+            # Polling runs on a status URL, which is not what the status
+            # command takes: without the id a resume cannot be spelled.
             handle = _handle_meta(started)
             exc.extra = {**exc.extra, **handle}
             if exc.exit_code is ExitCode.TIMEOUT and (
                 found := handle.get("execution_id")
             ):
-                # The status read is one-shot, so a resume that drops --save
+                # The status read is one-shot: a resume that drops --save
                 # spends it with nothing on disk.
                 saving = f" --save {save}" if save else ""
                 exc.hint = (
@@ -166,8 +162,7 @@ def run(
             raise
     handle = _handle_meta(started)
     _raise_for_failed_files(result, endpoint=client.api_url, extra=handle)
-    # A waited result names no execution, so the handle is returned as meta for
-    # correlation.
+    # A waited result names no execution, so the handle is reported as meta.
     finish(ctx, result, raw_fields=RUN_RAW, meta=handle)
 
 
@@ -176,8 +171,8 @@ def _failed_files(result: dict[str, Any]) -> list[dict[str, Any]]:
     entries = result.get("extraction_result")
     if not isinstance(entries, list):
         return []
-    # The spec types a file's status as a bare string; the service has been
-    # seen to spell it "Success" and "Failed".
+    # The spec types a file's status as a bare string, and the service spells
+    # it in mixed case.
     failed = []
     for entry in entries:
         if not isinstance(entry, dict):
@@ -194,8 +189,8 @@ def _failed_files(result: dict[str, Any]) -> list[dict[str, Any]]:
 def _raise_for_failed_files(
     result: dict[str, Any], *, endpoint: str, extra: dict[str, Any]
 ) -> None:
-    # A completed execution says the batch ran, not that every document in it
-    # came out: a failed file is reported inside the success shape.
+    # A completed execution says the batch ran, not that every document came
+    # out: a failed file is reported inside the success shape.
     failed = _failed_files(result)
     if not failed:
         return
@@ -208,8 +203,8 @@ def _raise_for_failed_files(
         ExitCode.VALIDATION,
         details=result,
         endpoint=endpoint,
-        # The status read is one-shot, so the successful documents in this
-        # payload survive nowhere else.
+        # The status read is one-shot, so the successful documents here
+        # survive nowhere else.
         verbatim_details=True,
         hint=(
             "`error.details` carries the full result, successful documents "
@@ -235,8 +230,8 @@ def _status_poller(
 
     def poll(endpoint: str) -> dict[str, Any]:
         result = client.check_execution_status(endpoint, **params)
-        # A retryable status is left to the client's own retry policy, which has
-        # already run; the client reports those as still pending.
+        # The client's own retry policy has already run and reports what it
+        # would retry as still pending.
         if not result.get("pending"):
             raise_for_result(result, endpoint=client.api_url, one_shot=True)
         return result
@@ -268,8 +263,8 @@ def status(
     client = deployment(ctx.config, target, ctx.transport_timeout)
     if save:
         preflight(save)
-    # Quoted rather than trusted: the id comes from the caller and would
-    # otherwise be able to carry query syntax of its own.
+    # The id comes from the caller, so it could otherwise carry query syntax
+    # of its own.
     endpoint = f"{client.api_url}?execution_id={quote(execution_id, safe='')}"
     # The status read serves a result exactly once, which is what a 406 from
     # it means.
@@ -281,8 +276,8 @@ def status(
         result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
             raise_for_result(result, endpoint=client.api_url, one_shot=True)
-    # A finished-and-failed execution is reported inside an HTTP 200, so the
-    # status code alone would call this a success.
+    # A finished-and-failed execution arrives inside an HTTP 200, so the status
+    # code alone would call it a success.
     if classify(result, RUN_POLL) is PollState.FAILURE:
         raise CLIError(
             f"Execution {execution_id} finished with status "

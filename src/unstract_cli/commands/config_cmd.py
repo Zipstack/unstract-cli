@@ -43,8 +43,8 @@ from unstract_cli.core.platform import deployment_rows, organisation, platform_c
 #: not the product: the deployment key sits beside it under `docstudio`.
 PLATFORM_KEY = "platform"
 
-#: Keys whose value is never echoed back, even on explicit request: this output
-#: is as likely to land in a log or a transcript as on a screen.
+#: Keys never echoed back: this output lands in logs and transcripts as often
+#: as on a screen.
 _SECRET_KEY_HINTS = ("key", "token", "secret")
 
 
@@ -248,8 +248,8 @@ def config_set(
             f"--config {written} to use it, or write it to the home config."
         )
     if cfg.is_project_local and value.startswith("env:"):
-        # Refused for every key, not only the withheld ones, so writing it
-        # without a word would report success for a setting that never resolves.
+        # Refused for every key here, so a silent write would report success
+        # for a setting that never resolves.
         warnings.append(
             f"{written} was found by searching upwards rather than named, so it "
             f"may not choose which environment variable is read and `{value}` is "
@@ -278,8 +278,7 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     real, and so does the platform API -- `whoami` reads nothing but the key
     itself. A deployment has no side-effect-free endpoint -- the only thing to
     call is an execution -- so its entry reports that the settings resolve and
-    says plainly that nothing was verified. Claiming otherwise would be worse
-    than not checking.
+    says plainly that nothing was verified.
 
     Keyed by credential rather than by product: docstudio holds two keys that
     are checked differently.
@@ -334,8 +333,8 @@ def _probe(resolved: ResolvedConfig) -> dict[str, Any]:
     )
     out[DOCSTUDIO] = {
         "checked": False,
-        # Null, not True: nothing was called, so there is no verdict to report.
-        # A `true` beside `checked: false` reads as a live check that passed.
+        # Null, not True: nothing was called, and `true` beside `checked:
+        # false` reads as a live check that passed.
         "ok": None,
         "resolved": resolves,
         "detail": (
@@ -415,13 +414,13 @@ def config_doctor(obj: Any, probe: bool) -> None:
         deployments = []
         problems.append(str(exc))
     for api_name in deployments:
-        # A deployment entry is a second place a project file can name a key --
-        # and a run falls back to the profile's key silently.
+        # An entry may carry a key of its own, and falls back to the profile's
+        # key silently.
         if detail := resolved.withheld_detail("deployments", api_name, "api_key"):
             problems.append(f"deployment {api_name}: {detail}")
         try:
-            # Resolved the way a run resolves it: that an entry is *listed* says
-            # nothing about whether the key behind it arrives.
+            # Being listed says nothing about whether the key behind it
+            # arrives, so resolve it the way a run would.
             resolved.deployment_key(api_name)
         except ConfigError as exc:
             problems.append(f"deployment {api_name}: {exc}")
@@ -438,8 +437,8 @@ def config_doctor(obj: Any, probe: bool) -> None:
         for entry in products.values()
         if "api_key" in entry
     ):
-        # The next question after "no key" is always where one comes from. The
-        # field name avoids the word the payload scrubber redacts on.
+        # The next question after "no key" is where one comes from. The field
+        # name avoids the word the payload scrubber redacts on.
         report["getting_started"] = KEY_SOURCES
     if probe:
         report["probe"] = _probe(resolved)

@@ -222,9 +222,9 @@ UNSENDABLE = (
 )
 
 
-#: The status inside a `PlatformClientError` message. The released client embeds
-#: it in prose rather than carrying it, so this is the only route from a refused
-#: platform call to the right exit code. Deletable once the exception carries one.
+#: The status inside a `PlatformClientError` message: the client spells it into
+#: prose rather than carrying it, so this is the only route from a refused
+#: platform call to the right exit code.
 _PLATFORM_STATUS = re.compile(r"failed with (\d{3})\b")
 
 
@@ -252,15 +252,10 @@ def translated(endpoint: str | None = None, *, one_shot: bool = False) -> Iterat
             ) from exc
         raise CLIError(message, details=details, endpoint=endpoint) from exc
     except PlatformClientError as exc:
-        # Ordered before `APIDeploymentsClientException`, which it derives from:
-        # caught there, every platform failure would exit USAGE, and a rejected
-        # key has to exit AUTH -- the exit-code table in the README promises it
-        # and a setup script branches on it.
-        #
-        # The status is recovered from the message because the exception does
-        # not carry one: the client spells it into the text as "failed with
-        # <status>". A wording change upstream silently costs the mapping,
-        # which is what the `_PLATFORM_STATUS` test pins.
+        # Ordered before `APIDeploymentsClientException`, which it derives
+        # from: caught there, a rejected key would exit USAGE rather than AUTH,
+        # which a setup script branches on. The status is read back out of the
+        # message because the exception does not carry one.
         if match := _PLATFORM_STATUS.search(str(exc)):
             raise error_from_status(
                 int(match.group(1)), str(exc), endpoint=endpoint, one_shot=one_shot

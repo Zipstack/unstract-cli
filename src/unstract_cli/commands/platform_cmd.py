@@ -39,10 +39,9 @@ from unstract_cli.core.platform import (
     platform_client,
 )
 
-#: The fields a deployment listing shows. The server sends fifteen per row,
-#: including run histories; `--output table` wraps rather than truncates, so the
-#: whole row is unreadable at a terminal. Narrowed here rather than silently cut
-#: off downstream -- `--full` returns the rows as sent.
+#: The fields a deployment listing shows. A row carries many more, run
+#: histories included, and `--output table` wraps rather than truncates, so the
+#: whole row is unreadable at a terminal. `--full` returns the rows as sent.
 LISTING_FIELDS = ("api_name", "display_name", "id", "is_active", "api_endpoint")
 
 
@@ -65,13 +64,10 @@ def _writable_config() -> ConfigFile:
     """The config file a command may write to, or a refusal saying why not."""
     cfg = load_config()
     if cfg.is_project_local:
-        # A `.unstract.toml` found by walking up from the working directory is
-        # very likely committed. Rewriting it would replace a teammate's
-        # `org_id` with this caller's, drop every comment (the file is
-        # re-serialised, not patched) and narrow its mode to 0600 -- a dirty,
-        # mode-changed, semantically different tracked file. The config layer
-        # already declines to *trust* this file for credentials; declining to
-        # *write* it is the same judgement.
+        # A `.unstract.toml` found by walking up is very likely committed, and
+        # writing it would rewrite a teammate's settings, drop the file's
+        # comments and narrow its mode. The config layer already declines to
+        # trust such a file for credentials.
         raise SaveDeclinedError(
             f"the config at {cfg.path} is project-local",
             hint="Nothing was written. Name the file to write instead: "
@@ -91,10 +87,9 @@ def _profile_to_write(
     """
     selected = name or ctx.config.active_profile or cfg.default_profile
     if selected is None and cfg.exists and cfg.profiles:
-        # Neither the caller nor the file named one, so the "cloud-us" literal
-        # below is this function's own invention -- refusing under that name
-        # would quote a profile the caller never typed, and advising `config
-        # set` would create a third one that shadows theirs as the new default.
+        # Neither the caller nor the file named one, so the name below is this
+        # function's own: refusing under it would quote a profile the caller
+        # never typed.
         if len(cfg.profiles) == 1:
             selected = next(iter(cfg.profiles))
         else:
@@ -106,13 +101,9 @@ def _profile_to_write(
 
     selected = selected or "cloud-us"
     if not create and cfg.exists and cfg.profiles and selected not in cfg.profiles:
-        # `setdefault` would create it. That is not a convenience: the profile
-        # lookup raises "Profile not found" for a typo today, and materialising
-        # the name silently disarms that check for every later command, which
-        # then resolves the built-in production defaults instead.
-        #
-        # Raised as `ConfigError` so the caller's SAVE_FAILED wrapper carries
-        # the identity back: the key was resolved, only the note-taking failed.
+        # `setdefault` would materialise the name, disarming the "profile not
+        # found" check for every later command. Raised as a `ConfigError` so
+        # the caller's SAVE_FAILED wrapper still carries the identity back.
         known = ", ".join(sorted(cfg.profiles)) or "none"
         raise ConfigError(
             f"profile {selected!r} is not in {cfg.path} "
@@ -311,8 +302,7 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
             "No key was given; at least one is needed.", ExitCode.USAGE, hint=KEY_SOURCES
         )
     # A key given here is never read back through the config layer that
-    # registers one, and the deployment key is never sent anywhere either, so
-    # without this nothing would scrub it out of a later error payload.
+    # registers one, so nothing else would scrub it out of an error payload.
     for value in keys.values():
         remember_secret(value)
 
@@ -486,10 +476,8 @@ def whoami(ctx: Context, save: bool) -> None:
     try:
         written = _store_organisation(ctx, str(org_id))
     except SaveDeclinedError as exc:
-        # The identity is what was asked for; the write was a convenience this
-        # config layout declines. Reporting the whole command as a usage error
-        # would fail it in any checkout holding a committed `.unstract.toml`,
-        # and throw the identity away with it.
+        # The identity is what was asked for and the write was a convenience,
+        # so failing the whole command would throw the answer away with it.
         diagnostic(
             f"note: org_id was not stored -- {exc.reason}. {exc.hint}",
             quiet=ctx.quiet,
@@ -498,9 +486,8 @@ def whoami(ctx: Context, save: bool) -> None:
         finish(ctx, identity, meta={"saved": False, "reason": exc.reason})
         return
     except (OSError, ConfigError) as exc:
-        # The read succeeded; only the convenience write failed. Losing the
-        # identity to a full disk would report a working key as a total failure,
-        # and SAVE_FAILED exists for exactly this shape.
+        # The read succeeded and only the convenience write failed, which is
+        # the shape SAVE_FAILED exists for.
         raise CLIError(
             f"Resolved the organisation but could not write it: {exc}",
             ExitCode.SAVE_FAILED,
@@ -546,10 +533,9 @@ def ls(ctx: Context, api_name: str | None, full: bool) -> None:
       unstract docstudio deployment ls --full
     """
     if ctx.config.overrides.get(f"{DOCSTUDIO}.api_key") is not None:
-        # `--api-key` on the docstudio group means a *deployment* key, and this
-        # command authenticates with a platform key. Honouring it would send a
-        # deployment key to the platform API, and ignoring it silently reads as
-        # a broken flag rather than as the wrong credential.
+        # `--api-key` on this group means a deployment key, and this command
+        # authenticates with a platform key: honouring it would send the wrong
+        # credential, and ignoring it silently reads as a broken flag.
         raise CLIError(
             "`--api-key` on `docstudio` is a deployment key; "
             "`deployment ls` authenticates with a platform key.",
@@ -573,10 +559,8 @@ def ls(ctx: Context, api_name: str | None, full: bool) -> None:
     if not full:
         rows = [{field: row.get(field) for field in LISTING_FIELDS} for row in rows]
     # `count` is the server's total across pages, which is not `len(rows)` once
-    # the account has more deployments than fit one page. Both are reported
-    # rather than one standing in for the other, and `next` says whether asking
-    # again would return more -- this command does not paginate on the caller's
-    # behalf, so saying so is the honest surface.
+    # there are more deployments than fit one page. This command does not
+    # paginate, so both are reported and `next` says whether more would come.
     finish(
         ctx,
         {"results": rows},

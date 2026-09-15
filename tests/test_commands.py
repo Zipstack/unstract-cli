@@ -1999,10 +1999,9 @@ def test_whoami_keeps_the_identity_when_the_write_fails(
     error = envelope(out)["error"]
 
     assert code == int(ExitCode.SAVE_FAILED)
-    # Not full equality: `redact_value` masks any field whose *name* looks
-    # secret, and `key_name` matches -- so the identity reaches `details` with
-    # that one field starred out. The organisation is the part the caller needs
-    # in order to carry on without the write.
+    # Not full equality: `redact_value` masks any field whose name looks
+    # secret, and `key_name` matches. The organisation is the part the caller
+    # needs in order to carry on without the write.
     assert error["details"]["organization_id"] == IDENTITY["organization_id"]
     assert error["details"]["key_name"] == "***REDACTED***"
 
@@ -2028,9 +2027,9 @@ def test_whoami_does_not_rewrite_a_discovered_project_config(
     code, out, envelope_err = run(capsys, "auth", "whoami")
     body = envelope(out)
 
-    # Declining the write is not failing the call: README blesses a committed
-    # `.unstract.toml`, and `auth whoami` is the documented first command, so
-    # exiting 2 broke the quickstart and discarded the identity with it.
+    # Declining the write is not failing the call: a committed
+    # `.unstract.toml` is supported, and this is the first command a new user
+    # runs, so failing it would discard the identity with the write.
     assert code == 0
     assert body["data"]["organization_id"] == IDENTITY["organization_id"]
     assert body["meta"]["saved"] is False

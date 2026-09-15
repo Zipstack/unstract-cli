@@ -33,9 +33,8 @@ def platform_client(
     not -- so a caller passes it where it matters.
     """
     if timeout is not None and timeout <= 0:
-        # A negative timeout is rejected at send time, by a bare ValueError
-        # that matches no arm in `__main__` -- a traceback and no envelope.
-        # Refused here, where it is still a usage error about a flag.
+        # Rejected at send time by a bare ValueError that renders no envelope,
+        # so it is refused here, where it is still a usage error about a flag.
         raise CLIError(
             f"--transport-timeout must be greater than 0, not {timeout:g}.",
             ExitCode.USAGE,
@@ -49,10 +48,9 @@ def platform_client(
             logging_level="ERROR",
         )
     except PlatformClientError as exc:
-        # The client validates the host and the key before it sends anything,
-        # and that failure reaches no arm of the entry point: a traceback with
-        # no envelope, where a script is parsing one. It is what the caller
-        # configured, so it is a usage error.
+        # The client validates the host and the key before sending, and that
+        # failure renders no envelope where a script is parsing one. It is what
+        # the caller configured, so it is reported as a usage error.
         raise CLIError(
             str(exc),
             ExitCode.USAGE,

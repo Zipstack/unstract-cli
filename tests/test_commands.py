@@ -1445,7 +1445,9 @@ PARTIAL_FAILURE = {
             "file": "a.pdf",
             "file_execution_id": "f1",
             "status": "Success",
-            "result": {"total": 1},
+            # A field the redactor would blank: the assertion on the rescued
+            # payload is only a check if redaction would have changed it.
+            "result": {"policy_key": "PK-1", "total": 1},
             "error": None,
             "metadata": {},
         },
@@ -1506,6 +1508,7 @@ def test_a_completed_run_with_a_failed_document_is_not_a_success(
     error = envelope(out)["error"]
     assert error["failed_files"] == ["bad.pdf"]
     assert error["execution_id"] == "e1"
+    assert error["details"]["extraction_result"][0]["result"]["policy_key"] == "PK-1"
     assert "bad.pdf" in error["message"]
     # One-shot read: the successful documents survive only here, unredacted.
     assert error["details"] == PARTIAL_FAILURE

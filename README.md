@@ -97,9 +97,10 @@ any one of them `-` to read from stdin.
 search, or `$UNSTRACT_CONFIG`, or `--config`. Every setting resolves
 **flag > env > profile > built-in default**, and the CLI is fully usable with no
 config file at all. The flag tier is the connection options on each product
-group — `unstract docstudio --base-url … --org-id … deployment run …`, and
-`--base-url`/`--api-key` on `whisper`, `--platform-key` on `auth` — which
-override the profile for that one invocation without writing anything.
+group — `--base-url`, `--api-key`, `--org-id` and `--platform-key` on
+`docstudio`, `--base-url`/`--api-key` on `whisper`, `--base-url`/`--platform-key`
+on `auth` — which override the profile for that one invocation without writing
+anything.
 
 ```toml
 default_profile = "cloud-us"
@@ -120,14 +121,16 @@ api_key = "env:INVOICE_PARSER_KEY"
 ```
 
 `deployment run` and `deployment status` take the API name as `deployment ls`
-prints it. The key for a run resolves `--api-key` > `$UNSTRACT_DEPLOYMENT_KEY` >
+prints it. `ls` itself authenticates with the platform key and refuses
+`--api-key`, which on `docstudio` means a deployment key. The key for a run resolves `--api-key` > `$UNSTRACT_DEPLOYMENT_KEY` >
 the deployment's own entry > the profile's `api_key`, so most profiles need no
 `deployments` section at all; `config set docstudio api_key <key> --deployment
 <api_name>` writes one. `org_id` lives on the `docstudio` block — `auth login`
 and `auth whoami` write the one the platform key resolves there. `config init`
 writes this shape minus `platform_key` and the `deployments` entry — both are
-the exception, not the starting point — plus an `onprem-example` profile to
-copy for a self-hosted install; only the *active* profile is ever resolved.
+the exception, not the starting point — plus a `cloud-eu` profile and an
+`onprem-example` shape to copy for a self-hosted install; only the *active*
+profile is ever resolved.
 
 `auth login` writes keys literally; `env:VAR_NAME` indirection is what
 `config init` writes and what the example uses, so the file records where a
@@ -137,9 +140,10 @@ is wider than that.
 
 `unstract config doctor` reports where each setting resolved from — including
 whether an `env:` reference is actually set in the current process — without
-echoing any value. `--probe` also checks the keys against the service and, with
-a platform key, warns about a `deployments` entry the organisation no longer
-has. It exits non-zero when one of its own checks failed, so a setup script can
+echoing any value. `--probe` also checks the two keys that can be
+checked — the platform key and the LLMWhisperer key, the same two `auth login`
+checks — and, with a platform key, warns about a `deployments` entry the
+organisation no longer has. It exits non-zero when one of its own checks failed, so a setup script can
 branch on it.
 
 A project-local `.unstract.toml` **found by upward search** may not supply a

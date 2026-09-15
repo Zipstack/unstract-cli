@@ -12,11 +12,10 @@ by hand:
 
 `provenance.json` records the client pin each copy was synced for, the commit
 it was taken from and its sha256. `tests/test_specs.py` fails if a vendored
-file stops matching that hash, or if the pin in `pyproject.toml` has moved
-without the spec being re-synced. The
-hash moves in the same commit as the file, so it does not catch a deliberate
-edit; it catches a copy that was corrupted or half-updated, and a provenance
-entry that was not updated with its file.
+file stops matching that hash, or if the recorded pin and the one in
+`pyproject.toml` disagree. The hash moves in the same commit as the file, so
+it does not catch a deliberate edit; it catches a copy that was corrupted or
+half-updated, and a provenance entry that was not updated with its file.
 
 Refresh one by copying it byte-for-byte from the commit the client pinned in
 `pyproject.toml` was generated from, then updating `provenance.json` to match.

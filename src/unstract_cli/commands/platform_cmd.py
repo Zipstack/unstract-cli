@@ -342,6 +342,7 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
         )
 
     org_id = str(identity["organization_id"]) if identity.get("organization_id") else None
+    checked_as = name
     existing = cfg.profiles.get(name, {}).get(DOCSTUDIO, {}).get("org_id")
     if org_id and existing and existing != org_id:
         # Silently overwriting would repoint every deployment entry in the
@@ -370,9 +371,13 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
         product_block = block.setdefault(product, {})
         product_block[key] = keys[credential]
         # The key was checked against the host the run resolved -- a flag, or
-        # the profile the login started from. A profile that does not record
-        # that host would send the key to the built-in default instead.
-        if "base_url" not in product_block or ctx.overrides.get(f"{product}.base_url"):
+        # the profile the login started from. A profile that records any other
+        # host, or none, would send the key somewhere it was never checked.
+        if (
+            name != checked_as
+            or "base_url" not in product_block
+            or ctx.overrides.get(f"{product}.base_url")
+        ):
             product_block["base_url"] = resolved.get(product, "base_url")
     if org_id:
         block.setdefault(DOCSTUDIO, {})["org_id"] = org_id

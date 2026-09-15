@@ -2348,6 +2348,32 @@ def test_a_new_profile_offered_by_the_guard_keeps_the_host_the_key_was_checked_o
     assert "[profiles.beta.docstudio]" in text
 
 
+def test_a_profile_chosen_at_the_guard_takes_the_host_the_key_was_checked_on(
+    capsys, login_seams, tmp_path
+):
+    """The name typed at the guard may be an existing profile with a host of
+    its own; the key was not checked against that host, so the one it was
+    checked against replaces it."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "onprem"\n[profiles.onprem.docstudio]\n'
+        'base_url = "https://onprem.example/"\norg_id = "org_OLD"\n'
+        '[profiles.beta.docstudio]\nbase_url = "https://stale.example/"\n',
+        encoding="utf-8",
+    )
+    login_seams(
+        [PK, "", "", "beta"],
+        confirm=True,
+        whoami={**IDENTITY, "organization_id": "org_NEW"},
+    )
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    text = _written(tmp_path)
+    assert "stale.example" not in text
+    assert text.count('base_url = "https://onprem.example/"') == 2
+
+
 def test_a_new_profile_name_that_belongs_to_a_third_organisation_is_confirmed(
     capsys, login_seams, tmp_path
 ):

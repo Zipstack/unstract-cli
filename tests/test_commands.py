@@ -27,7 +27,7 @@ from unstract.llmwhisperer.client_v2 import (
 from unstract_cli.__main__ import main
 from unstract_cli.app import command_tree
 from unstract_cli.commands import clone_cmd, docstudio_cmd, platform_cmd, whisper_cmd
-from unstract_cli.config import LLMWHISPERER, PLATFORM
+from unstract_cli.config import DOCSTUDIO, LLMWHISPERER
 from unstract_cli.core.errors import CLIError, ExitCode
 
 
@@ -148,7 +148,7 @@ def platform_client(monkeypatch):
             # factory has to do it too or the seam hides a production path.
             # The signature tracks the real `platform_client` deliberately: a
             # fixture that drifts from it passes while testing nothing.
-            client.built_with["api_key"] = config.get(PLATFORM, "api_key")
+            client.built_with["api_key"] = config.get(DOCSTUDIO, "platform_key")
             client.built_with["org_id"] = org_id
             client.built_with["timeout"] = timeout
             return client
@@ -186,7 +186,7 @@ def test_the_v1_commands_are_registered():
         "run",
         "status",
     }
-    assert set(tree["auth"]["commands"]) == {"whoami"}
+    assert set(tree["auth"]["commands"]) == {"login", "whoami"}
 
 
 # --------------------------------------------------------------------------- #
@@ -704,24 +704,44 @@ def test_a_queued_run_reports_the_handle_it_started(capsys, deployment_client, t
     assert capsys.readouterr().out.strip() == "e-1"
 
 
-def test_a_target_that_is_not_a_configured_alias_names_the_ones_that_are(
-    capsys, deployment_client, write_config
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("docstudio", "deployment", "status", "invoice-parser", "e-1"),
+        ("docstudio", "deployment", "run", "invoice-parser", "DOC", "--no-wait"),
+    ],
+    ids=["status", "run"],
+)
+def test_a_rejected_key_names_the_deployment_and_how_to_give_it_its_own(
+    capsys, deployment_client, tmp_path, argv
 ):
-    """A misspelt alias is sent as an API name and comes back not-found, which
-    says nothing about the aliases sitting in the profile."""
-    write_config(
-        'default_profile = "p"\n'
-        "[profiles.p.docstudio]\n"
-        'org_id = "org"\n'
-        'api_key = "k"\n'
-        "[profiles.p.deployments.invoices]\n"
-        'api_name = "invoice-parser"\n'
+    """A 401 is the first moment "this deployment may need its own key" is
+    known to be true, so the hint that says so has to be reachable from both
+    commands that send one."""
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF")
+    deployment_client(
+        check_execution_status={"status_code": 401, "error": "Unauthorized"},
+        structure_file={"status_code": 401, "error": "Unauthorized"},
     )
+    code, out, _ = run(capsys, *(str(doc) if a == "DOC" else a for a in argv))
+    assert code == int(ExitCode.AUTH)
+    error = envelope(out)["error"]
+    assert "invoice-parser" in error["message"]
+    assert "does not authorize" in error["message"]
+    assert (
+        "config set docstudio api_key <key> --deployment invoice-parser"
+        in (error["hint"])
+    )
+
+
+def test_an_unknown_api_name_is_pointed_at_the_listing(capsys, deployment_client):
+    """A misspelt or renamed API name comes back not-found, and the server is
+    the only authority on what the current names are."""
     deployment_client(check_execution_status={"status_code": 404, "error": "not found"})
     code, out, _ = run(capsys, "docstudio", "deployment", "status", "invoces", "e-1")
     assert code == int(ExitCode.NOT_FOUND)
-    hint = envelope(out)["error"]["hint"]
-    assert "invoces" in hint and "invoices" in hint
+    assert "deployment ls" in envelope(out)["error"]["hint"]
 
 
 def test_highlights_on_an_extraction_without_line_numbers_says_where_to_fix_it(
@@ -1909,6 +1929,34 @@ def test_a_deployment_key_flag_is_refused_rather_than_ignored_by_ls(
     assert "dk-FROM-FLAG" not in json.dumps(envelope(out))
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("auth", "--platform-key", "pk-FROM-FLAG-0123", "whoami", "--no-save"),
+        ("docstudio", "--platform-key", "pk-FROM-FLAG-0123", "deployment", "ls"),
+    ],
+)
+def test_a_platform_key_flag_reaches_the_client_and_is_warned_about(
+    capsys, platform_client, monkeypatch, tmp_path, args
+):
+    """Both groups that run platform-key commands take the key as a flag, and a
+    key on the command line gets the same shell-history warning as `--api-key`.
+    """
+    _config_with(
+        tmp_path,
+        monkeypatch,
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\norg_id = "org_X"\n',
+    )
+    client = platform_client(whoami=IDENTITY, list_deployments=_returns(_page()))
+
+    code, out, err = run(capsys, *args)
+
+    assert code == int(ExitCode.SUCCESS)
+    assert client.built_with["api_key"] == "pk-FROM-FLAG-0123"
+    assert "shell history" in err
+    assert "pk-FROM-FLAG-0123" not in out
+
+
 def test_the_platform_key_never_reaches_a_stream(
     capsys, platform_client, monkeypatch, tmp_path
 ):
@@ -1979,6 +2027,452 @@ def test_the_platform_status_is_recovered_from_the_message(
     code, _, _ = run(capsys, "auth", "whoami")
 
     assert code == int(expected), message
+
+
+# --------------------------------------------------------------------------- #
+# auth login
+# --------------------------------------------------------------------------- #
+
+PK, DK, LK = "pk-platform-000001", "dk-deployment-0001", "lk-whisperer-00001"
+
+
+@pytest.fixture
+def login_seams(monkeypatch, platform_client, tmp_path):
+    """Both client factories faked, prompts scripted, and a config file of our own.
+
+    Returns a function that scripts the terminal: `answers` are what each prompt
+    returns in order, `confirm` what the yes/no questions return (one value for
+    all of them, or a list consumed in order), and `tty` whether stdin counts
+    as a terminal at all.
+    """
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.delenv("UNSTRACT_PLATFORM_KEY", raising=False)
+    state = {"prompts": [], "answers": []}
+
+    def prompt(text, **kwargs):
+        state["prompts"].append(text)
+        return state["answers"].pop(0)
+
+    def install(answers=(), *, confirm=False, tty=True, whoami=None, usage=None):
+        state["answers"], state["prompts"] = list(answers), []
+        monkeypatch.setattr(platform_cmd, "_interactive", lambda: tty)
+        monkeypatch.setattr(platform_cmd, "_prompt", prompt)
+        confirms = list(confirm) if isinstance(confirm, list) else None
+
+        def confirm_answer(text, **kwargs):
+            state["confirms"].append(text)
+            return confirms.pop(0) if confirms is not None else confirm
+
+        state["confirms"] = []
+        monkeypatch.setattr(platform_cmd, "_confirm", confirm_answer)
+        client = platform_client(whoami=whoami or IDENTITY)
+        build_platform = platform_cmd.platform_client
+
+        def build_recording_host(config, org_id=None, *, timeout=None):
+            client.built_with["base_url"] = config.get(DOCSTUDIO, "base_url")
+            return build_platform(config, org_id, timeout=timeout)
+
+        monkeypatch.setattr(platform_cmd, "platform_client", build_recording_host)
+        whisper = FakeWhisper(get_usage_info=usage if usage is not None else {"quota": 1})
+        whisper.built_with = {}
+
+        def build(config):
+            whisper.built_with["api_key"] = config.get(LLMWHISPERER, "api_key")
+            return whisper
+
+        monkeypatch.setattr(platform_cmd, "llmwhisperer", build)
+        state["platform"], state["whisper"] = client, whisper
+        return state
+
+    return install
+
+
+def _written(tmp_path) -> str:
+    return (tmp_path / "config.toml").read_text(encoding="utf-8")
+
+
+def test_login_asks_for_each_key_in_turn_and_stores_them_as_literals(
+    capsys, login_seams, tmp_path
+):
+    """Interactive path: platform, deployment, LLMWhisperer, one hidden prompt
+    each. The two keys with a read-only endpoint are checked; the deployment
+    key is stored as given and said to be."""
+    seams = login_seams([PK, DK, LK])
+
+    code, out, err = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert [p.split(" (")[0] for p in seams["prompts"]] == [
+        "Platform key",
+        "Deployment key",
+        "LLMWhisperer key",
+    ]
+    assert seams["platform"].built_with["api_key"] == PK
+    assert seams["whisper"].built_with["api_key"] == LK
+    data = envelope(out)["data"]
+    assert data["profile"] == "cloud-us"
+    assert (data["platform"], data["deployment"], data["llmwhisperer"]) == (
+        "verified",
+        "stored",
+        "verified",
+    )
+    assert data["organization_id"] == "org_ABC123"
+    assert "stored as given" in data["note"]
+    text = _written(tmp_path)
+    assert f'platform_key = "{PK}"' in text
+    assert f'api_key = "{DK}"' in text
+    assert f'api_key = "{LK}"' in text
+    assert 'org_id = "org_ABC123"' in text
+    assert oct((tmp_path / "config.toml").stat().st_mode & 0o777) == "0o600"
+    # The keys reach the file and nowhere else.
+    for key in (PK, DK, LK):
+        assert key not in out and key not in err
+
+
+def test_login_with_every_prompt_skipped_is_a_usage_error(capsys, login_seams, tmp_path):
+    login_seams(["", "", ""])
+
+    code, out, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.USAGE)
+    assert "at least one" in envelope(out)["error"]["message"]
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_login_with_only_a_deployment_key_calls_nothing(capsys, login_seams, tmp_path):
+    seams = login_seams(["", DK, ""])
+
+    code, out, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["platform"].calls == [] and seams["whisper"].calls == []
+    data = envelope(out)["data"]
+    assert (data["platform"], data["deployment"], data["llmwhisperer"]) == (
+        "skipped",
+        "stored",
+        "skipped",
+    )
+    assert "org_id" not in _written(tmp_path)
+
+
+def test_login_without_a_terminal_and_without_flags_fails_before_prompting(
+    capsys, login_seams, tmp_path
+):
+    """A script that reaches a hidden prompt hangs; a script told which flags
+    to pass does not."""
+    seams = login_seams([], tty=False)
+
+    code, out, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.USAGE)
+    assert seams["prompts"] == []
+    error = envelope(out)["error"]
+    assert "not a terminal" in error["message"]
+    assert "--platform-key" in error["hint"] and "--llmwhisperer-key" in error["hint"]
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_login_flags_take_values_and_one_of_them_from_stdin(
+    capsys, login_seams, monkeypatch, tmp_path
+):
+    """The non-interactive twin: zero prompts, even at a terminal."""
+    import io
+
+    seams = login_seams([], tty=True)
+    monkeypatch.setattr("sys.stdin", io.StringIO(f"{PK}\n"))
+
+    code, out, _ = run(
+        capsys, "auth", "login", "--platform-key", "-", "--llmwhisperer-key", LK
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["prompts"] == []
+    assert seams["platform"].built_with["api_key"] == PK
+    assert seams["whisper"].built_with["api_key"] == LK
+    assert envelope(out)["data"]["deployment"] == "skipped"
+    assert f'platform_key = "{PK}"' in _written(tmp_path)
+
+
+def test_login_reads_at_most_one_key_from_stdin(capsys, login_seams, tmp_path):
+    login_seams([])
+
+    code, out, _ = run(
+        capsys, "auth", "login", "--platform-key", "-", "--deployment-key", "-"
+    )
+
+    assert code == int(ExitCode.USAGE)
+    assert "stdin" in envelope(out)["error"]["message"]
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_login_takes_the_platform_key_from_the_group_flag_too(
+    capsys, login_seams, tmp_path
+):
+    seams = login_seams([])
+
+    code, _, _ = run(capsys, "auth", "--platform-key", PK, "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["prompts"] == []
+    assert f'platform_key = "{PK}"' in _written(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "rejected",
+    ["platform", "llmwhisperer"],
+)
+def test_login_writes_nothing_when_any_key_is_rejected(
+    capsys, login_seams, tmp_path, rejected
+):
+    """Every check runs before the one write: a file holding one good key and
+    one bad one would report the bad one as configured."""
+    kwargs = {
+        "whoami": PlatformClientError("whoami failed with 401: nope")
+        if rejected == "platform"
+        else None,
+        "usage": LLMWhispererClientException(
+            {"message": "bad key", "status_code": 401}, 401
+        )
+        if rejected == "llmwhisperer"
+        else None,
+    }
+    login_seams([PK, DK, LK], **kwargs)
+
+    code, out, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.AUTH)
+    assert envelope(out)["ok"] is False
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_login_again_replaces_the_keys_given_and_keeps_the_rest(
+    capsys, login_seams, tmp_path
+):
+    """Rotation: the same profile, updated in place, and a same-organisation
+    re-run asks nothing."""
+    login_seams([PK, DK, LK])
+    run(capsys, "auth", "login")
+    seams = login_seams(["", "dk-rotated-000001", ""])
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["prompts"][-1].startswith("LLMWhisperer")
+    text = _written(tmp_path)
+    assert 'api_key = "dk-rotated-000001"' in text and DK not in text
+    assert f'platform_key = "{PK}"' in text and f'api_key = "{LK}"' in text
+    assert text.count("[profiles.") == 2
+
+
+def test_login_refuses_to_repoint_a_profile_at_another_organisation(
+    capsys, login_seams, tmp_path
+):
+    """Non-interactive: fail, name both organisations, name the way out."""
+    login_seams([], whoami={**IDENTITY, "organization_id": "org_OLD"})
+    run(capsys, "auth", "login", "--platform-key", PK)
+    login_seams([], whoami={**IDENTITY, "organization_id": "org_NEW"})
+
+    code, out, _ = run(capsys, "auth", "login", "--platform-key", PK)
+
+    assert code == int(ExitCode.USAGE)
+    error = envelope(out)["error"]
+    assert "org_OLD" in error["message"] and "org_NEW" in error["message"]
+    assert "--force" in error["hint"] and "--profile" in error["hint"]
+    assert 'org_id = "org_OLD"' in _written(tmp_path)
+
+
+def test_login_overwrites_the_organisation_only_when_forced(
+    capsys, login_seams, tmp_path
+):
+    login_seams([], whoami={**IDENTITY, "organization_id": "org_OLD"})
+    run(capsys, "auth", "login", "--platform-key", PK)
+    login_seams([], whoami={**IDENTITY, "organization_id": "org_NEW"})
+
+    code, _, _ = run(capsys, "auth", "login", "--platform-key", PK, "--force")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert 'org_id = "org_NEW"' in _written(tmp_path)
+    assert "org_OLD" not in _written(tmp_path)
+
+
+def test_login_offers_a_new_profile_named_after_the_organisation(
+    capsys, login_seams, tmp_path
+):
+    """Interactive: the profile the key belongs to is a new one, suggested
+    from the organisation's display name, and the old profile is untouched."""
+    login_seams([PK, "", ""], whoami={**IDENTITY, "organization_id": "org_OLD"})
+    run(capsys, "auth", "login")
+    seams = login_seams(
+        [PK, "", "", "beta-corp"],
+        confirm=True,
+        whoami={
+            **IDENTITY,
+            "organization_id": "org_NEW",
+            "organization_name": "Beta Corp",
+        },
+    )
+
+    code, out, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["profile"] == "beta-corp"
+    text = _written(tmp_path)
+    assert "[profiles.beta-corp.docstudio]" in text and 'org_id = "org_NEW"' in text
+    assert 'org_id = "org_OLD"' in text
+    assert seams["prompts"][-1] == "Profile name"
+
+
+def test_a_new_profile_offered_by_the_guard_keeps_the_host_the_key_was_checked_on(
+    capsys, login_seams, tmp_path
+):
+    """The key was verified against the profile the login started from; a new
+    profile that does not record that host would send it to the built-in
+    default next time."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "onprem"\n[profiles.onprem.docstudio]\n'
+        'base_url = "https://onprem.example/"\norg_id = "org_OLD"\n',
+        encoding="utf-8",
+    )
+    seams = login_seams(
+        [PK, "", "", "beta"],
+        confirm=True,
+        whoami={**IDENTITY, "organization_id": "org_NEW"},
+    )
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["platform"].built_with["base_url"] == "https://onprem.example/"
+    text = _written(tmp_path)
+    assert text.count('base_url = "https://onprem.example/"') == 2
+    assert "[profiles.beta.docstudio]" in text
+
+
+def test_a_profile_chosen_at_the_guard_is_replaced_not_merged_into(
+    capsys, login_seams, tmp_path
+):
+    """The name typed at the guard may be an existing profile with a host and
+    keys of its own; none of those were checked against this key's host, so
+    the profile is confirmed and then rebuilt from what this login verified."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "onprem"\n[profiles.onprem.docstudio]\n'
+        'base_url = "https://onprem.example/"\norg_id = "org_OLD"\n'
+        '[profiles.beta.docstudio]\nbase_url = "https://stale.example/"\n'
+        'api_key = "sk-stale"\n'
+        '[profiles.beta.deployments."invoice-parser"]\napi_key = "sk-stale-entry"\n',
+        encoding="utf-8",
+    )
+    seams = login_seams(
+        [PK, "", "", "beta"],
+        confirm=True,
+        whoami={**IDENTITY, "organization_id": "org_NEW"},
+    )
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["confirms"][-1] == "Profile 'beta' already exists. Replace it?"
+    text = _written(tmp_path)
+    assert "stale" not in text
+    assert text.count('base_url = "https://onprem.example/"') == 2
+    assert "[profiles.beta.docstudio]" in text and 'org_id = "org_NEW"' in text
+
+
+def test_a_new_profile_name_that_belongs_to_a_third_organisation_is_confirmed(
+    capsys, login_seams, tmp_path
+):
+    """The guard's own remedy must not be the overwrite it exists to prevent:
+    a typed name that is another organisation's profile is asked about again,
+    and declining re-prompts."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "cloud-us"\n'
+        '[profiles.cloud-us.docstudio]\norg_id = "org_OLD"\n'
+        '[profiles.partner.docstudio]\norg_id = "org_PARTNER"\n',
+        encoding="utf-8",
+    )
+    seams = login_seams(
+        [PK, "", "", "partner", "fresh"],
+        confirm=[True, False],
+        whoami={**IDENTITY, "organization_id": "org_NEW"},
+    )
+
+    code, out, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["profile"] == "fresh"
+    assert "partner" in seams["confirms"][1] and "org_PARTNER" in seams["confirms"][1]
+    text = _written(tmp_path)
+    assert 'org_id = "org_PARTNER"' in text and 'org_id = "org_OLD"' in text
+    assert "[profiles.fresh.docstudio]" in text and 'org_id = "org_NEW"' in text
+
+
+def test_login_overwrites_when_a_new_profile_is_declined(capsys, login_seams, tmp_path):
+    login_seams([PK, "", ""], whoami={**IDENTITY, "organization_id": "org_OLD"})
+    run(capsys, "auth", "login")
+    seams = login_seams(
+        [PK, "", ""], confirm=False, whoami={**IDENTITY, "organization_id": "org_NEW"}
+    )
+
+    code, out, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["profile"] == "cloud-us"
+    assert len(seams["prompts"]) == 3
+    assert 'org_id = "org_NEW"' in _written(tmp_path)
+    assert "org_OLD" not in _written(tmp_path)
+
+
+def test_login_writes_the_profile_named_and_checks_against_its_own_host(
+    capsys, login_seams, tmp_path
+):
+    """A profile that does not exist yet must not borrow the default profile's
+    host for the check: the key would be verified against a server the new
+    profile will never talk to."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "cloud-us"\n[profiles.cloud-us.docstudio]\n'
+        'base_url = "https://elsewhere.example/"\norg_id = "org_X"\n',
+        encoding="utf-8",
+    )
+    seams = login_seams([])
+
+    code, out, _ = run(
+        capsys,
+        "auth",
+        "--base-url",
+        "https://staging.example/",
+        "login",
+        "--profile",
+        "staging",
+        "--platform-key",
+        PK,
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["profile"] == "staging"
+    assert seams["platform"].built_with["base_url"] == "https://staging.example/"
+    text = _written(tmp_path)
+    assert "[profiles.staging.docstudio]" in text
+    assert 'base_url = "https://staging.example/"' in text
+    assert 'org_id = "org_X"' in text  # the other profile is untouched
+
+
+def test_login_does_not_write_a_discovered_project_config(
+    capsys, login_seams, monkeypatch, tmp_path
+):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / ".unstract.toml").write_text(
+        "[profiles.team.docstudio]\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("UNSTRACT_CONFIG", raising=False)
+    login_seams([])
+
+    code, out, _ = run(capsys, "auth", "login", "--deployment-key", DK)
+
+    assert code == int(ExitCode.USAGE)
+    assert "project-local" in envelope(out)["error"]["message"]
+    assert DK not in (project / ".unstract.toml").read_text()
 
 
 # --------------------------------------------------------------------------- #

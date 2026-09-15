@@ -6,9 +6,16 @@ JSON back. It also clones one organization's resources into another.
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/Zipstack/unstract-cli/main/install.sh | sh
-export UNSTRACT_PLATFORM_KEY=...
-unstract auth whoami                  # resolves and stores your organisation
+unstract auth login                   # asks for your keys, checks them, stores them
 unstract docstudio deployment ls      # what can I run?
+```
+
+For an agent or CI, no prompts and no file — the environment is the profile:
+
+```bash
+export UNSTRACT_ORG_ID=... UNSTRACT_DEPLOYMENT_KEY=... LLMWHISPERER_API_KEY=...
+unstract -o json whisper extract ./doc.pdf
+unstract -o json docstudio deployment run invoice-parser ./doc.pdf
 ```
 
 The installer fetches `uv` if it is missing and installs the CLI with it; `uv`
@@ -16,11 +23,6 @@ brings its own Python, so nothing on the machine has to match. Already have
 `uv`? `uv tool install git+https://github.com/Zipstack/unstract-cli` is the same
 thing. Set `UNSTRACT_CLI_SOURCE` to install a branch or a local checkout
 instead.
-
-`auth whoami` is the shortest way in: a platform key carries the organisation it
-belongs to, so supplying the key is enough to discover `org_id` rather than
-reading it out of a web-app URL. `config init` and `config doctor` are still
-there for a profile you write by hand.
 
 Or run it without installing: `uvx --from git+https://github.com/Zipstack/unstract-cli unstract --discover groups`.
 
@@ -69,6 +71,26 @@ have to copy it:
 | 10 | the result was read but could not be saved — it is in `error.details` |
 | 130 | interrupted (128 + SIGINT) — the user stopped it, not a failure |
 
+## Credentials
+
+Three keys, each for one job:
+
+- **LLMWhisperer key** — extracts text (`whisper …`). Minted in the LLMWhisperer
+  console.
+- **Deployment key** — runs deployments (`deployment run`, `deployment status`).
+  Shown on the API deployment's own page in the Unstract UI; one minted under
+  **Settings → API Key Manager** covers every deployment in the organisation.
+- **Platform key** — identifies the organisation and lists what is in it
+  (`auth whoami`, `deployment ls`). Minted by an organisation admin under
+  **Settings → Platform API Keys**.
+
+`auth login` takes whichever of the three you have, checks the two it can
+(`whoami` for the platform key, the usage endpoint for the LLMWhisperer key; a
+deployment key has nothing side-effect-free to call and is stored as given) and
+writes them to one profile. Run it again to rotate a key. Without a terminal
+pass them as flags — `--platform-key`, `--deployment-key`, `--llmwhisperer-key`,
+any one of them `-` to read from stdin.
+
 ## Configuration
 
 `~/.unstract/config.toml`, or a project-local `.unstract.toml` found by upward
@@ -76,8 +98,8 @@ search, or `$UNSTRACT_CONFIG`, or `--config`. Every setting resolves
 **flag > env > profile > built-in default**, and the CLI is fully usable with no
 config file at all. The flag tier is the connection options on each product
 group — `unstract docstudio --base-url … --org-id … deployment run …`, and
-`--base-url`/`--api-key` on `whisper` and on `auth` — which override the profile
-for that one invocation without writing anything.
+`--base-url`/`--api-key` on `whisper`, `--platform-key` on `auth` — which
+override the profile for that one invocation without writing anything.
 
 ```toml
 default_profile = "cloud-us"
@@ -90,66 +112,46 @@ api_key = "env:LLMWHISPERER_API_KEY"
 base_url = "https://us-central.unstract.com"
 org_id = "org_ABC123"
 api_key = "env:UNSTRACT_DEPLOYMENT_KEY"
+platform_key = "env:UNSTRACT_PLATFORM_KEY"
 
-[profiles.cloud-us.platform]
-base_url = "https://us-central.unstract.com"
-
-[profiles.cloud-us.deployments.invoices]
-api_name = "invoice-parser"
+# Only for a deployment whose key differs from the one above.
+[profiles.cloud-us.deployments."invoice-parser"]
+api_key = "env:INVOICE_PARSER_KEY"
 ```
 
-One `api_key` on the `docstudio` block covers every alias under it: a key minted
-under **Settings → API Key Manager** authenticates every API deployment in the
-organisation, so an alias normally carries only its `api_name`. Give an alias its
-own `api_key` when its deployment has a separate key of its own.
+`deployment run` and `deployment status` take the API name as `deployment ls`
+prints it. The key for a run resolves `--api-key` > `$UNSTRACT_DEPLOYMENT_KEY` >
+the deployment's own entry > the profile's `api_key`, so most profiles need no
+`deployments` section at all; `config set docstudio api_key <key> --deployment
+<api_name>` writes one. `org_id` lives on the `docstudio` block — `auth login`
+and `auth whoami` write the one the platform key resolves there. `config init`
+writes this shape minus `platform_key` and the `deployments` entry — both are
+the exception, not the starting point — plus an `onprem-example` profile to
+copy for a self-hosted install; only the *active* profile is ever resolved.
 
-An alias sits outside the flag tier for the settings it states itself. Where an
-alias names its own `org_id` or `api_key`, those are the ones used and
-`--org-id`/`--api-key` do not displace them — the flags fill in only what the
-alias leaves to the profile. `--base-url` is not per-alias and always applies,
-which is what points a profile's aliases at another host.
-
-Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is shown
-on the API deployment's own page in the Unstract UI, and an organisation-wide one
-under Settings → API Key Manager. A **platform key** is minted by an
-organisation admin under Settings → Platform API Keys. `config init` also writes
-an `onprem-example` profile as a shape to copy for a self-hosted install — its
-host is a placeholder, and only the *active* profile is ever resolved.
-
-The two Unstract keys are not interchangeable and neither replaces the other. A
-deployment key runs deployments and cannot say which organisation it belongs
-to; a platform key identifies the organisation and lists what is in it, and
-cannot run a deployment. `auth whoami` and `deployment ls` take the platform key;
-`deployment run` and `deployment status` take the deployment key; `auth whoami`
-and `deployment ls` take the platform key. `org_id` lives on the `docstudio`
-block either way — `auth whoami` writes the one it resolves there, because that
-is where everything that needs it reads from.
-
-`config init` deliberately leaves `platform.api_key` out of the block above, so
-that a caller who only holds a deployment key is not told a platform key is
-missing. Add the line, or set `$UNSTRACT_PLATFORM_KEY`, when you have one.
-
-A credential can be written into the file literally, but `env:VAR_NAME`
-indirection is what `config init` writes and what the examples use: the file
-then records where a secret lives rather than the secret itself, and stays safe
-to copy or commit. Either way the file is created `0600`, and `config doctor`
-warns when its mode is wider than that.
+`auth login` writes keys literally; `env:VAR_NAME` indirection is what
+`config init` writes and what the example uses, so the file records where a
+secret lives rather than the secret itself and stays safe to copy or commit.
+Either way the file is created `0600`, and `config doctor` warns when its mode
+is wider than that.
 
 `unstract config doctor` reports where each setting resolved from — including
 whether an `env:` reference is actually set in the current process — without
-echoing any value. It exits non-zero when one of its own checks failed, so a
-setup script can branch on it.
+echoing any value. `--probe` also checks the keys against the service and, with
+a platform key, warns about a `deployments` entry the organisation no longer
+has. It exits non-zero when one of its own checks failed, so a setup script can
+branch on it.
 
-A project-local `.unstract.toml` **found by upward search** may not supply
-`api_key` or `base_url`. Those are ignored, with a warning; everything else in it
-— profile selection, `org_id`, deployment aliases — applies as usual. A checkout
-you did not write is not trusted to name the host your key is sent to. Name the
-file explicitly (`--config` or `$UNSTRACT_CONFIG`) and it is honoured in full.
+A project-local `.unstract.toml` **found by upward search** may not supply a
+key or `base_url`. Those are ignored, with a warning; everything else in it —
+profile selection, `org_id` — applies as usual. A checkout you did not write is
+not trusted to name the host your key is sent to. Name the file explicitly
+(`--config` or `$UNSTRACT_CONFIG`) and it is honoured in full.
 
-What that protects is the key and the host, not the routing: `org_id`,
-`api_name` and profile selection stay repo-controllable by design, so a
-project file can still decide *which* deployment a command runs against on a
-host you trust. Read one before you run inside a checkout you did not write.
+What that protects is the key and the host, not the routing: `org_id` and
+profile selection stay repo-controllable by design, so a project file can still
+decide *which* organisation a command runs against on a host you trust. Read
+one before you run inside a checkout you did not write.
 
 `clone` is the exception, and it is an operator command: a human moving one
 organisation's resources into another, holding two admin Platform keys. It is
@@ -157,10 +159,10 @@ not part of the document-processing path the rest of this CLI wraps, so an agent
 serving a user request should not reach for it unasked. It talks to two
 deployments at once, which no single profile describes, so it takes both
 endpoints as flags and both keys from `UNSTRACT_SRC_PLATFORM_KEY` /
-`UNSTRACT_TGT_PLATFORM_KEY` — two keys for two organisations, so it reads neither
-the `platform` profile block nor `$UNSTRACT_PLATFORM_KEY`. It exits 0 when nothing failed, which is not the
-same as everything having moved: oversize and unsupported documents are skipped
-by design, and `data.skipped` counts them.
+`UNSTRACT_TGT_PLATFORM_KEY` — two keys for two organisations, so it reads
+neither the profile's `platform_key` nor `$UNSTRACT_PLATFORM_KEY`. It exits 0
+when nothing failed, which is not the same as everything having moved: oversize
+and unsupported documents are skipped by design, and `data.skipped` counts them.
 
 ## Development
 

@@ -17,7 +17,7 @@ from unstract_cli.app import Context, deployment_group, pass_context
 from unstract_cli.commands.common import finish, raw_fields, wait_options
 from unstract_cli.core.clients import (
     deployment,
-    naming_aliases,
+    deployment_errors,
     raise_for_result,
     translated,
     translating,
@@ -85,9 +85,9 @@ def run(
 ) -> None:
     """Run a deployment against one or more documents.
 
-    TARGET is a deployment alias or an API name. Name the documents as local
-    FILES, as --presigned-urls, or both. With --wait (the default) this polls
-    until the execution finishes and returns its result.
+    TARGET is the deployment's API name, as `deployment ls` prints it. Name the
+    documents as local FILES, as --presigned-urls, or both. With --wait (the
+    default) this polls until the execution finishes and returns its result.
     """
     sent = requested(params)
     # Before the client is built: what the caller typed is wrong whatever the
@@ -113,7 +113,7 @@ def run(
         )
     if save:
         preflight(save)
-    with naming_aliases(ctx.config, target), translated(endpoint=client.api_url):
+    with deployment_errors(target), translated(endpoint=client.api_url):
         # Queued execution, so the request returns a handle instead of holding
         # the connection open for the length of the job.
         started = client.structure_file(list(files), timeout=0, **sent)
@@ -265,7 +265,7 @@ def status(
     # Quoted rather than trusted: the id comes from the caller and would
     # otherwise be able to carry query syntax of its own.
     endpoint = f"{client.api_url}?execution_id={quote(execution_id, safe='')}"
-    with naming_aliases(ctx.config, target), translated(endpoint=client.api_url):
+    with deployment_errors(target), translated(endpoint=client.api_url):
         result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
             raise_for_result(result, endpoint=client.api_url)

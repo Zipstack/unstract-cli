@@ -15,7 +15,7 @@ import pytest
 from unstract_cli.__main__ import main
 from unstract_cli.app import cli
 from unstract_cli.commands import config_cmd
-from unstract_cli.config import PLATFORM
+from unstract_cli.config import DOCSTUDIO
 from unstract_cli.core.discover import discover, exit_codes
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import CONTRACT_VERSION
@@ -193,20 +193,26 @@ def probe_client(monkeypatch):
 
 @pytest.fixture
 def platform_probe_client(monkeypatch):
-    def install(reply=None):
+    def install(reply=None, live=()):
         class Fake:
             def whoami(self):
                 if isinstance(reply, Exception):
                     raise reply
                 return reply or {}
 
+            def list_deployments(self, org_id, api_name=None):
+                if isinstance(live, Exception):
+                    raise live
+                results = [{"api_name": n} for n in live if n == api_name]
+                return {"count": len(results), "results": results}
+
         monkeypatch.setattr(
             config_cmd,
             "platform_client",
-            # Resolves the key like its sibling in test_commands, so the probe
-            # tests exercise the registration that feeds the scrubber.
+            # Requires the key like the real factory, so an absent one is the
+            # ConfigError the probe reports rather than a call on the fake.
             lambda config, org_id=None, *, timeout=None: (
-                config.get(PLATFORM, "api_key"),
+                config.require(DOCSTUDIO, "platform_key"),
                 Fake(),
             )[1],
         )
@@ -354,21 +360,20 @@ def test_success_publishes_no_error_code():
     assert all(code for name, code in table.items() if name != "success")
 
 
-def test_doctor_reports_an_alias_whose_settings_do_not_arrive(
+def test_doctor_reports_a_deployment_entry_whose_key_does_not_arrive(
     capsys, write_config, monkeypatch
 ):
-    """A listed alias says nothing about whether the settings behind it
-    resolve, and the failure only shows up when a run is attempted."""
+    """A listed entry says nothing about whether the key behind it resolves,
+    and a run would otherwise find out only from the server."""
     write_config(
         """
         default_profile = "p"
         [profiles.p.docstudio]
         api_key = "dk-configured-key"
         org_id = "org_ABC"
-        [profiles.p.deployments.invoices]
-        api_name = "invoice-parser"
-        [profiles.p.deployments.broken]
-        api_name = "no-key"
+        [profiles.p.deployments."invoice-parser"]
+        api_key = "dk-entry-key"
+        [profiles.p.deployments."broken"]
         api_key = "env:NOT_SET_ANYWHERE"
         """
     )
@@ -379,8 +384,92 @@ def test_doctor_reports_an_alias_whose_settings_do_not_arrive(
 
     assert code != int(ExitCode.SUCCESS)
     report = payload["error"]["details"]
-    assert set(report["deployment_aliases"]) == {"invoices", "broken"}
+    assert set(report["deployments"]) == {"invoice-parser", "broken"}
     assert any("broken" in problem for problem in report["problems"])
+
+
+STALE_CONFIG = """
+default_profile = "p"
+[profiles.p.docstudio]
+org_id = "org_ABC"
+[profiles.p.deployments."invoice-parser"]
+api_key = "dk-1"
+[profiles.p.deployments."renamed-since"]
+api_key = "dk-2"
+"""
+
+
+def test_the_probe_reports_entries_the_organisation_no_longer_has(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """An orphaned entry is a warning, not a failure: it does no harm until it
+    is run, and the exit code is what setup scripts branch on."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client({"organization_id": "org_ABC"}, live={"invoice-parser"})
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    out, err = capsys.readouterr()
+
+    assert code == int(ExitCode.SUCCESS)
+    assert json.loads(out)["data"]["stale_deployments"] == ["renamed-since"]
+    assert "renamed-since" in err and "deployment ls" in err
+
+
+def test_a_listing_that_fails_is_a_failed_check_not_a_clean_one(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """The check was asked for and did not run; exiting 0 would tell a setup
+    script the entries were verified."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(
+        {"organization_id": "org_ABC"},
+        live=CLIError("listing timed out", ExitCode.TIMEOUT),
+    )
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    report = json.loads(capsys.readouterr().out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert "stale_deployments" not in report
+    assert any("listing timed out" in p for p in report["problems"])
+
+
+def test_the_probe_skips_the_entry_check_without_a_platform_key(
+    capsys, write_config, probe_client, platform_probe_client
+):
+    """Only the platform key can answer the question, and most callers hold
+    none -- their entries are still theirs to keep."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(CLIError("must not be called"))
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    out, err = capsys.readouterr()
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "stale_deployments" not in json.loads(out)["data"]
+    assert "renamed-since" not in err
+    # --probe was explicit, so the skip is explained rather than silent.
+    assert "no platform key" in err
+
+
+def test_doctor_asks_the_server_nothing_without_probe(
+    capsys, write_config, platform_probe_client, monkeypatch
+):
+    write_config(STALE_CONFIG)
+    platform_probe_client(CLIError("must not be called"))
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor"])
+    out, err = capsys.readouterr()
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "stale_deployments" not in json.loads(out)["data"]
+    assert "platform key" not in err  # bare doctor is silent about the skip
 
 
 def test_a_malformed_config_file_is_a_usage_error(capsys, write_config):

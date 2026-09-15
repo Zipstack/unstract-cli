@@ -38,13 +38,11 @@ api_key = "profile-key"
 org_id = "org_from_profile"
 api_key = "env:UNSTRACT_DEPLOYMENT_KEY"
 
-[profiles.p.deployments.invoices]
-api_name = "invoice-parser"
+[profiles.p.deployments."invoice-parser"]
+api_key = "env:INVOICE_KEY"
 
-[profiles.p.deployments.receipts]
-api_name = "receipt-parser"
-org_id = "org_alias"
-api_key = "alias-key"
+[profiles.p.deployments."receipt-parser"]
+api_key = "entry-key"
 """
 
 
@@ -151,28 +149,39 @@ def test_profile_selected_by_env_var(write_config, monkeypatch):
     assert resolved().get(DOCSTUDIO, "org_id") == "org_from_profile"
 
 
-def test_deployment_alias_falls_back_to_the_product_block(write_config, monkeypatch):
+def test_a_deployment_without_an_entry_uses_the_profile_key(write_config, monkeypatch):
     write_config(PROFILE_TOML)
     monkeypatch.setenv("UNSTRACT_DEPLOYMENT_KEY", "secret-value")
-    alias = resolved().deployment("invoices")
-    assert alias == {
-        "api_name": "invoice-parser",
-        "org_id": "org_from_profile",
-        "api_key": "secret-value",
-    }
+    assert resolved().deployment_key("some-api") == "secret-value"
 
 
-def test_deployment_alias_overrides_win(write_config):
+def test_a_deployment_entry_key_beats_the_profile_key(write_config):
+    write_config(PROFILE_TOML.replace("env:UNSTRACT_DEPLOYMENT_KEY", "profile-key"))
+    assert resolved().deployment_key("receipt-parser") == "entry-key"
+    assert resolved().deployment_key("some-api") == "profile-key"
+
+
+def test_a_deployment_entry_may_point_at_the_environment(write_config, monkeypatch):
     write_config(PROFILE_TOML)
-    alias = resolved().deployment("receipts")
-    assert alias["org_id"] == "org_alias"
-    assert alias["api_key"] == "alias-key"
+    monkeypatch.setenv("INVOICE_KEY", "from-env")
+    assert resolved().deployment_key("invoice-parser") == "from-env"
 
 
-def test_unknown_deployment_alias_lists_the_known_ones(write_config):
+def test_a_deployment_entry_pointing_at_an_unset_variable_is_an_error(write_config):
+    """Silently running with the profile's key reports success for a run the
+    entry was written to keep separate."""
     write_config(PROFILE_TOML)
-    with pytest.raises(ConfigError, match="invoices, receipts"):
-        resolved().deployment("nope")
+    with pytest.raises(ConfigError, match=r"INVOICE_KEY is not set"):
+        resolved().deployment_key("invoice-parser")
+
+
+def test_deployment_names_are_the_entries_in_the_profile(write_config):
+    write_config(PROFILE_TOML)
+    assert resolved().deployment_names() == ("invoice-parser", "receipt-parser")
+    assert resolved(profile="p").deployment_names() == (
+        "invoice-parser",
+        "receipt-parser",
+    )
 
 
 def test_resolution_source_reports_the_winner(write_config, monkeypatch):
@@ -339,10 +348,10 @@ api_key = "project-literal-key"
 
 [profiles.p.docstudio]
 org_id = "org_from_project"
+platform_key = "project-platform-key"
 
-[profiles.p.deployments.invoices]
-api_name = "invoice-parser"
-api_key = "alias-literal-key"
+[profiles.p.deployments."invoice-parser"]
+api_key = "entry-literal-key"
 """
 
 
@@ -361,10 +370,12 @@ def test_a_discovered_project_config_supplies_no_key_and_no_host(tmp_path, monke
 
     assert cfg.get(LLMWHISPERER, "base_url") == DEFAULT_BASE_URLS[LLMWHISPERER]
     assert cfg.get(LLMWHISPERER, "api_key") is None
-    assert cfg.deployment("invoices")["api_key"] is None
+    # Both docstudio keys are credentials, whatever they are called.
+    assert cfg.get(DOCSTUDIO, "platform_key") is None
+    assert cfg.deployment_key("invoice-parser") is None
     # Everything the file is legitimately for still applies.
     assert cfg.get(DOCSTUDIO, "org_id") == "org_from_project"
-    assert cfg.deployment("invoices")["api_name"] == "invoice-parser"
+    assert cfg.deployment_names() == ("invoice-parser",)
     assert any(str(path) in w and "Ignoring" in w for w in cfg.file.warnings)
     assert cfg.resolution_source(LLMWHISPERER, "api_key")["detail"]
 
@@ -376,6 +387,7 @@ def test_the_same_file_named_explicitly_is_honoured(tmp_path, monkeypatch):
 
     assert cfg.get(LLMWHISPERER, "base_url") == "https://elsewhere.example/api/v2"
     assert cfg.get(LLMWHISPERER, "api_key") == "project-literal-key"
+    assert cfg.get(DOCSTUDIO, "platform_key") == "project-platform-key"
     assert not any("Ignoring" in w for w in cfg.file.warnings)
 
 
@@ -389,8 +401,8 @@ def test_writing_back_a_project_config_keeps_the_keys_it_withheld(tmp_path, monk
     reloaded = load_config()
     assert reloaded.profiles["p"]["docstudio"]["org_id"] == "org_edited"
     assert reloaded.profiles["p"]["llmwhisperer"]["api_key"] == "project-literal-key"
-    assert reloaded.profiles["p"]["deployments"]["invoices"]["api_key"] == (
-        "alias-literal-key"
+    assert reloaded.profiles["p"]["deployments"]["invoice-parser"]["api_key"] == (
+        "entry-literal-key"
     )
 
 
@@ -463,11 +475,11 @@ def test_a_write_through_a_symlink_fails_without_touching_its_target(tmp_path):
     assert victim.read_text(encoding="utf-8") == "keep = true\n"
 
 
-def test_a_withheld_alias_key_is_reported_against_the_alias(tmp_path, monkeypatch):
+def test_a_withheld_entry_key_is_reported_against_the_entry(tmp_path, monkeypatch):
     _plant_project_config(tmp_path, monkeypatch)
     cfg = resolved()
-    assert cfg.withheld_detail("deployments", "invoices", "api_key")
-    assert cfg.withheld_detail("deployments", "invoices", "org_id") is None
+    assert cfg.withheld_detail("deployments", "invoice-parser", "api_key")
+    assert cfg.withheld_detail("deployments", "receipt-parser", "api_key") is None
 
 
 def test_starter_profiles_hold_no_literal_secrets():
@@ -524,26 +536,6 @@ def test_doctor_reports_a_refused_env_reference_as_unresolved(tmp_path, monkeypa
     assert cfg.get(DOCSTUDIO, "org_id") is None
     assert report["resolved"] is False
     assert "may not choose which environment variable" in report["detail"]
-
-
-def test_a_refused_alias_reference_names_the_trust_rule_not_a_missing_var(
-    tmp_path, monkeypatch
-):
-    """Blaming an unset variable sends the user to export one that is set."""
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / PROJECT_CONFIG_NAME).write_text(
-        '[profiles.p.docstudio]\napi_key = "k"\n'
-        '[profiles.p.deployments.inv]\napi_name = "n"\norg_id = "env:MY_ORG"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(work)
-    monkeypatch.setenv("MY_ORG", "org_ABC")
-
-    cfg = ResolvedConfig(file=load_config(), profile_name="p")
-    with pytest.raises(ConfigError) as caught:
-        cfg.deployment("inv")
-    assert "may not choose which environment variable" in str(caught.value)
 
 
 def test_an_override_is_only_read_under_the_key_it_is_written_with(tmp_path):

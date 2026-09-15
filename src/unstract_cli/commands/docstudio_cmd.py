@@ -175,6 +175,8 @@ def _failed_files(result: dict[str, Any]) -> list[dict[str, Any]]:
     entries = result.get("extraction_result")
     if not isinstance(entries, list):
         return []
+    # The spec types a file's status as a bare string; the service has been
+    # seen to spell it "Success" and "Failed".
     failed = []
     for entry in entries:
         if not isinstance(entry, dict):

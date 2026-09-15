@@ -28,14 +28,14 @@ def platform_client(
     """Build a Platform API client from the resolved configuration.
 
     ``org_id`` is accepted and ignored: the generated operations take it per
-    call, not per client. It stays in the signature because every command site
-    already passes it and the parameter documents which calls need one --
-    `whoami` runs before an organisation is known, everything else does not.
+    call, not per client. It stays in the signature to document which calls
+    need one -- `whoami` runs before an organisation is known, the listing does
+    not -- so a caller passes it where it matters.
     """
     if timeout is not None and timeout <= 0:
-        # httpx rejects a non-positive timeout deep in the connection layer,
-        # with an error that matches no arm in `__main__` -- a traceback and no
-        # envelope. Refused here, where it is still a usage error about a flag.
+        # A negative timeout is rejected at send time, by a bare ValueError
+        # that matches no arm in `__main__` -- a traceback and no envelope.
+        # Refused here, where it is still a usage error about a flag.
         raise CLIError(
             f"--transport-timeout must be greater than 0, not {timeout:g}.",
             ExitCode.USAGE,
@@ -89,8 +89,8 @@ def organisation(config: ResolvedConfig) -> str:
     It lives on the docstudio block: a platform key resolves it, and everything
     that consumes it -- deployment URLs above all -- reads it from there.
     """
-    if org_id := config.get(DOCSTUDIO, "org_id"):
-        return str(org_id)
+    if org_id := str(config.get(DOCSTUDIO, "org_id") or "").strip():
+        return org_id
     raise CLIError(
         "No organisation is configured.",
         ExitCode.USAGE,

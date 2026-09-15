@@ -18,7 +18,7 @@ from unstract_cli.config import (
     ResolvedConfig,
 )
 from unstract_cli.core.errors import CLIError, ExitCode
-from unstract_cli.core.platform import platform_client
+from unstract_cli.core.platform import organisation, platform_client
 
 KEY = {"platform_key": "pk-000000000000"}
 
@@ -95,8 +95,8 @@ def test_a_missing_platform_key_names_where_one_goes() -> None:
 )
 def test_a_client_the_settings_cannot_build_is_a_usage_error(profile) -> None:
     """The client checks the host and the key before it sends anything, and
-    that failure reaches no arm of the entry point: a traceback instead of an
-    envelope, on the one message a misconfigured caller most needs."""
+    that failure matches no arm of the entry point: without this it is a
+    traceback where a misconfigured caller most needs an envelope."""
     with pytest.raises(CLIError) as caught:
         platform_client(_resolved({"p": profile}))
 
@@ -105,9 +105,9 @@ def test_a_client_the_settings_cannot_build_is_a_usage_error(profile) -> None:
 
 @pytest.mark.parametrize("value", [0, 0.0, -1])
 def test_a_non_positive_timeout_is_refused_before_the_transport_sees_it(value) -> None:
-    """httpx rejects a non-positive timeout deep in the connection layer, with
-    an error that matches no arm in `__main__`. Refused at the flag instead, so
-    the caller gets a usage error and an envelope.
+    """A negative timeout is rejected at send time by a bare ValueError that
+    matches no arm in `__main__`. Refused at the flag instead, so the caller
+    gets a usage error and an envelope.
     """
     config = _resolved({"p": {DOCSTUDIO: KEY}})
 
@@ -126,3 +126,18 @@ def test_a_sub_second_timeout_survives_as_a_float() -> None:
 
     assert platform_client(config, timeout=0.5).transport_timeout == 0.5
     assert platform_client(config, timeout=1.9).transport_timeout == 1.9
+
+
+@pytest.mark.parametrize("configured", ["  ", "\n", "  org_ABC  "])
+def test_an_organisation_is_read_without_the_whitespace_around_it(configured) -> None:
+    """A copied-in value carries the spaces it was copied with, and they reach
+    the deployment URL: either a 404 or a name no listing shows.
+    """
+    config = _resolved({"p": {DOCSTUDIO: {**KEY, "org_id": configured}}})
+
+    if not configured.strip():
+        with pytest.raises(CLIError) as caught:
+            organisation(config)
+        assert caught.value.exit_code == ExitCode.USAGE
+    else:
+        assert organisation(config) == "org_ABC"

@@ -113,5 +113,20 @@ def test_the_release_publishes_only_after_everything_revertible_is_done() -> Non
     names = [step.get("name", "") for step in steps]
 
     assert names.index("Publish to PyPI") > names.index(
-        "Commit version bump and create release"
+        "Commit version bump and create draft release"
     )
+
+
+def test_the_release_goes_public_only_once_the_package_is_on_pypi() -> None:
+    """A release that names a version PyPI does not serve is a broken link on
+    the front page, and the tag guard stops the run that would fix it."""
+    steps = _load(Path(__file__).resolve().parents[1] / ".github/workflows/release.yml")[
+        "jobs"
+    ]["release-and-publish"]["steps"]
+    by_name = {step.get("name", ""): step for step in steps}
+    names = list(by_name)
+
+    creates = by_name["Commit version bump and create draft release"]["run"]
+    assert creates.count("gh release create") == creates.count("--draft")
+    assert "--draft=false" in by_name["Publish release"]["run"]
+    assert names.index("Publish release") > names.index("Publish to PyPI")

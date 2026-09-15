@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 from unstract_cli import app
@@ -59,17 +61,24 @@ def test_an_interrupt_exits_one_thirty_with_an_envelope(capsys, monkeypatch):
     assert payload["error"]["code"] == "interrupted"
 
 
-def test_a_reader_that_went_away_does_not_raise_on_the_way_out(capsys, monkeypatch):
-    """`... | head` closes the pipe mid-write; Python flushes stdout again at exit."""
+def test_a_reader_that_went_away_does_not_raise_on_the_way_out(capfd, monkeypatch):
+    """`... | head` closes the pipe mid-write; Python flushes stdout again at
+    exit, so stdout has to be pointed somewhere that write can go.
+
+    `capfd` rather than `capsys`: the redirect asks stdout for its descriptor,
+    which a `capsys` stream refuses, and the refusal is swallowed by the same
+    guard that swallows a failed redirect.
+    """
+    redirected = []
 
     def gone():
         raise BrokenPipeError
 
     monkeypatch.setattr("unstract_cli.commands.config_cmd.load_config", gone)
+    monkeypatch.setattr(os, "dup2", lambda src, dst: redirected.append(dst))
 
     assert main(["-o", "json", "config", "doctor"]) == int(ExitCode.GENERIC)
-    # Whatever stdout now points at, writing to it must not raise.
-    print("still writable")
+    assert redirected == [sys.stdout.fileno()]
 
 
 def test_an_unwritable_stream_is_an_envelope_rather_than_a_traceback(capsys, monkeypatch):

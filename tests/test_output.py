@@ -200,9 +200,16 @@ def test_raw_reads_past_an_empty_answer_to_the_next_field():
 def test_raw_fails_when_every_declared_field_is_empty():
     """Raw prints one value and nothing else, so an answer carrying none of them
     has to fail rather than succeed with a blank line."""
-    env = envelope(data={"extraction_result": "", "execution_id": ""})
+    env = envelope(data={"extraction_result": "", "execution_id": None})
     with pytest.raises(CLIError):
         render(env, OutputFormat.RAW, raw_fields=("extraction_result", "execution_id"))
+
+
+def test_raw_prints_an_empty_answer_when_empty_is_the_answer():
+    """An extraction of a blank page is empty text, not a missing result, and
+    the hash beside it is not what the caller asked to see."""
+    env = envelope(data={"result_text": "", "whisper_hash": "h1"})
+    assert render(env, OutputFormat.RAW, raw_fields=("result_text", "whisper_hash")) == ""
 
 
 def test_a_wide_table_is_shrunk_in_one_pass():

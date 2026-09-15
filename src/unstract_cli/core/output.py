@@ -257,6 +257,13 @@ def _payload(env: Envelope) -> Any:
     return env["data"] if env["error"] is None else env["error"]
 
 
+#: Fields the deployment client spells as `""` while the job is still running.
+#: Only for these does empty mean "not yet": for any other field an empty
+#: string is the answer, and printing the next field instead would hand a
+#: caller a job handle where the text belongs.
+EMPTY_MEANS_PENDING = frozenset({"extraction_result"})
+
+
 def raw_value(env: Envelope, fields: tuple[str, ...]) -> Any:
     """The first declared field this answer actually carries.
 
@@ -281,12 +288,10 @@ def raw_value(env: Envelope, fields: tuple[str, ...]) -> Any:
         for source in (payload, env.get("meta") or {}):
             if not isinstance(source, dict):
                 continue
-            # Empty counts as absent, not as an answer: the clients spell a
-            # field that has no value yet as `""` rather than leaving it out,
-            # so stopping at the first present key would print a blank line
-            # where a later field carries the handle the caller can act on.
-            if (value := source.get(name)) not in (None, ""):
-                return value
+            value = source.get(name)
+            if value is None or (value == "" and name in EMPTY_MEANS_PENDING):
+                continue
+            return value
     raise CLIError(
         f"This answer carries none of {', '.join(fields)}, so there is nothing "
         "to print as raw output.",

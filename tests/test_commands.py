@@ -283,6 +283,35 @@ def test_raw_output_prints_the_extracted_text(capsys, whisper_client, tmp_path):
     assert out.strip() == "hello"
 
 
+def test_raw_retrieve_of_an_empty_extraction_prints_nothing_and_succeeds(
+    capsys, whisper_client
+):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": ""}})
+
+    code, out, _ = run(capsys, "-q", "-o", "raw", "whisper", "retrieve", "h1")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert out == "\n"
+
+
+def test_raw_extract_of_an_empty_document_prints_empty_text_not_the_hash(
+    capsys, whisper_client, tmp_path
+):
+    doc = tmp_path / "blank.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1"},
+        whisper_status={"status": "processed"},
+        whisper_retrieve={"extraction": {"result_text": ""}},
+    )
+
+    _, out, _ = run(
+        capsys, "-q", "-o", "raw", "whisper", "extract", str(doc), "--interval", "0.1"
+    )
+
+    assert out == "\n"
+
+
 def test_wait_and_use_webhook_are_mutually_exclusive(capsys, whisper_client, tmp_path):
     doc = tmp_path / "doc.pdf"
     doc.write_bytes(b"%PDF-")
@@ -2669,7 +2698,9 @@ PARTIAL_FAILURE = {
             "file": "a.pdf",
             "file_execution_id": "f1",
             "status": "Success",
-            "result": {"total": 1},
+            # A field the redactor would blank: the assertion on the rescued
+            # payload is only a check if redaction would have changed it.
+            "result": {"policy_key": "PK-1", "total": 1},
             "error": None,
             "metadata": {},
         },
@@ -2689,6 +2720,9 @@ PARTIAL_FAILURE = {
             "error": None,
             "metadata": {},
         },
+        # No status at all, only an error: the shape a tool that died before
+        # reporting leaves behind.
+        {"file": "noStatus.pdf", "file_execution_id": "f4", "error": "tool died"},
     ],
 }
 
@@ -2728,8 +2762,9 @@ def test_a_completed_run_with_a_failed_document_is_not_a_success(
 
     assert code == int(ExitCode.VALIDATION)
     error = envelope(out)["error"]
-    assert error["failed_files"] == ["bad.pdf"]
+    assert error["failed_files"] == ["bad.pdf", "noStatus.pdf"]
     assert error["execution_id"] == "e1"
+    assert error["details"]["extraction_result"][0]["result"]["policy_key"] == "PK-1"
     assert "bad.pdf" in error["message"]
     # One-shot read: the successful documents survive only here, unredacted.
     assert error["details"] == PARTIAL_FAILURE
@@ -2783,6 +2818,7 @@ def test_a_failed_document_is_saved_before_the_run_is_failed(
         "a.pdf",
         "bad.pdf",
         "c.pdf",
+        "noStatus.pdf",
     ]
 
 
@@ -2805,7 +2841,7 @@ def test_a_status_read_with_a_failed_document_is_not_a_success(
 
     assert code == int(ExitCode.VALIDATION)
     error = envelope(out)["error"]
-    assert error["failed_files"] == ["bad.pdf"]
+    assert error["failed_files"] == ["bad.pdf", "noStatus.pdf"]
     assert error["execution_id"] == "e-1"
     assert target.exists()
 
@@ -3321,6 +3357,43 @@ def test_a_run_that_times_out_names_the_id_its_status_command_takes(
     error = envelope(out)["error"]
     assert error["execution_id"] == "e-1"
     assert "deployment status my-api e-1" in error["hint"]
+
+
+def test_a_timed_out_run_asked_to_save_says_to_save_on_resume(
+    capsys, deployment_client, tmp_path, monkeypatch
+):
+    doc = tmp_path / "doc.pdf"
+    doc.write_bytes(b"%PDF-")
+    target = tmp_path / "out.json"
+    deployment_client(
+        structure_file=ACK,
+        check_execution_status={
+            "status_code": 200,
+            "execution_status": "EXECUTING",
+            "extraction_result": "",
+        },
+    )
+    monkeypatch.setattr("unstract_cli.core.poll.time.sleep", lambda _seconds: None)
+
+    code, out, _ = run(
+        capsys,
+        "docstudio",
+        "deployment",
+        "run",
+        "my-api",
+        str(doc),
+        "--interval",
+        "0.1",
+        "--timeout",
+        "0",
+        "--save",
+        str(target),
+    )
+
+    assert code == int(ExitCode.TIMEOUT)
+    assert (
+        f"deployment status my-api e-1 --save {target}`" in envelope(out)["error"]["hint"]
+    )
 
 
 def test_a_zero_poll_interval_is_refused(capsys, whisper_client, tmp_path):

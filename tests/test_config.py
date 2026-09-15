@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import tomllib
@@ -327,6 +328,28 @@ def test_the_replacement_is_synced_before_it_is_renamed(tmp_path, monkeypatch):
     assert order[: order.index("replace")] == ["fsync"]
     # The last one is the directory, so the rename itself is on the disk too.
     assert order[-1] == "fsync"
+
+
+def test_a_directory_that_will_not_sync_is_warned_about_not_hidden(
+    tmp_path, monkeypatch, warnings_seen
+):
+    """The config is already renamed into place by then, so the write is a
+    success with a caveat, not a failure -- but not a silent success either."""
+    path = tmp_path / "config.toml"
+    real_fsync = os.fsync
+
+    def fsync(fd):
+        if os.fstat(fd).st_mode & stat.S_IFDIR:
+            raise OSError(errno.EINVAL, "Invalid argument")
+        real_fsync(fd)
+
+    monkeypatch.setattr(config_module.os, "fsync", fsync)
+
+    assert save_config(ConfigFile(profiles=starter_profiles()), path) == path
+    assert path.exists()
+    assert any(
+        "could not be synced" in note and str(path) in note for note in warnings_seen
+    )
 
 
 def test_an_unwritable_directory_is_reported_rather_than_raised(tmp_path):

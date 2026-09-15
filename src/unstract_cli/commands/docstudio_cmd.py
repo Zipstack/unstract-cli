@@ -155,9 +155,12 @@ def run(
             if exc.exit_code is ExitCode.TIMEOUT and (
                 found := handle.get("execution_id")
             ):
+                # The status read is one-shot, so a resume that drops --save
+                # spends it with nothing on disk.
+                saving = f" --save {save}" if save else ""
                 exc.hint = (
                     f"Resume with `unstract docstudio deployment status {target} "
-                    f"{found}` rather than resubmitting the document."
+                    f"{found}{saving}` rather than resubmitting the document."
                 )
             raise
     handle = _handle_meta(started)
@@ -172,6 +175,8 @@ def _failed_files(result: dict[str, Any]) -> list[dict[str, Any]]:
     entries = result.get("extraction_result")
     if not isinstance(entries, list):
         return []
+    # The spec types a file's status as a bare string; the service has been
+    # seen to spell it "Success" and "Failed".
     failed = []
     for entry in entries:
         if not isinstance(entry, dict):

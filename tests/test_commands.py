@@ -256,6 +256,35 @@ def test_raw_output_prints_the_extracted_text(capsys, whisper_client, tmp_path):
     assert out.strip() == "hello"
 
 
+def test_raw_retrieve_of_an_empty_extraction_prints_nothing_and_succeeds(
+    capsys, whisper_client
+):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": ""}})
+
+    code, out, _ = run(capsys, "-q", "-o", "raw", "whisper", "retrieve", "h1")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert out == "\n"
+
+
+def test_raw_extract_of_an_empty_document_prints_empty_text_not_the_hash(
+    capsys, whisper_client, tmp_path
+):
+    doc = tmp_path / "blank.pdf"
+    doc.write_bytes(b"%PDF-")
+    whisper_client(
+        whisper={"whisper_hash": "h1"},
+        whisper_status={"status": "processed"},
+        whisper_retrieve={"extraction": {"result_text": ""}},
+    )
+
+    _, out, _ = run(
+        capsys, "-q", "-o", "raw", "whisper", "extract", str(doc), "--interval", "0.1"
+    )
+
+    assert out == "\n"
+
+
 def test_wait_and_use_webhook_are_mutually_exclusive(capsys, whisper_client, tmp_path):
     doc = tmp_path / "doc.pdf"
     doc.write_bytes(b"%PDF-")

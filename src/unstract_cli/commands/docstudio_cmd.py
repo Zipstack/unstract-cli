@@ -113,7 +113,8 @@ def run(
         )
     if save:
         preflight(save)
-    with deployment_errors(target), translated(endpoint=client.api_url):
+    key_source = ctx.config.deployment_key_source(target)
+    with deployment_errors(target, key_source), translated(endpoint=client.api_url):
         # Queued execution, so the request returns a handle instead of holding
         # the connection open for the length of the job.
         started = client.structure_file(list(files), timeout=0, **sent)
@@ -272,7 +273,11 @@ def status(
     endpoint = f"{client.api_url}?execution_id={quote(execution_id, safe='')}"
     # The status read serves a result exactly once, which is what a 406 from
     # it means.
-    with deployment_errors(target), translated(endpoint=client.api_url, one_shot=True):
+    key_source = ctx.config.deployment_key_source(target)
+    with (
+        deployment_errors(target, key_source),
+        translated(endpoint=client.api_url, one_shot=True),
+    ):
         result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
             raise_for_result(result, endpoint=client.api_url, one_shot=True)

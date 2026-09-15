@@ -121,8 +121,26 @@ def deployment(
     )
 
 
+def _rejected_key_hint(api_name: str, source: str | None) -> str:
+    """What to do about a key this deployment refused, where it came from.
+
+    Advising a per-deployment key is only useful to a caller who does not have
+    one: told to the caller whose per-deployment key was just rejected, it is
+    the step that has already failed.
+    """
+    stored = f"`unstract config set docstudio api_key <key> --deployment {api_name}`"
+    if source == "entry":
+        return f"The key stored for {api_name!r} was rejected. Replace it: {stored}."
+    if source == "flag":
+        return "The key passed with --api-key was rejected."
+    if source == "env":
+        env_var = ENV_VARS[(DOCSTUDIO, "api_key")][0]
+        return f"The key in ${env_var} was rejected."
+    return f"This deployment may need a key of its own: {stored}."
+
+
 @contextmanager
-def deployment_errors(api_name: str) -> Iterator[None]:
+def deployment_errors(api_name: str, key_source: str | None = None) -> Iterator[None]:
     """Say what a refusal means for *this* deployment, once the server answers.
 
     A rejected key and an unknown name are both indistinguishable from success
@@ -138,11 +156,7 @@ def deployment_errors(api_name: str) -> Iterator[None]:
                 f"The key supplied for deployment {api_name!r} does not authorize "
                 f"it: {exc.message}"
             )
-            exc.hint = (
-                "This deployment may need a key of its own: "
-                "`unstract config set docstudio api_key <key> --deployment "
-                f"{api_name}`."
-            )
+            exc.hint = _rejected_key_hint(api_name, key_source)
         elif exc.exit_code is ExitCode.NOT_FOUND:
             more = (
                 "Run `unstract docstudio deployment ls` for the current API names; "

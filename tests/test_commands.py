@@ -775,6 +775,75 @@ def test_a_rejected_key_names_the_deployment_and_how_to_give_it_its_own(
     )
 
 
+REJECTED_KEY_CONFIG = """
+default_profile = "p"
+[profiles.p.docstudio]
+org_id = "org_X"
+api_key = "dk-profile-000001"
+[profiles.p.deployments."invoice-parser"]
+api_key = "dk-entry-0000001"
+"""
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        pytest.param(
+            ("docstudio", "deployment", "status", "invoice-parser", "e-1"),
+            "The key stored for 'invoice-parser' was rejected",
+            id="the deployment's own entry",
+        ),
+        pytest.param(
+            ("docstudio", "deployment", "status", "receipt-parser", "e-1"),
+            "may need a key of its own",
+            id="the profile key",
+        ),
+        pytest.param(
+            (
+                "docstudio",
+                "--api-key",
+                "dk-flag-00000001",
+                "deployment",
+                "status",
+                "invoice-parser",
+                "e-1",
+            ),
+            "passed with --api-key",
+            id="the flag",
+        ),
+    ],
+)
+def test_a_rejected_key_is_reported_where_it_came_from(
+    capsys, deployment_client, monkeypatch, tmp_path, argv, expected
+):
+    """Telling the caller whose per-deployment key was just rejected to store a
+    per-deployment key names the step that has already failed."""
+    _config_with(tmp_path, monkeypatch, REJECTED_KEY_CONFIG)
+    deployment_client(check_execution_status={"status_code": 401, "error": "no"})
+
+    code, out, _ = run(capsys, *argv)
+
+    assert code == int(ExitCode.AUTH)
+    assert expected in envelope(out)["error"]["hint"]
+
+
+def test_a_rejected_key_from_the_environment_names_the_variable(
+    capsys, deployment_client, monkeypatch, tmp_path
+):
+    """The variable outranks both stored keys, so editing either changes
+    nothing until it is unset."""
+    _config_with(tmp_path, monkeypatch, REJECTED_KEY_CONFIG)
+    monkeypatch.setenv("UNSTRACT_DEPLOYMENT_KEY", "dk-env-000000001")
+    deployment_client(check_execution_status={"status_code": 401, "error": "no"})
+
+    code, out, _ = run(
+        capsys, "docstudio", "deployment", "status", "invoice-parser", "e-1"
+    )
+
+    assert code == int(ExitCode.AUTH)
+    assert "$UNSTRACT_DEPLOYMENT_KEY was rejected" in envelope(out)["error"]["hint"]
+
+
 def test_an_unknown_api_name_is_pointed_at_the_listing(capsys, deployment_client):
     """A misspelt or renamed API name comes back not-found, and the server is
     the only authority on what the current names are."""

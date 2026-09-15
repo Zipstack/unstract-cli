@@ -552,15 +552,32 @@ class ResolvedConfig:
         file value that outranked the environment would let a stale entry hijack
         a run the caller set up with ``$UNSTRACT_DEPLOYMENT_KEY``.
         """
-        tiers = self._tiers(DOCSTUDIO, "api_key")
-        flag, env = next(tiers), next(tiers)
-        value = flag if flag is not None else env
-        if value is None:
-            value = self._entry_key(api_name)
-        if value is None:
-            value = next(tiers)
+        value, _source = self._deployment_key(api_name)
         remember_secret(value)
         return value
+
+    def deployment_key_source(self, api_name: str) -> str | None:
+        """Which tier the key for this deployment came from, or ``None``.
+
+        One of ``"flag"``, ``"env"``, ``"entry"``, ``"profile"``. A message
+        about a rejected key names the place it was actually read from, rather
+        than the place it could have been stored.
+        """
+        return self._deployment_key(api_name)[1]
+
+    def _deployment_key(self, api_name: str) -> tuple[Any, str | None]:
+        """The key and the tier it came from, resolved once for both callers."""
+        tiers = self._tiers(DOCSTUDIO, "api_key")
+        flag, env = next(tiers), next(tiers)
+        if flag is not None:
+            return flag, "flag"
+        if env is not None:
+            return env, "env"
+        if (entry := self._entry_key(api_name)) is not None:
+            return entry, "entry"
+        if (profile := next(tiers)) is not None:
+            return profile, "profile"
+        return None, None
 
     def _entry_key(self, api_name: str) -> Any:
         """The key the deployment's own entry names, if it names one.

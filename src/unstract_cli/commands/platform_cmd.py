@@ -349,6 +349,15 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
         )
 
     org_id = str(identity["organization_id"]) if identity.get("organization_id") else None
+    if keys["platform"] and not org_id:
+        # The key was accepted but resolved no organisation, and every other
+        # docstudio command needs one: silence here reads as a complete login.
+        diagnostic(
+            "warning: the platform API returned no organization_id; the key is "
+            "stored without one.",
+            quiet=ctx.quiet,
+            verbosity=ctx.verbosity,
+        )
     checked_as = name
     existing = cfg.profiles.get(name, {}).get(DOCSTUDIO, {}).get("org_id")
     if org_id and existing and existing != org_id:

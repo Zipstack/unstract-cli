@@ -2245,6 +2245,18 @@ def test_a_key_quoted_back_by_a_rejected_login_is_scrubbed(capsys, login_seams):
     assert "***REDACTED***" in out
 
 
+def test_login_says_so_when_the_key_resolves_no_organisation(capsys, login_seams):
+    """Every docstudio command needs one, so a login that stored none has to
+    say it -- as `whoami` already does for the same answer."""
+    login_seams([], whoami={"organization_name": "Acme"})
+
+    code, out, err = run(capsys, "auth", "login", "--platform-key", PK)
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["organization_id"] is None
+    assert "no organization_id" in err
+
+
 def test_login_reads_at_most_one_key_from_stdin(capsys, login_seams, tmp_path):
     login_seams([])
 

@@ -180,12 +180,16 @@ def clone(
             options,
         )
     except PlatformAPIError as exc:
+        # The exception appends up to 2KB of response body to its own message,
+        # and `error.message` is published as a one-line summary; the body is
+        # carried in `details` either way.
+        message = str(exc).split("\n  body:", 1)[0]
         if exc.status_code:
             raise error_from_status(
-                int(exc.status_code), str(exc), details=exc.body
+                int(exc.status_code), message, details=exc.body
             ) from exc
         raise CLIError(
-            str(exc),
+            message,
             ExitCode.SERVER_ERROR,
             details=exc.body,
             retryable=True,

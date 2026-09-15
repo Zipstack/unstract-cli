@@ -6,14 +6,15 @@ expected, so it is translated here into a ``CLIError`` carrying an exit code, a
 hint and the response detail.
 
 The clients report failure differently -- LLMWhisperer raises with a status
-code attached, the deployment client returns a dict containing one, the Platform
-API client raises with the body attached -- so every shape converges here rather
-than in each command. The deployment client also raises for a request it will
-not send at all, which is always a usage error.
+code attached, the deployment client returns a dict containing one, the platform
+client spells one into its message -- so every shape converges here rather than
+in each command. The deployment client also raises for a request it will not
+send at all, which is always a usage error.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import socket
 from collections.abc import Callable, Iterator
@@ -25,7 +26,6 @@ from requests.exceptions import (
     InvalidHeader,
     InvalidSchema,
     InvalidURL,
-    JSONDecodeError,
     MissingSchema,
     RequestException,
     Timeout,
@@ -36,7 +36,6 @@ from unstract.api_deployments.client import (
     APIDeploymentsClientException,
     PlatformClientError,
 )
-from unstract.clone.exceptions import PlatformAPIError
 from unstract.llmwhisperer.client_v2 import (
     LLMWhispererClientException,
     LLMWhispererClientV2,
@@ -262,24 +261,6 @@ def translated(endpoint: str | None = None, *, one_shot: bool = False) -> Iterat
         raise CLIError(str(exc), ExitCode.SERVER_ERROR, endpoint=endpoint) from exc
     except APIDeploymentsClientException as exc:
         raise CLIError(str(exc), ExitCode.USAGE, endpoint=endpoint) from exc
-    except PlatformAPIError as exc:
-        # `PlatformAPIError.__init__` appends "\n  body: <resp.text[:2000]>" to
-        # its own message, so `str(exc)` would put up to 2KB of server body into
-        # `error.message` -- which `emit_error` documents as a one-line summary
-        # -- and duplicate it into `details`.
-        message = str(exc).split("\n  body:", 1)[0]
-        # The Platform API client raises rather than returning a status, and
-        # carries the response body on the exception. Untranslated it would
-        # reach the entry point as an unexpected crash and print a traceback.
-        if exc.status_code:
-            raise error_from_status(
-                int(exc.status_code),
-                message,
-                details=exc.body,
-                endpoint=endpoint,
-                one_shot=one_shot,
-            ) from exc
-        raise CLIError(message, details=exc.body, endpoint=endpoint) from exc
     except Timeout as exc:
         raise CLIError(
             str(exc),
@@ -329,10 +310,10 @@ def translated(endpoint: str | None = None, *, one_shot: bool = False) -> Iterat
                 "proxy variables, for a typo."
             ),
         ) from exc
-    except JSONDecodeError as exc:
-        # The Platform client is a bare `requests.Session`, so a 2xx carrying
-        # HTML from a proxy or SPA host arrives here raw. It subclasses
-        # `OSError`, so untranslated it would be rendered as a disk failure.
+    except json.JSONDecodeError as exc:
+        # A client that parses the body itself raises this on a 2xx carrying
+        # HTML from a proxy or SPA host. The base class, not the `requests`
+        # subclass: only one of the clients raises that one.
         raise CLIError(
             str(exc),
             ExitCode.SERVER_ERROR,

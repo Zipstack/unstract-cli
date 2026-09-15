@@ -372,6 +372,17 @@ def test_an_already_consumed_result_has_its_own_exit_code(capsys, whisper_client
 # --------------------------------------------------------------------------- #
 
 
+def test_a_body_that_is_not_json_is_a_server_failure_not_a_crash(capsys, whisper_client):
+    """A proxy or web-app host answers 200 with HTML, which the client parses
+    itself; untranslated it reaches the entry point as a crash."""
+    whisper_client(get_usage_info=json.JSONDecodeError("Expecting value", "<html>", 0))
+
+    code, out, _ = run(capsys, "whisper", "usage")
+
+    assert code == int(ExitCode.SERVER_ERROR)
+    assert "base_url" in envelope(out)["error"]["hint"]
+
+
 def test_an_auth_failure_maps_onto_its_exit_code(capsys, whisper_client):
     whisper_client(get_usage_info=LLMWhispererClientException("bad key", 401))
     code, out, _ = run(capsys, "whisper", "usage")
@@ -3116,6 +3127,20 @@ def test_a_platform_api_status_decides_the_clone_exit_code(capsys, clone_raising
 
     assert code == int(ExitCode.AUTH)
     assert "no access" in json.dumps(envelope(out)["error"]["details"])
+
+
+def test_a_clone_failure_keeps_the_response_body_out_of_the_message(
+    capsys, clone_raising
+):
+    """`error.message` is published as a one-line summary, and the exception
+    appends the response body to its own; `details` carries it either way."""
+    clone_raising(PlatformAPIError("forbidden", status_code=403, body="x" * 3000))
+    code, out, _ = run(capsys, *CLONE_ARGS)
+    error = envelope(out)["error"]
+
+    assert code == int(ExitCode.AUTH)
+    assert error["message"] == "forbidden"
+    assert error["details"] == "x" * 3000
 
 
 def test_a_platform_api_that_never_answered_is_retryable(capsys, clone_raising):

@@ -187,7 +187,7 @@ def test_a_deployment_with_no_key_anywhere_says_where_it_looked(tmp_path):
     ):
         assert source in error.message, source
     assert "config set docstudio api_key <key> --deployment invoice-parser" in error.hint
-    assert "Global API Deployment Keys" in error.hint
+    assert "Settings -> Global API Deployment Keys" in error.hint
 
 
 def test_a_deployment_with_no_organisation_fails_before_the_key_is_read(tmp_path):

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -204,6 +205,29 @@ def persist(path: str | Path, payload: Any) -> Path:
                 "service, which will not serve it again -- save it from here."
             ),
         ) from exc
+    # Syncing the file does not cover the directory entry the rename created,
+    # and a result that can be read once has no second copy to recover from.
+    # Windows cannot open a directory to sync it.
+    if sys.platform != "win32":
+        try:
+            dir_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as exc:
+            raise CLIError(
+                f"The result reached {path!r} but the write could not be "
+                f"confirmed: {exc}.",
+                ExitCode.SAVE_FAILED,
+                details=payload,
+                verbatim_details=True,
+                hint=(
+                    "`details` carries the result. The file may not survive a "
+                    "crash, and the service will not serve it again -- keep a "
+                    "copy from here."
+                ),
+            ) from exc
     return target
 
 

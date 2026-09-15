@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
+import sys
 
 import pytest
 
+from unstract_cli.core import poll as poll_module
 from unstract_cli.core.errors import REDACTED, ExitCode
 from unstract_cli.core.poll import (
     MAX_TRANSIENT_POLLS,
@@ -240,6 +245,51 @@ def test_a_failed_save_carries_the_result_it_could_not_write(tmp_path):
 
     with pytest.raises(CLIError) as caught:
         persist(blocker / "result.json", {"result_text": "IRREPLACEABLE"})
+
+    assert caught.value.exit_code is ExitCode.SAVE_FAILED
+    assert caught.value.details == {"result_text": "IRREPLACEABLE"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no directory handles")
+def test_a_saved_result_is_synced_through_the_directory_entry(tmp_path, monkeypatch):
+    """Syncing the file leaves the rename itself in cache, so a crash can take
+    back the only copy of a result the service will not serve again."""
+    order: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd):
+        order.append("fsync-dir" if os.fstat(fd).st_mode & stat.S_IFDIR else "fsync")
+        real_fsync(fd)
+
+    monkeypatch.setattr(poll_module.os, "fsync", fsync)
+    monkeypatch.setattr(
+        poll_module.os,
+        "replace",
+        lambda src, dst: (order.append("replace"), real_replace(src, dst))[1],
+    )
+
+    persist(tmp_path / "out.json", {"a": 1})
+
+    assert order == ["fsync", "replace", "fsync-dir"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no directory handles")
+def test_a_result_that_cannot_be_confirmed_on_disk_is_not_reported_as_saved(
+    tmp_path, monkeypatch
+):
+    """Unlike the config, which can be written again, this is the last copy:
+    reporting success would invite the caller to drop it."""
+    real_fsync = os.fsync
+
+    def fsync(fd):
+        if os.fstat(fd).st_mode & stat.S_IFDIR:
+            raise OSError(errno.EIO, "Input/output error")
+        real_fsync(fd)
+
+    monkeypatch.setattr(poll_module.os, "fsync", fsync)
+
+    with pytest.raises(CLIError) as caught:
+        persist(tmp_path / "out.json", {"result_text": "IRREPLACEABLE"})
 
     assert caught.value.exit_code is ExitCode.SAVE_FAILED
     assert caught.value.details == {"result_text": "IRREPLACEABLE"}

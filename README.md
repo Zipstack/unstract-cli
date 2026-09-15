@@ -88,8 +88,10 @@ Three keys, each for one job:
 `auth login` takes whichever of the three you have, checks the two it can
 (`whoami` for the platform key, the usage endpoint for the LLMWhisperer key; a
 deployment key has nothing side-effect-free to call and is stored as given) and
-writes them to one profile. Run it again to rotate a key. Without a terminal
-pass them as flags — `--platform-key`, `--deployment-key`, `--llmwhisperer-key`,
+writes them to one profile. Run it again to rotate a key. A login that stores a
+different host drops the profile's other keys rather than leave them beside a
+server that never accepted them: it asks first, or without a terminal fails
+until `--force`. Without a terminal pass them as flags — `--platform-key`, `--deployment-key`, `--llmwhisperer-key`,
 any one of them `-` to read from stdin.
 
 ## Configuration

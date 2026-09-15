@@ -24,6 +24,7 @@ from unstract_cli.config import (
     DOCSTUDIO,
     KEY_SOURCES,
     LLMWHISPERER,
+    PRODUCTS,
     ConfigError,
     ConfigFile,
     ResolvedConfig,
@@ -207,6 +208,40 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+def _stranded_credentials(
+    cfg: ConfigFile, name: str, keys: dict[str, str | None], resolved: ResolvedConfig
+) -> tuple[list[str], list[tuple[str, ...]]]:
+    """Keys the profile holds that this login neither supplied nor checked.
+
+    Storing the host a key was checked against moves every other credential in
+    the profile to a host none of them were checked against. Returns what is
+    affected, named for a message, and where each one sits.
+    """
+    profile = cfg.profiles.get(name, {})
+    stored = ResolvedConfig(file=cfg, profile_name=name)
+    supplied = {
+        (product, key)
+        for credential, _flag, _label, (product, key) in _CREDENTIALS
+        if keys.get(credential)
+    }
+    labels: list[str] = []
+    paths: list[tuple[str, ...]] = []
+    for product in PRODUCTS:
+        if resolved.get(product, "base_url") == stored.get(product, "base_url"):
+            continue
+        for key in ("api_key", "platform_key"):
+            if (product, key) not in supplied and profile.get(product, {}).get(key):
+                labels.append(f"{product} {key}")
+                paths.append((product, key))
+        if product != DOCSTUDIO:
+            continue
+        for api_name, entry in (profile.get("deployments") or {}).items():
+            if isinstance(entry, dict) and entry.get("api_key"):
+                labels.append(f"deployment {api_name}")
+                paths.append(("deployments", api_name, "api_key"))
+    return labels, paths
+
+
 def _new_profile_name(cfg: ConfigFile, org_id: str, org_name: Any) -> str:
     """Ask for the profile to hold this organisation, until the answer is safe.
 
@@ -256,7 +291,8 @@ def _new_profile_name(cfg: ConfigFile, org_id: str, org_name: Any) -> str:
     "--force",
     is_flag=True,
     default=False,
-    help="Overwrite a profile that belongs to a different organisation.",
+    help="Overwrite a profile that belongs to a different organisation, or drop "
+    "keys a host change leaves unchecked.",
 )
 @pass_context
 def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -> None:
@@ -277,7 +313,9 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
     is stored beside it; the LLMWhisperer key is checked against the usage
     endpoint. A deployment key has no side-effect-free endpoint, so it is stored
     as given and reported as unverified. Nothing is written until every check
-    has passed. Running it again replaces the keys given and keeps the rest.
+    has passed. Running it again replaces the keys given and keeps the rest,
+    unless it stores a different host: keys this run did not check are dropped
+    rather than left pointing at a server that never accepted them.
 
     Exits 3 when a key is rejected and 2 when no key was given.
     """
@@ -372,7 +410,45 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
             result["profile"] = name
             cfg.profiles[name] = {}
 
+    stranded, paths = (
+        _stranded_credentials(cfg, name, keys, resolved)
+        if name == checked_as and name in cfg.profiles
+        else ([], [])
+    )
+    if stranded:
+        # Keeping them would leave credentials this run never checked beside the
+        # host it stores, and the next command would send them there.
+        listed = ", ".join(stranded)
+        if not interactive and not force:
+            raise CLIError(
+                f"Profile {name!r} holds credentials that were not re-supplied, and "
+                f"this login stores a different host for them: {listed}.",
+                ExitCode.USAGE,
+                hint="Supply them in this login, pass --profile <name> to write "
+                "another profile, or --force to drop them.",
+            )
+        if (
+            interactive
+            and not force
+            and not _confirm(
+                f"This login stores a different host for {listed}, which "
+                f"{name!r} holds but this run did not check. Drop them?",
+                default=False,
+            )
+        ):
+            raise CLIError(
+                "Nothing was written.",
+                ExitCode.USAGE,
+                hint="Supply the keys in this login, or pass --profile <name> to "
+                "write another profile.",
+            )
+
     block = cfg.profiles.setdefault(name, {})
+    for path in paths:
+        table = block
+        for segment in path[:-1]:
+            table = table.get(segment, {})
+        table.pop(path[-1], None)
     noticed: set[str] = set()
     for credential, _flag, _label, (product, key) in _CREDENTIALS:
         if not keys[credential]:

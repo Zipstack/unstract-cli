@@ -2628,6 +2628,110 @@ def test_login_overwrites_when_a_new_profile_is_declined(capsys, login_seams, tm
     assert "org_OLD" not in _written(tmp_path)
 
 
+STRANDING_CONFIG = (
+    'default_profile = "p"\n[profiles.p.docstudio]\n'
+    'base_url = "https://stored.example/"\norg_id = "org_ABC123"\n'
+    'api_key = "DEPLOYMENT-KEY-AAAA"\n'
+    '[profiles.p.deployments.invoices]\napi_key = "ENTRY-KEY-BBBB"\n'
+)
+
+
+def test_login_drops_the_keys_a_host_change_leaves_unchecked(
+    capsys, login_seams, tmp_path
+):
+    """The deployment keys were checked against the host the profile held. A
+    login that stores another one would send them somewhere they were never
+    accepted."""
+    (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
+    seams = login_seams([PK, "", ""], confirm=True)
+
+    code, _, _ = run(capsys, "auth", "--base-url", "https://moved.example/", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    asked = " ".join(seams["confirms"])
+    assert "docstudio api_key" in asked and "deployment invoices" in asked
+    text = _written(tmp_path)
+    assert 'base_url = "https://moved.example/"' in text
+    assert "DEPLOYMENT-KEY-AAAA" not in text
+    assert "ENTRY-KEY-BBBB" not in text
+
+
+def test_login_aborts_rather_than_drop_keys_the_answer_declined(
+    capsys, login_seams, tmp_path
+):
+    """Declining is a decision about the whole login: the keys are worth more
+    than the host change, so nothing is written at all."""
+    (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
+    login_seams([PK, "", ""], confirm=False)
+
+    code, _, _ = run(capsys, "auth", "--base-url", "https://moved.example/", "login")
+
+    assert code == int(ExitCode.USAGE)
+    assert _written(tmp_path) == STRANDING_CONFIG
+
+
+def test_login_without_a_terminal_refuses_to_strand_keys_until_forced(
+    capsys, login_seams, tmp_path
+):
+    """Nothing can be asked, so the keys are kept and the run fails; --force is
+    how a script says it accepts losing them."""
+    (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
+    login_seams([], tty=False)
+
+    code, _, err = run(
+        capsys,
+        "auth",
+        "--base-url",
+        "https://moved.example/",
+        "login",
+        "--platform-key",
+        PK,
+    )
+
+    assert code == int(ExitCode.USAGE)
+    assert "docstudio api_key" in err and "deployment invoices" in err
+    assert _written(tmp_path) == STRANDING_CONFIG
+
+    code, _, _ = run(
+        capsys,
+        "auth",
+        "--base-url",
+        "https://moved.example/",
+        "login",
+        "--platform-key",
+        PK,
+        "--force",
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    text = _written(tmp_path)
+    assert "DEPLOYMENT-KEY-AAAA" not in text and "ENTRY-KEY-BBBB" not in text
+
+
+def test_a_rotation_against_the_same_host_keeps_the_other_keys(
+    capsys, login_seams, tmp_path
+):
+    """Re-logging in against the host the profile already names checks nothing
+    new, so there is nothing to ask about and nothing to drop."""
+    (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
+    seams = login_seams([])
+
+    code, _, _ = run(
+        capsys,
+        "auth",
+        "--base-url",
+        "https://stored.example/",
+        "login",
+        "--platform-key",
+        PK,
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["confirms"] == []
+    text = _written(tmp_path)
+    assert "DEPLOYMENT-KEY-AAAA" in text and "ENTRY-KEY-BBBB" in text
+
+
 def test_login_writes_the_profile_named_and_checks_against_its_own_host(
     capsys, login_seams, tmp_path
 ):

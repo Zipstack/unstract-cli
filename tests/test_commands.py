@@ -1467,6 +1467,9 @@ PARTIAL_FAILURE = {
             "error": None,
             "metadata": {},
         },
+        # No status at all, only an error: the shape a tool that died before
+        # reporting leaves behind.
+        {"file": "noStatus.pdf", "file_execution_id": "f4", "error": "tool died"},
     ],
 }
 
@@ -1506,7 +1509,7 @@ def test_a_completed_run_with_a_failed_document_is_not_a_success(
 
     assert code == int(ExitCode.VALIDATION)
     error = envelope(out)["error"]
-    assert error["failed_files"] == ["bad.pdf"]
+    assert error["failed_files"] == ["bad.pdf", "noStatus.pdf"]
     assert error["execution_id"] == "e1"
     assert error["details"]["extraction_result"][0]["result"]["policy_key"] == "PK-1"
     assert "bad.pdf" in error["message"]
@@ -1562,6 +1565,7 @@ def test_a_failed_document_is_saved_before_the_run_is_failed(
         "a.pdf",
         "bad.pdf",
         "c.pdf",
+        "noStatus.pdf",
     ]
 
 
@@ -1584,7 +1588,7 @@ def test_a_status_read_with_a_failed_document_is_not_a_success(
 
     assert code == int(ExitCode.VALIDATION)
     error = envelope(out)["error"]
-    assert error["failed_files"] == ["bad.pdf"]
+    assert error["failed_files"] == ["bad.pdf", "noStatus.pdf"]
     assert error["execution_id"] == "e-1"
     assert target.exists()
 

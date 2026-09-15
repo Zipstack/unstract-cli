@@ -1882,8 +1882,8 @@ def test_whoami_keeps_the_identity_when_the_write_fails(
     capsys, platform_client, monkeypatch, tmp_path
 ):
     """The read succeeded and only the convenience write failed. Losing the
-    identity to a full disk reported a working key as a total failure, on an
-    exit code that means "you invoked it wrong".
+    identity to a full disk would report a working key as a total failure, on
+    an exit code that means "you invoked it wrong".
     """
     _config_with(
         tmp_path,

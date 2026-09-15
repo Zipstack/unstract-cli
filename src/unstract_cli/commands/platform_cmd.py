@@ -6,8 +6,8 @@ deployment key runs deployments and cannot describe the account, a platform key
 describes the account and lists what is in it but cannot run anything. `login`
 stores either, and the LLMWhisperer key, into one profile.
 
-No OpenAPI spec is vendored for the platform API, so these declare their flags
-by hand rather than through `spec_options`.
+Both platform operations are declared in the vendored docstudio spec, but these
+commands take their flags by hand rather than through `spec_options`.
 """
 
 from __future__ import annotations
@@ -86,9 +86,8 @@ def _profile_to_write(
     """The profile a write lands in: the one named, else the one the run is using.
 
     The fallback is `ResolvedConfig.active_profile`, the same flag > env >
-    file-default ladder every read uses. Re-deriving it here is what dropped the
-    `$UNSTRACT_PROFILE` tier once, so the organisation was written into a
-    profile no later command read.
+    file-default ladder every read uses, rather than a ladder re-derived here:
+    one that misses a tier writes into a profile no later command reads.
     """
     selected = name or ctx.config.active_profile or cfg.default_profile
     if selected is None and cfg.exists and cfg.profiles:
@@ -468,8 +467,8 @@ def whoami(ctx: Context, save: bool) -> None:
     except SaveDeclinedError as exc:
         # The identity is what was asked for; the write was a convenience this
         # config layout declines. Reporting the whole command as a usage error
-        # would fail the CLI's documented first command in any checkout holding
-        # a committed `.unstract.toml`, and throw the identity away with it.
+        # would fail it in any checkout holding a committed `.unstract.toml`,
+        # and throw the identity away with it.
         diagnostic(
             f"note: org_id was not stored -- {exc.reason}. {exc.hint}",
             quiet=ctx.quiet,
@@ -528,9 +527,8 @@ def ls(ctx: Context, api_name: str | None, full: bool) -> None:
     if ctx.config.overrides.get(f"{DOCSTUDIO}.api_key") is not None:
         # `--api-key` on the docstudio group means a *deployment* key, and this
         # command authenticates with a platform key. Honouring it would send a
-        # deployment key to the platform API; ignoring it silently and then
-        # reporting the platform key as missing is what shipped, and reads as a
-        # broken flag rather than the wrong credential.
+        # deployment key to the platform API, and ignoring it silently reads as
+        # a broken flag rather than as the wrong credential.
         raise CLIError(
             "`--api-key` on `docstudio` is a deployment key; "
             "`deployment ls` authenticates with a platform key.",

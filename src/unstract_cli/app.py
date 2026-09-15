@@ -42,7 +42,7 @@ class Context:
     quiet: bool = False
     verbosity: int = 0
     profile: str | None = None
-    #: Socket timeout for the deployment client, which has none of its own.
+    #: Transport timeout for the clients that have none of their own.
     transport_timeout: float | None = DEFAULT_TRANSPORT_TIMEOUT
     #: Command-line overrides, keyed `product.setting` -- the top tier of
     #: flag > env > profile > default.

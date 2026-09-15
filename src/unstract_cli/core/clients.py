@@ -73,9 +73,9 @@ def deployment_url(base_url: str, org_id: str, api_name: str) -> str:
     return base_url.rstrip("/") + path
 
 
-#: Socket timeout for the deployment client, which sets none of its own. The
-#: same figure the LLMWhisperer client applies, so a stalled connection is given
-#: up on the same way on both paths.
+#: Transport timeout for the clients that set none of their own. The same
+#: figure the LLMWhisperer client applies, so a stalled connection is given up
+#: on the same way on every path.
 DEFAULT_TRANSPORT_TIMEOUT = 120.0
 
 
@@ -245,13 +245,10 @@ def translated(endpoint: str | None = None, *, one_shot: bool = False) -> Iterat
         # key has to exit AUTH -- the exit-code table in the README promises it
         # and a setup script branches on it.
         #
-        # The status is recovered from the message because the released client
-        # does not carry one: `PlatformKeyClient._read_or_raise` raises
-        # `PlatformClientError(f"{what} failed with {status}: {reason}")` and
-        # nothing else. Asked upstream to put `status_code` on the exception; the
-        # day it lands this parse should be deleted rather than kept as a
-        # fallback. Until then a wording change upstream silently costs the
-        # mapping, which is what the `_PLATFORM_STATUS` test pins.
+        # The status is recovered from the message because the exception does
+        # not carry one: the client spells it into the text as "failed with
+        # <status>". A wording change upstream silently costs the mapping,
+        # which is what the `_PLATFORM_STATUS` test pins.
         if match := _PLATFORM_STATUS.search(str(exc)):
             raise error_from_status(
                 int(match.group(1)), str(exc), endpoint=endpoint, one_shot=one_shot

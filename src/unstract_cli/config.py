@@ -451,21 +451,6 @@ class ResolvedConfig:
             remember_secret(value)
         return value
 
-    def get_explicit(self, product: str, key: str) -> Any:
-        """Resolve through **flag > env > profile** only, stopping before defaults.
-
-        `get` cannot answer "did anyone actually name this?" -- it returns
-        `DEFAULT_BASE_URLS[product]` for an unset `base_url`, so a caller who
-        deliberately named the default host and one who named nothing come back
-        as the same string. Anything that must treat those two differently asks
-        here instead of comparing the answer against the default, which reads
-        the caller's own choice as silence.
-        """
-        value = self._explicit(product, key)
-        if key in SECRET_SETTINGS:
-            remember_secret(value)
-        return value
-
     def _tiers(self, product: str, key: str) -> Iterator[Any]:
         """What each tier says, in order -- flag, env, profile -- unset as `None`.
 

@@ -216,19 +216,21 @@ def _slug(text: str) -> str:
 def _new_profile_name(cfg: ConfigFile, org_id: str, org_name: Any) -> str:
     """Ask for the profile to hold this organisation, until the answer is safe.
 
-    A typed name that already belongs to another organisation would let the
-    guard's own remedy do the overwrite it exists to prevent, so such a name
-    needs a second confirmation of its own.
+    The profile named here is replaced, not merged into: its credentials were
+    never checked against this key's host. A typed name that already exists
+    therefore needs a confirmation of its own -- all the more when it belongs
+    to another organisation, or the guard's remedy would be the overwrite it
+    exists to prevent.
     """
     suggested = _slug(str(org_name or "")) or org_id
     while True:
         name = _prompt("Profile name", default=suggested)
-        other = cfg.profiles.get(name, {}).get(DOCSTUDIO, {}).get("org_id")
-        if not other or other == org_id:
+        if name not in cfg.profiles:
             return name
+        other = cfg.profiles[name].get(DOCSTUDIO, {}).get("org_id")
+        owner = f" and belongs to organisation {other}" if other else ""
         if _confirm(
-            f"Profile {name!r} belongs to organisation {other}. Overwrite it?",
-            default=False,
+            f"Profile {name!r} already exists{owner}. Replace it?", default=False
         ):
             return name
 
@@ -363,6 +365,7 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
         ):
             name = _new_profile_name(cfg, org_id, identity.get("organization_name"))
             result["profile"] = name
+            cfg.profiles[name] = {}
 
     block = cfg.profiles.setdefault(name, {})
     for credential, _flag, _label, (product, key) in _CREDENTIALS:

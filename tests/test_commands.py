@@ -2348,19 +2348,21 @@ def test_a_new_profile_offered_by_the_guard_keeps_the_host_the_key_was_checked_o
     assert "[profiles.beta.docstudio]" in text
 
 
-def test_a_profile_chosen_at_the_guard_takes_the_host_the_key_was_checked_on(
+def test_a_profile_chosen_at_the_guard_is_replaced_not_merged_into(
     capsys, login_seams, tmp_path
 ):
-    """The name typed at the guard may be an existing profile with a host of
-    its own; the key was not checked against that host, so the one it was
-    checked against replaces it."""
+    """The name typed at the guard may be an existing profile with a host and
+    keys of its own; none of those were checked against this key's host, so
+    the profile is confirmed and then rebuilt from what this login verified."""
     (tmp_path / "config.toml").write_text(
         'default_profile = "onprem"\n[profiles.onprem.docstudio]\n'
         'base_url = "https://onprem.example/"\norg_id = "org_OLD"\n'
-        '[profiles.beta.docstudio]\nbase_url = "https://stale.example/"\n',
+        '[profiles.beta.docstudio]\nbase_url = "https://stale.example/"\n'
+        'api_key = "sk-stale"\n'
+        '[profiles.beta.deployments."invoice-parser"]\napi_key = "sk-stale-entry"\n',
         encoding="utf-8",
     )
-    login_seams(
+    seams = login_seams(
         [PK, "", "", "beta"],
         confirm=True,
         whoami={**IDENTITY, "organization_id": "org_NEW"},
@@ -2369,9 +2371,11 @@ def test_a_profile_chosen_at_the_guard_takes_the_host_the_key_was_checked_on(
     code, _, _ = run(capsys, "auth", "login")
 
     assert code == int(ExitCode.SUCCESS)
+    assert seams["confirms"][-1] == "Profile 'beta' already exists. Replace it?"
     text = _written(tmp_path)
-    assert "stale.example" not in text
+    assert "stale" not in text
     assert text.count('base_url = "https://onprem.example/"') == 2
+    assert "[profiles.beta.docstudio]" in text and 'org_id = "org_NEW"' in text
 
 
 def test_a_new_profile_name_that_belongs_to_a_third_organisation_is_confirmed(

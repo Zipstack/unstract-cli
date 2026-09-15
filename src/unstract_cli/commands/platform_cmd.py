@@ -390,13 +390,16 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
             continue
         product_block = block.setdefault(product, {})
         product_block[key] = keys[credential]
-        # The key was checked against the host the run resolved -- a flag, or
-        # the profile the login started from. A profile that records any other
-        # host, or none, would send the key somewhere it was never checked.
+        # The key was checked against the host the run resolved -- a flag, the
+        # environment, or the profile the login started from. A profile that
+        # records any other host, or none, would send the key somewhere it was
+        # never checked.
+        decided_by = resolved.resolution_source(product, "base_url")["source"]
         if (
             name != checked_as
             or "base_url" not in product_block
-            or ctx.overrides.get(f"{product}.base_url")
+            or decided_by == "flag/override"
+            or decided_by.startswith("env:")
         ):
             product_block["base_url"] = resolved.get(product, "base_url")
     if org_id:

@@ -2709,6 +2709,27 @@ def test_login_moves_an_existing_profile_to_the_host_it_checked_against(
     assert "old.example" not in text
 
 
+def test_login_moves_an_existing_profile_to_the_host_the_environment_chose(
+    capsys, login_seams, monkeypatch, tmp_path
+):
+    """Same as with a flag: the host the key was checked against is the one
+    stored, whatever the profile said before."""
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "p"\n[profiles.p.docstudio]\n'
+        'base_url = "https://stored.example/"\norg_id = "org_ABC123"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("UNSTRACT_BASE_URL", "https://from-env.example/")
+    login_seams([])
+
+    code, _, _ = run(capsys, "auth", "login", "--platform-key", PK)
+
+    assert code == int(ExitCode.SUCCESS)
+    text = _written(tmp_path)
+    assert 'base_url = "https://from-env.example/"' in text
+    assert "stored.example" not in text
+
+
 def test_login_does_not_write_a_discovered_project_config(
     capsys, login_seams, monkeypatch, tmp_path
 ):

@@ -37,7 +37,7 @@ from unstract_cli.core.output import (
     emit_result,
     resolve_format,
 )
-from unstract_cli.core.platform import organisation, platform_client
+from unstract_cli.core.platform import deployment_rows, organisation, platform_client
 
 #: The probe entry for docstudio's platform key. Named for the credential,
 #: not the product: the deployment key sits beside it under `docstudio`.
@@ -362,7 +362,7 @@ def _stale_deployments(resolved: ResolvedConfig, names: list[str]) -> list[str]:
         return [
             name
             for name in names
-            if not client.list_deployments(org_id, api_name=name).get("results")
+            if not deployment_rows(client.list_deployments(org_id, api_name=name))
         ]
 
 

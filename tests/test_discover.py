@@ -203,6 +203,8 @@ def platform_probe_client(monkeypatch):
             def list_deployments(self, org_id, api_name=None):
                 if isinstance(live, Exception):
                     raise live
+                if isinstance(live, dict):
+                    return live
                 results = [{"api_name": n} for n in live if n == api_name]
                 return {"count": len(results), "results": results}
 
@@ -461,6 +463,26 @@ def test_a_rejected_platform_key_is_not_sent_again_for_the_entry_check(
         "probe platform: key rejected"
     ]
     assert "did not pass" in err
+
+
+def test_a_listing_that_is_not_a_list_fails_the_entry_check(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """A proxy answering in the API's place would otherwise read as an
+    organisation that has none of these deployments any more."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(
+        {"organization_id": "org_ABC"}, live={"results": "<html>Sign in</html>"}
+    )
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    report = json.loads(capsys.readouterr().out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert "stale_deployments" not in report
+    assert any("list of deployments" in p for p in report["problems"])
 
 
 def test_the_probe_skips_the_entry_check_without_a_platform_key(

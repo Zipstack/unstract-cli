@@ -1665,6 +1665,23 @@ def test_ls_survives_a_page_with_no_results_key(
     assert envelope(out)["data"]["results"] == []
 
 
+def test_a_listing_that_is_not_a_list_is_a_protocol_failure(
+    capsys, platform_client, monkeypatch, tmp_path
+):
+    """A login page or proxy answering in the API's place is not an account
+    with no deployments, and projecting its body would crash on the first row.
+    """
+    _listing_env(monkeypatch, tmp_path)
+    platform_client(list_deployments=_returns({"results": "<html>Sign in</html>"}))
+
+    code, out, _ = run(capsys, "docstudio", "deployment", "ls")
+    error = envelope(out)["error"]
+
+    assert code == int(ExitCode.SERVER_ERROR)
+    assert "base_url" in error["hint"]
+    assert error["details"]["results"] == "<html>Sign in</html>"
+
+
 def test_ls_passes_the_name_filter_to_the_server(
     capsys, platform_client, monkeypatch, tmp_path
 ):

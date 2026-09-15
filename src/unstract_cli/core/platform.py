@@ -11,6 +11,8 @@ beside it: one host, two keys.
 
 from __future__ import annotations
 
+from typing import Any
+
 from unstract.api_deployments.client import PlatformClientError, PlatformKeyClient
 
 from unstract_cli.config import DOCSTUDIO, ResolvedConfig
@@ -59,6 +61,28 @@ def platform_client(
         ) from exc
 
 
+def deployment_rows(page: Any, endpoint: str = "api/deployment/") -> list[Any]:
+    """The rows of a deployment listing, or a protocol error naming the host.
+
+    A listing whose `results` is not a list is not an empty account: it is a
+    proxy, a login page or a web app answering in the API's place. Read as rows
+    it would either crash on the first field or report deployments as gone.
+    """
+    rows = page.get("results") if isinstance(page, dict) else None
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        raise CLIError(
+            "The deployment listing did not come back as a list of deployments.",
+            ExitCode.SERVER_ERROR,
+            details=page,
+            endpoint=endpoint,
+            hint="Check that `base_url` names the API rather than a proxy or "
+            "web app; `details` carries what was received.",
+        )
+    return rows
+
+
 def organisation(config: ResolvedConfig) -> str:
     """The organisation to act inside, or a usage error naming how to get one.
 
@@ -77,4 +101,4 @@ def organisation(config: ResolvedConfig) -> str:
     )
 
 
-__all__ = ["organisation", "platform_client"]
+__all__ = ["deployment_rows", "organisation", "platform_client"]

@@ -33,7 +33,11 @@ from unstract_cli.config import (
 from unstract_cli.core.clients import llmwhisperer, translated
 from unstract_cli.core.errors import CLIError, ExitCode, remember_secret
 from unstract_cli.core.output import diagnostic
-from unstract_cli.core.platform import organisation, platform_client
+from unstract_cli.core.platform import (
+    deployment_rows,
+    organisation,
+    platform_client,
+)
 
 #: The fields a deployment listing shows. The server sends fifteen per row,
 #: including run histories; `--output table` wraps rather than truncates, so the
@@ -546,7 +550,7 @@ def ls(ctx: Context, api_name: str | None, full: bool) -> None:
     with translated(endpoint="api/deployment/"):
         page = client.list_deployments(org_id, api_name=api_name)
 
-    rows = page.get("results") or []
+    rows = deployment_rows(page)
     if not full:
         rows = [{field: row.get(field) for field in LISTING_FIELDS} for row in rows]
     # `count` is the server's total across pages, which is not `len(rows)` once

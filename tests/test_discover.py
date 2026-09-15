@@ -438,6 +438,31 @@ def test_a_listing_that_fails_is_a_failed_check_not_a_clean_one(
     assert any("listing timed out" in p for p in report["problems"])
 
 
+def test_a_rejected_platform_key_is_not_sent_again_for_the_entry_check(
+    capsys, write_config, probe_client, platform_probe_client, monkeypatch
+):
+    """The listing would carry the key that was just refused, so it can only
+    fail the same way and report the same failure twice."""
+    write_config(STALE_CONFIG)
+    probe_client({"quota": 1})
+    platform_probe_client(
+        CLIError("key rejected", ExitCode.AUTH),
+        live=CLIError("must not be called"),
+    )
+    monkeypatch.setenv("UNSTRACT_PLATFORM_KEY", "pk-123")
+
+    code = main(["-o", "json", "config", "doctor", "--probe"])
+    out, err = capsys.readouterr()
+    report = json.loads(out)["error"]["details"]
+
+    assert code == int(ExitCode.GENERIC)
+    assert "stale_deployments" not in report
+    assert [p for p in report["problems"] if "key rejected" in p] == [
+        "probe platform: key rejected"
+    ]
+    assert "did not pass" in err
+
+
 def test_the_probe_skips_the_entry_check_without_a_platform_key(
     capsys, write_config, probe_client, platform_probe_client
 ):

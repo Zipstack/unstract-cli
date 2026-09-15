@@ -448,12 +448,20 @@ def config_doctor(obj: Any, probe: bool) -> None:
             if result["ok"] is False
         ]
         notes = []
-        if deployments and not report["probe"][PLATFORM_KEY]["checked"]:
+        platform_probe = report["probe"][PLATFORM_KEY]
+        if deployments and not platform_probe["checked"]:
             # The flag was explicit, so the skip is said rather than silent.
             notes.append(
                 "probe: deployment entries were not checked against the "
                 f"organisation -- no platform key resolves for profile "
                 f"{resolved.active_profile!r}."
+            )
+        elif deployments and platform_probe["ok"] is not True:
+            # The listing would send the key that was just rejected, so it can
+            # only fail the same way and report the same failure twice.
+            notes.append(
+                "probe: deployment entries were not checked against the "
+                "organisation -- the platform key itself did not pass."
             )
         elif deployments:
             try:

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version_bump:
-        description: "Version bump type. `none` publishes the version already in the repo, which is what the first release needs."
+        description: "Version bump type."
         required: true
         default: "patch"
         type: choice
@@ -12,9 +12,8 @@ on:
           - patch
           - minor
           - major
-          - none
       pre_release:
-        description: "Publish a release candidate (`<version>rcN`) instead of the version itself. Dispatch again with this off to promote the same version to stable."
+        description: "Publish a release candidate (`<version>rcN`) instead of the version itself. Dispatch again with the same bump and this off to promote it to stable."
         required: false
         default: false
         type: boolean
@@ -31,8 +30,8 @@ jobs:
   release-and-publish:
     runs-on: ubuntu-latest
     # Dispatchable from any branch by anyone who can dispatch it, and a
-    # candidate or a `none` bump reaches PyPI without a commit to review: the
-    # published artefact must come from the reviewed branch.
+    # candidate reaches PyPI without a commit to review: the published artefact
+    # must come from the reviewed branch.
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
@@ -160,12 +159,10 @@ jobs:
         run: |
           NEW_VERSION="${{ steps.version.outputs.version }}"
 
-          # A pre-release leaves the committed version alone, and `none`
-          # publishes the version already in the file, so both reach here with
-          # nothing to commit.
+          # A pre-release leaves the committed version alone.
           if [ "${{ github.event.inputs.pre_release }}" = "true" ]; then
             git checkout -- src/unstract_cli/__init__.py
-          elif ! git diff --quiet; then
+          else
             git add src/unstract_cli/__init__.py
             git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
             git push origin main

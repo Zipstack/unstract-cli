@@ -12,6 +12,7 @@ commands take their flags by hand rather than through `spec_options`.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from typing import Any
@@ -22,6 +23,7 @@ import click
 from unstract_cli.app import Context, auth_group, deployment_group, pass_context
 from unstract_cli.commands.common import finish
 from unstract_cli.config import (
+    DEFAULT_BASE_URLS,
     DOCSTUDIO,
     KEY_SOURCES,
     LLMWHISPERER,
@@ -225,7 +227,6 @@ def _stranded_credentials(
     affected, named for a message, and where each one sits.
     """
     profile = cfg.profiles.get(name, {})
-    stored = ResolvedConfig(file=cfg, profile_name=name)
     supplied = {
         (product, key)
         for credential, _flag, _label, (product, key) in _CREDENTIALS
@@ -234,9 +235,11 @@ def _stranded_credentials(
     labels: list[str] = []
     paths: list[tuple[str, ...]] = []
     for product in PRODUCTS:
-        if _host(resolved.get(product, "base_url")) == _host(
-            stored.get(product, "base_url")
-        ):
+        stored = profile.get(product, {}).get("base_url")
+        if isinstance(stored, str) and stored.startswith("env:"):
+            stored = os.environ.get(stored[4:].strip())
+        stored = stored or DEFAULT_BASE_URLS[product]
+        if _host(stored) == _host(resolved.get(product, "base_url")):
             continue
         for key in ("api_key", "platform_key"):
             if (product, key) not in supplied and profile.get(product, {}).get(key):

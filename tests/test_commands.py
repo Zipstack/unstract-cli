@@ -2733,6 +2733,23 @@ def test_a_rotation_against_the_same_host_keeps_the_other_keys(
     assert f'base_url = "{base_url}"' in text
 
 
+def test_a_host_the_environment_selects_strands_the_keys_too(
+    capsys, login_seams, tmp_path, monkeypatch
+):
+    """The environment outranks the profile on both the host being checked and
+    the host the profile is read back with; only the file says where the keys
+    were going before."""
+    (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
+    login_seams([], tty=False)
+    monkeypatch.setenv("UNSTRACT_BASE_URL", "https://moved.example/")
+
+    code, _, err = run(capsys, "auth", "login", "--platform-key", PK)
+
+    assert code == int(ExitCode.USAGE)
+    assert "deployment invoices" in err
+    assert _written(tmp_path) == STRANDING_CONFIG
+
+
 def test_a_host_that_differs_beyond_spelling_still_strands_the_keys(
     capsys, login_seams, tmp_path
 ):

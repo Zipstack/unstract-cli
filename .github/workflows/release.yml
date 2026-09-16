@@ -30,11 +30,31 @@ concurrency:
 jobs:
   release-and-publish:
     runs-on: ubuntu-latest
+    # Dispatchable from any branch by anyone who can dispatch it, and a
+    # candidate or a `none` bump reaches PyPI without a commit to review: the
+    # published artefact must come from the reviewed branch.
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
       # Publishing is by PyPI Trusted Publisher, so there is no API token.
       id-token: write
     steps:
+      # Checked before the checkout, so a missing one fails on the reason
+      # rather than on a token that renders empty three steps later.
+      - name: Check the release credentials are visible to this repository
+        env:
+          APP_CLIENT_ID: ${{ vars.PUSH_TO_MAIN_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.PUSH_TO_MAIN_APP_PRIVATE_KEY }}
+        run: |
+          missing=""
+          [ -n "$APP_CLIENT_ID" ] || missing="$missing vars.PUSH_TO_MAIN_APP_CLIENT_ID"
+          [ -n "$APP_PRIVATE_KEY" ] || missing="$missing secrets.PUSH_TO_MAIN_APP_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "Missing:$missing" >&2
+            echo "An organisation-level variable or secret also has to list this repository." >&2
+            exit 1
+          fi
+
       - name: Generate GitHub App Token
         id: generate-token
         uses: actions/create-github-app-token@v3

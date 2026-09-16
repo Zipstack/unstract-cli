@@ -10,6 +10,7 @@ not a human is watching.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import click
@@ -78,6 +79,16 @@ def _check_key(product: str, key: str) -> str:
     return key
 
 
+def _saved(cfg: ConfigFile, path: Path | None = None) -> tuple[Path, dict[str, Any]]:
+    """Write the config, with the envelope's `meta` saying if the write is
+    not yet known to survive a crash: the warning reaches only stderr."""
+    meta: dict[str, Any] = {}
+    written = save_config(
+        cfg, path, on_unconfirmed=lambda: meta.update(durability="unconfirmed")
+    )
+    return written, meta
+
+
 @click.group(name="config", help="Manage CLI configuration profiles (local only).")
 def config_group() -> None:
     """Local configuration management. These commands make no network calls."""
@@ -107,7 +118,7 @@ def config_init(obj: Any, force: bool) -> None:
     new = ConfigFile(
         default_profile="cloud-us", profiles=starter_profiles(), path=path, exists=True
     )
-    written = save_config(new, path)
+    written, meta = _saved(new, path)
     emit_result(
         {
             "created": str(written),
@@ -121,6 +132,7 @@ def config_init(obj: Any, force: bool) -> None:
             ),
         },
         _fmt(obj),
+        meta=meta,
     )
 
 
@@ -233,7 +245,7 @@ def config_set(
     block[key] = value
     if not cfg.default_profile:
         cfg.default_profile = name
-    written = save_config(cfg)
+    written, meta = _saved(cfg)
 
     warnings = []
     if _is_secret(key) and not value.startswith("env:"):
@@ -268,6 +280,7 @@ def config_set(
             "warning": warning,
         },
         _fmt(obj),
+        meta=meta,
     )
 
 

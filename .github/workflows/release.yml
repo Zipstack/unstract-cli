@@ -162,7 +162,7 @@ jobs:
           # A pre-release leaves the committed version alone.
           if [ "${{ github.event.inputs.pre_release }}" = "true" ]; then
             git checkout -- src/unstract_cli/__init__.py
-          else
+          elif ! git diff --quiet; then
             git add src/unstract_cli/__init__.py
             git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
             git push origin main

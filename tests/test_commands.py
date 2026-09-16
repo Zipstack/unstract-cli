@@ -2708,28 +2708,48 @@ def test_login_without_a_terminal_refuses_to_strand_keys_until_forced(
     assert "DEPLOYMENT-KEY-AAAA" not in text and "ENTRY-KEY-BBBB" not in text
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://stored.example/", "https://stored.example", "HTTPS://Stored.Example/"],
+)
 def test_a_rotation_against_the_same_host_keeps_the_other_keys(
-    capsys, login_seams, tmp_path
+    capsys, login_seams, tmp_path, base_url
 ):
     """Re-logging in against the host the profile already names checks nothing
-    new, so there is nothing to ask about and nothing to drop."""
+    new, so there is nothing to ask about and nothing to drop; a trailing slash
+    or letter case is the same host spelt differently."""
     (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
     seams = login_seams([])
 
     code, _, _ = run(
-        capsys,
-        "auth",
-        "--base-url",
-        "https://stored.example/",
-        "login",
-        "--platform-key",
-        PK,
+        capsys, "auth", "--base-url", base_url, "login", "--platform-key", PK
     )
 
     assert code == int(ExitCode.SUCCESS)
     assert seams["confirms"] == []
     text = _written(tmp_path)
     assert "DEPLOYMENT-KEY-AAAA" in text and "ENTRY-KEY-BBBB" in text
+    assert f'base_url = "{base_url}"' in text
+
+
+def test_a_host_that_differs_beyond_spelling_still_strands_the_keys(
+    capsys, login_seams, tmp_path
+):
+    (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
+    login_seams([], tty=False)
+
+    code, _, err = run(
+        capsys,
+        "auth",
+        "--base-url",
+        "https://stored.example.org/",
+        "login",
+        "--platform-key",
+        PK,
+    )
+
+    assert code == int(ExitCode.USAGE)
+    assert "deployment invoices" in err
 
 
 def test_login_writes_the_profile_named_and_checks_against_its_own_host(

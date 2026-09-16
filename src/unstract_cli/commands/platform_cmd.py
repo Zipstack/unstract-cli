@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import sys
 from typing import Any
+from urllib.parse import urlsplit
 
 import click
 
@@ -208,6 +209,12 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+def _host(url: str) -> tuple[str, str, str]:
+    """A trailing slash or a capitalised host does not move a key anywhere."""
+    parts = urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/")
+
+
 def _stranded_credentials(
     cfg: ConfigFile, name: str, keys: dict[str, str | None], resolved: ResolvedConfig
 ) -> tuple[list[str], list[tuple[str, ...]]]:
@@ -227,7 +234,9 @@ def _stranded_credentials(
     labels: list[str] = []
     paths: list[tuple[str, ...]] = []
     for product in PRODUCTS:
-        if resolved.get(product, "base_url") == stored.get(product, "base_url"):
+        if _host(resolved.get(product, "base_url")) == _host(
+            stored.get(product, "base_url")
+        ):
             continue
         for key in ("api_key", "platform_key"):
             if (product, key) not in supplied and profile.get(product, {}).get(key):

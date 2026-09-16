@@ -162,5 +162,7 @@ def test_a_failed_publish_removes_what_it_created_and_nothing_published() -> Non
 
     assert "failure()" in steps[names.index(cleanup)]["if"]
     assert names.index(cleanup) == names.index("Publish to PyPI") + 1
-    assert "gh release delete" in steps[names.index(cleanup)]["run"]
-    assert ":refs/tags/" in steps[names.index(cleanup)]["run"]
+    run = steps[names.index(cleanup)]["run"]
+    assert "gh release delete" in run
+    assert ":refs/tags/" in run
+    assert run.index("pypi.org/pypi/unstract-cli/") < run.index("gh release delete")

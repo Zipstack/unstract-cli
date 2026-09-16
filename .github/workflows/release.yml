@@ -199,6 +199,12 @@ jobs:
           GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
         run: |
           NEW_VERSION="${{ steps.version.outputs.version }}"
+          # The wheel and the sdist upload separately, so a failed publish can
+          # still have put the version on PyPI; then the tag has to stay.
+          if curl -fsS -o /dev/null "https://pypi.org/pypi/unstract-cli/$NEW_VERSION/json"; then
+            echo "PyPI serves $NEW_VERSION; keeping the tag and draft release." >&2
+            exit 0
+          fi
           gh release delete "v$NEW_VERSION" --yes || true
           git push origin ":refs/tags/v$NEW_VERSION" || true
 

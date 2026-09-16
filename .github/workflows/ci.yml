@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # Offline by design: no network, no credentials, sub-second. Live round trips
+  # are a manual pre-release step, not a per-PR gate.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.6.14"
+          enable-cache: true
+      # Synced from uv.lock rather than resolved fresh, so the gate tests the
+      # dependency set an install actually gets.
+      - run: uv sync --extra dev --python 3.12
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+      # `uv run` resolves from uv.lock, whose click sits in the middle of the
+      # range the pin allows. Both ends are what an install in the wild gets --
+      # the floor exactly, not the newest release that satisfies it -- and
+      # discovery is a published contract read out of Click's own objects, so
+      # both ends are run and their answers compared.
+      - run: uv pip install 'click==8.1.0'
+      - run: .venv/bin/python -m pytest -q
+      - run: .venv/bin/python -m unstract_cli -o json --discover full > floor.json
+      - run: uv pip install -U 'click>=8.1,<9'
+      - run: .venv/bin/python -m pytest -q
+      - run: .venv/bin/python -m unstract_cli -o json --discover full > latest.json
+      - run: diff floor.json latest.json
+
+  # The wheel rather than the checkout: packaging and entry points are declared
+  # in `pyproject.toml` and are not exercised by running the tests in place.
+  package:
+    runs-on: ubuntu-latest
+    env:
+      VIRTUAL_ENV: /tmp/smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.6.14"
+          enable-cache: true
+      - run: uv build --out-dir dist
+      - run: uv venv --python 3.12 /tmp/smoke
+      - run: uv pip install dist/*.whl
+      - name: Both entry points answer
+        run: |
+          /tmp/smoke/bin/unstract --version
+          /tmp/smoke/bin/unstract-cli --version
+          /tmp/smoke/bin/unstract --help > /dev/null
+      - name: The published surfaces render from an installed wheel
+        run: |
+          /tmp/smoke/bin/unstract -o json --discover full > discover.json
+          python -c "import json; d = json.load(open('discover.json')); assert d['ok'] and d['data']['commands']"
+          # A usage error still renders the envelope and still exits 2.
+          set +e
+          /tmp/smoke/bin/unstract -o json whisper status > usage.json
+          code=$?
+          set -e
+          test "$code" = "2"
+          python -c "import json; d = json.load(open('usage.json')); assert d['ok'] is False and d['error']['exit_code'] == 2"
+      - name: A fresh install can write its own config
+        env:
+          UNSTRACT_CONFIG: /tmp/smoke-config.toml
+        run: |
+          /tmp/smoke/bin/unstract config init < /dev/null
+          test -s /tmp/smoke-config.toml

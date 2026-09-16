@@ -1,0 +1,189 @@
+"""`--discover`: the CLI describing itself, in three tiers.
+
+An agent driving this CLI needs to know what exists before it can run anything,
+and `--help` is prose scraped from a terminal. Discovery answers the same
+question as JSON, at whichever depth the question needs:
+
+* ``groups`` -- what products are here at all
+* ``summary`` -- what commands each group has
+* ``full`` -- every flag with its type, default and allowed values, plus the
+  exit codes and the output contract, which is enough to construct a call and
+  read its answer without a second round trip
+
+Every tier is read back from Click itself. Describing commands from anywhere
+else lets the description drift from what the parser accepts.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import click
+
+from unstract_cli.core.errors import CLIError, ExitCode, error_code_for
+from unstract_cli.core.output import CONTRACT_VERSION
+from unstract_cli.core.params import Diverged
+
+TIERS = ("groups", "summary", "full")
+
+#: Click's marker for "no default was given": not exported, and not the same
+#: value across versions, so it is read off a bare option rather than named.
+_NO_DEFAULT = click.Option(["--unset"]).default
+
+#: The same marker for a paired on/off flag declared with `default=None`, which
+#: is how this CLI declares a flag it does not send unless asked.
+_NO_FLAG_DEFAULT = click.Option(["--unset/--no-unset"], default=None).default
+
+
+def contract() -> dict[str, Any]:
+    """How to consume this CLI's output, published rather than assumed.
+
+    Both halves of the compatibility bargain are written down here: what we
+    promise not to break, and what a consumer has to do for that promise to be
+    worth anything.
+    """
+    return {
+        "version": CONTRACT_VERSION,
+        "envelope": ["ok", "data", "error", "meta"],
+        "rules": [
+            "Pass `-o json`. The default format is for people and is free to "
+            "change; json is the parseable one and never varies with the "
+            "terminal, the config or the environment.",
+            "Ignore fields you do not recognise. New ones are added within a "
+            "major version.",
+            "Refuse a `meta.contract_version` whose value is greater than the "
+            "one you were written against: the shape has changed under you.",
+            "Branch on the exit code, not on the message text.",
+            "Read stdout for the envelope only. Diagnostics are on stderr.",
+        ],
+    }
+
+
+def exit_codes() -> list[dict[str, Any]]:
+    """The exit-code table, which is part of the contract callers branch on."""
+    return [
+        {
+            "code": int(code),
+            "name": code.name.lower(),
+            "error_code": "" if code is ExitCode.SUCCESS else error_code_for(code),
+        }
+        for code in ExitCode
+    ]
+
+
+def _param(param: click.Parameter) -> dict[str, Any]:
+    """One flag or argument, in the terms a caller needs to supply it."""
+    entry: dict[str, Any] = {
+        "name": param.name,
+        "kind": "argument" if isinstance(param, click.Argument) else "option",
+        "type": getattr(param.type, "name", "text"),
+        "required": bool(param.required),
+    }
+    if isinstance(param, click.Option):
+        entry["flags"] = list(param.opts) + list(param.secondary_opts)
+        entry["help"] = param.help or ""
+        entry["repeatable"] = bool(param.multiple)
+    if isinstance(param.type, click.IntRange | click.FloatRange):
+        # Click names a bounded number "integer range", which a caller cannot
+        # map onto anything: publish the real type and the bounds separately.
+        entry["type"] = "integer" if isinstance(param.type, click.IntRange) else "float"
+        if param.type.min is not None:
+            entry["minimum"] = param.type.min
+        if param.type.max is not None:
+            entry["maximum"] = param.type.max
+    if isinstance(param.type, click.Choice):
+        entry["choices"] = list(param.type.choices)
+    if isinstance(param.type, Diverged):
+        # Otherwise a flag the CLI cannot convert reads like one it can, and
+        # the caller finds out only by passing it.
+        entry["unsupported"] = True
+    # What omitting the flag gets you, which is not what Click reports: the
+    # same declaration answers differently from version to version.
+    default = param.default
+    if param.secondary_opts and default is _NO_FLAG_DEFAULT:
+        # No default on a paired flag means "not passed, so not sent";
+        # publishing the `False` reported here would promise a value.
+        default = None
+    elif default is _NO_DEFAULT:
+        default = False if getattr(param, "is_flag", False) else None
+    if default is not None and not isinstance(param, click.Argument):
+        entry["default"] = default
+    # For a spec-derived flag: what the service applies when it is not passed.
+    # The CLI never resends it, so it is not the flag's own default.
+    if (fallback := getattr(param, "server_default", None)) is not None:
+        entry["server_default"] = fallback
+    return entry
+
+
+def _params(command: click.Command) -> list[dict[str, Any]]:
+    """The flags a caller can pass to one command, group or the root.
+
+    A group carries the connection settings for everything beneath it, so
+    describing only the leaves describes a call nobody can make.
+    """
+    return [_param(p) for p in command.params if p.name != "help"]
+
+
+def _describe(command: click.Command, tier: str) -> dict[str, Any]:
+    entry: dict[str, Any] = {"help": (command.help or "").strip().split("\n")[0]}
+    if tier == "full":
+        entry["params"] = _params(command)
+        # What `--output raw` prints, best answer first: the first field the
+        # answer carries wins, and an answer carrying none of them fails.
+        if raw := getattr(command, "raw_fields", ()):
+            entry["raw_fields"] = list(raw)
+    if isinstance(command, click.Group):
+        entry["commands"] = {
+            name: _describe(sub, tier) for name, sub in sorted(command.commands.items())
+        }
+    return entry
+
+
+def discover(root: click.Group, tier: str) -> dict[str, Any]:
+    """Describe the CLI at one tier.
+
+    ``groups`` stops at the top level rather than walking further, so the cheap
+    question stays cheap: an agent starts here and drills down only where it
+    needs to.
+    """
+    if tier not in TIERS:
+        raise CLIError(
+            f"Unknown discovery tier {tier!r}.",
+            ExitCode.USAGE,
+            hint=f"One of: {', '.join(TIERS)}.",
+        )
+
+    if tier == "groups":
+        top = sorted(root.commands.items())
+
+        def summary(name: str, command: click.Command) -> dict[str, str]:
+            return {"name": name, "help": (command.help or "").strip().split("\n")[0]}
+
+        return {
+            "tier": tier,
+            "groups": [
+                summary(name, sub) for name, sub in top if isinstance(sub, click.Group)
+            ],
+            # Listed apart from the groups, so a consumer walking groups for
+            # their commands does not drop them.
+            "commands": [
+                summary(name, sub)
+                for name, sub in top
+                if not isinstance(sub, click.Group)
+            ],
+        }
+
+    payload: dict[str, Any] = {
+        "tier": tier,
+        "commands": {
+            name: _describe(sub, tier) for name, sub in sorted(root.commands.items())
+        },
+    }
+    if tier == "full":
+        payload["params"] = _params(root)
+        payload["exit_codes"] = exit_codes()
+        payload["contract"] = contract()
+    return payload
+
+
+__all__ = ["TIERS", "contract", "discover", "exit_codes"]

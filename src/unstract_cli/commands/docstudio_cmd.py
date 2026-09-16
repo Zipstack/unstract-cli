@@ -17,7 +17,7 @@ from unstract_cli.app import Context, deployment_group, pass_context
 from unstract_cli.commands.common import finish, raw_fields, wait_options
 from unstract_cli.core.clients import (
     deployment,
-    naming_aliases,
+    deployment_errors,
     raise_for_result,
     translated,
     translating,
@@ -83,9 +83,9 @@ def run(
 ) -> None:
     """Run a deployment against one or more documents.
 
-    TARGET is a deployment alias or an API name. Name the documents as local
-    FILES, as --presigned-urls, or both. With --wait (the default) this polls
-    until the execution finishes and returns its result.
+    TARGET is the deployment's API name, as `deployment ls` prints it. Name the
+    documents as local FILES, as --presigned-urls, or both. With --wait (the
+    default) this polls until the execution finishes and returns its result.
     """
     sent = requested(params)
     # Checked before the client is built: this is wrong whatever the config
@@ -111,7 +111,8 @@ def run(
         )
     if save:
         preflight(save)
-    with naming_aliases(ctx.config, target), translated(endpoint=client.api_url):
+    key_source = ctx.config.deployment_key_source(target)
+    with deployment_errors(target, key_source), translated(endpoint=client.api_url):
         started = client.structure_file(list(files), timeout=0, **sent)
         raise_for_result(started, endpoint=client.api_url)
 
@@ -230,10 +231,10 @@ def _status_poller(
         # The client's own retry policy has already run and reports what it
         # would retry as still pending.
         if not result.get("pending"):
-            raise_for_result(result, endpoint=client.api_url)
+            raise_for_result(result, endpoint=client.api_url, one_shot=True)
         return result
 
-    return translating(poll, client.api_url)
+    return translating(poll, client.api_url, one_shot=True)
 
 
 @raw_fields(*STATUS_RAW)
@@ -263,10 +264,16 @@ def status(
     # The id comes from the caller, so it could otherwise carry query syntax
     # of its own.
     endpoint = f"{client.api_url}?execution_id={quote(execution_id, safe='')}"
-    with naming_aliases(ctx.config, target), translated(endpoint=client.api_url):
+    # The status read serves a result exactly once, which is what a 406 from
+    # it means.
+    key_source = ctx.config.deployment_key_source(target)
+    with (
+        deployment_errors(target, key_source),
+        translated(endpoint=client.api_url, one_shot=True),
+    ):
         result = client.check_execution_status(endpoint, **requested(params))
         if not result.get("pending"):
-            raise_for_result(result, endpoint=client.api_url)
+            raise_for_result(result, endpoint=client.api_url, one_shot=True)
     # A finished-and-failed execution arrives inside an HTTP 200, so the status
     # code alone would call it a success.
     if classify(result, RUN_POLL) is PollState.FAILURE:

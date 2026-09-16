@@ -2,8 +2,7 @@
 
 Two products with different hosts, different keys, and `org_id` as a URL *path
 segment* rather than a flag. Named profiles (kubectl/aws style) hold per-product
-host, key and org, plus deployment aliases so a deployment can be named instead
-of spelled out.
+host, key and org, plus a key per deployment for the ones that need their own.
 
 The resolution chain -- **flag > env > profile > built-in default** -- is
 implemented once here and used by every parameter. It is never re-implemented
@@ -20,7 +19,7 @@ import stat
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,20 +33,29 @@ LLMWHISPERER = "llmwhisperer"
 DOCSTUDIO = "docstudio"
 PRODUCTS: tuple[str, ...] = (LLMWHISPERER, DOCSTUDIO)
 
+#: Settings whose values are credentials: registered for scrubbing when
+#: resolved, withheld from a discovered project file, never echoed.
+SECRET_SETTINGS = frozenset({"api_key", "platform_key"})
+
 DEFAULT_BASE_URLS: dict[str, str] = {
     LLMWHISPERER: "https://llmwhisperer-api.us-central.unstract.com/api/v2",
     DOCSTUDIO: "https://us-central.unstract.com",
 }
 
 #: Environment variables per (product, setting), checked before the config file
-#: and in the order given. The trailing names are the published clients' own, so
-#: an environment set up for a client does not leave the CLI on its default.
+#: and in the order given. The trailing names are the published clients' own,
+#: so an environment set up for a client does not leave the CLI on its default.
+#:
+#: The platform key sits on the docstudio block beside the deployment key: one
+#: deployment serves both the platform API and the deployments it manages, so
+#: the two keys share a host and an organisation.
 ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
     (LLMWHISPERER, "api_key"): ("LLMWHISPERER_API_KEY",),
     (LLMWHISPERER, "base_url"): ("LLMWHISPERER_BASE_URL", "LLMWHISPERER_BASE_URL_V2"),
     (DOCSTUDIO, "api_key"): ("UNSTRACT_DEPLOYMENT_KEY", "UNSTRACT_API_DEPLOYMENT_KEY"),
     (DOCSTUDIO, "base_url"): ("UNSTRACT_BASE_URL",),
     (DOCSTUDIO, "org_id"): ("UNSTRACT_ORG_ID",),
+    (DOCSTUDIO, "platform_key"): ("UNSTRACT_PLATFORM_KEY",),
 }
 
 
@@ -55,18 +63,21 @@ ENV_VARS: dict[tuple[str, str], tuple[str, ...]] = {
 #: knowing where one is made.
 KEY_SOURCES = (
     "Get an LLMWhisperer key from the LLMWhisperer console; a deployment key is "
-    "shown on the API deployment's own page in the Unstract UI, and a key "
-    "covering every deployment in the organisation is minted under "
-    "Settings -> API Key Manager."
+    "shown on the API deployment's own page in the Unstract UI, and an "
+    "organisation admin mints a key covering every deployment in the "
+    "organisation under Settings -> Global API Deployment Keys. A platform key, "
+    "which identifies the organisation and lists what is in it but cannot run a "
+    "deployment, is minted by an organisation admin under "
+    "Settings -> Platform API Keys."
 )
 
 
 def settings_for(product: str) -> tuple[str, ...]:
     """The settings a product actually has.
 
-    Products differ: `org_id` is a URL path segment for one and meaningless for
-    the other, and reporting a setting a user has no way to supply reads as a
-    misconfiguration they cannot fix.
+    Products differ: `org_id` and `platform_key` are settings only for
+    `docstudio` -- llmwhisperer has no organisation -- and reporting a setting a
+    user has no way to supply reads as a misconfiguration they cannot fix.
     """
     return tuple(sorted(key for prod, key in ENV_VARS if prod == product))
 
@@ -183,7 +194,7 @@ def _deref(value: Any, *, allow_env: bool) -> Any:
 #: checkout the user did not write must not choose the host their key is sent
 #: to. Such a file may not name an environment variable to read either --
 #: see `ResolvedConfig._env_refused`.
-UNTRUSTED_PROJECT_KEYS = frozenset({"api_key", "base_url"})
+UNTRUSTED_PROJECT_KEYS = SECRET_SETTINGS | {"base_url"}
 
 
 @dataclass
@@ -448,20 +459,31 @@ class ResolvedConfig:
     def get(self, product: str, key: str, default: Any = None) -> Any:
         """Resolve one setting: **flag > env > profile > built-in default**."""
         value = self._resolve(product, key, default)
-        if key == "api_key":
+        if key in SECRET_SETTINGS:
             remember_secret(value)
         return value
 
-    def _resolve(self, product: str, key: str, default: Any = None) -> Any:
-        if (value := self.overrides.get(f"{product}.{key}")) is not None:
-            return value
+    def _tiers(self, product: str, key: str) -> Iterator[Any]:
+        """What each tier says, in order -- flag, env, profile -- unset as `None`.
 
-        for env_var in ENV_VARS.get((product, key), ()):
-            if value := os.environ.get(env_var):
-                return value
-
+        Lazy on purpose: reading the profile block resolves the profile name,
+        which raises for one that does not exist. A caller answered by an
+        earlier tier must not be failed by a later one it never consulted.
+        """
+        yield self.overrides.get(f"{product}.{key}")
+        yield next(
+            (v for e in ENV_VARS.get((product, key), ()) if (v := os.environ.get(e))),
+            None,
+        )
         raw = self._product_block(product).get(key)
-        if (value := _deref(raw, allow_env=self._env_allowed(raw))) is not None:
+        yield _deref(raw, allow_env=self._env_allowed(raw))
+
+    def _explicit(self, product: str, key: str) -> Any:
+        """The tiers a human supplied: flag, then environment, then profile."""
+        return next((v for v in self._tiers(product, key) if v is not None), None)
+
+    def _resolve(self, product: str, key: str, default: Any = None) -> Any:
+        if (value := self._explicit(product, key)) is not None:
             return value
 
         if default is not None:
@@ -513,66 +535,85 @@ class ResolvedConfig:
         hints.append(f"or add `{key}` to the [profiles.<name>.{product}] block")
         # `--api-key` exists but is not suggested: a secret on the command line
         # lands in shell history and in the process list.
-        if key != "api_key":
+        if key not in SECRET_SETTINGS:
             hints.append(f"or pass --{key.replace('_', '-')}")
         raise ConfigError(
             f"Missing required setting {product}.{key}. To fix: {'; '.join(hints)}."
         )
 
-    def deployment(self, alias: str) -> dict[str, Any]:
-        """Resolve a deployment alias to its api_name, org and key.
+    def deployment_names(self) -> tuple[str, ...]:
+        """The deployments the active profile holds a key of its own for."""
+        table = self._profile().get("deployments")
+        return tuple(sorted(table)) if isinstance(table, dict) else ()
 
-        ``org_id`` and ``api_key`` are optional per alias and fall back to the
-        profile's Document Studio block, so the common case is one line per
-        deployment.
+    def deployment_key(self, api_name: str) -> Any:
+        """The key to run one deployment with, or ``None`` if nothing names one.
+
+        **flag > env > per-deployment entry > profile key**. The entry is the
+        most specific value *within* the profile tier, not a tier of its own: a
+        file value that outranked the environment would let a stale entry hijack
+        a run the caller set up with ``$UNSTRACT_DEPLOYMENT_KEY``.
         """
-        aliases = self._profile().get("deployments")
-        entry = aliases.get(alias) if isinstance(aliases, dict) else None
-        if not isinstance(entry, dict):
-            known = (
-                ", ".join(sorted(aliases))
-                if isinstance(aliases, dict) and aliases
-                else "none"
-            )
-            raise ConfigError(
-                f"Deployment alias {alias!r} not found in profile "
-                f"{self.active_profile!r}. Known aliases: {known}."
-            )
-        if not entry.get("api_name"):
-            raise ConfigError(f"Deployment alias {alias!r} has no `api_name`.")
-        api_key = self._alias_setting(alias, entry, "api_key")
-        remember_secret(api_key)
-        return {
-            "api_name": entry["api_name"],
-            "org_id": self._alias_setting(alias, entry, "org_id"),
-            "api_key": api_key,
-        }
+        value, _source = self._deployment_key(api_name)
+        remember_secret(value)
+        return value
 
-    def _alias_setting(self, alias: str, entry: dict[str, Any], key: str) -> Any:
-        """One alias setting, falling back to the profile only where the alias is silent.
+    def deployment_key_source(self, api_name: str) -> str | None:
+        """Which tier the key for this deployment came from, or ``None``.
+
+        One of ``"flag"``, ``"env"``, ``"entry"``, ``"profile"``. A message
+        about a rejected key names the place it was actually read from, rather
+        than the place it could have been stored.
+        """
+        return self._deployment_key(api_name)[1]
+
+    def _deployment_key(self, api_name: str) -> tuple[Any, str | None]:
+        """The key and the tier it came from, resolved once for both callers."""
+        tiers = self._tiers(DOCSTUDIO, "api_key")
+        flag, env = next(tiers), next(tiers)
+        if flag is not None:
+            return flag, "flag"
+        if env is not None:
+            return env, "env"
+        if (entry := self._entry_key(api_name)) is not None:
+            return entry, "entry"
+        if (profile := next(tiers)) is not None:
+            return profile, "profile"
+        return None, None
+
+    def _entry_key(self, api_name: str) -> Any:
+        """The key the deployment's own entry names, if it names one.
 
         An ``env:`` reference that does not resolve is not silence. Falling back
-        there runs the deployment against the profile's organisation, with the
-        profile's key, and reports success.
+        there runs the deployment with the profile's key and reports success.
         """
-        raw = entry.get(key)
+        table = self._profile().get("deployments")
+        entry = table.get(api_name) if isinstance(table, dict) else None
+        raw = entry.get("api_key") if isinstance(entry, dict) else None
+        # A discovered project file never gets this far: its keys are withheld
+        # at load time, so an `env:` reference seen here is always trusted.
         if isinstance(raw, str) and raw.startswith("env:"):
-            if value := _deref(raw, allow_env=self._env_allowed(raw)):
+            if value := _deref(raw, allow_env=True):
                 return value
-            reason = (
-                self._env_refusal_detail(raw)
-                if self._env_refused(raw)
-                else f"${raw[4:].strip()} is not set in this process's environment"
-            )
             raise ConfigError(
-                f"Deployment alias {alias!r} sets {key} to {raw!r}, and {reason}."
+                f"Deployment {api_name!r} sets api_key to {raw!r}, and "
+                f"${raw[4:].strip()} is not set in this process's environment."
             )
-        return raw or self.get(DOCSTUDIO, key)
+        return raw or None
 
-    def deployment_aliases(self) -> tuple[str, ...]:
-        """Names of the deployment aliases defined in the active profile."""
-        aliases = self._profile().get("deployments")
-        return tuple(sorted(aliases)) if isinstance(aliases, dict) else ()
+    def deployment_key_sources(self, api_name: str) -> tuple[str, ...]:
+        """Every place a key for this deployment could have come from, in order.
+
+        Quoted when none of them did: a caller told only that a key is missing
+        has to guess which of four places the CLI looked in.
+        """
+        profile = self.active_profile or "<name>"
+        return (
+            "--api-key",
+            f"${ENV_VARS[(DOCSTUDIO, 'api_key')][0]}",
+            f'[profiles.{profile}.deployments."{api_name}"] api_key',
+            f"[profiles.{profile}.docstudio] api_key",
+        )
 
     def resolution_source(self, product: str, key: str) -> dict[str, Any]:
         """Report where a setting resolves from, without echoing a secret.
@@ -622,7 +663,7 @@ class ResolvedConfig:
 
         Reporting only where a value came *from* would leave the user staring at
         a setting they can see in the file. Takes a trail rather than a
-        product/key pair so a deployment alias's own key -- nested a level deeper
+        product/key pair so a deployment entry's own key -- nested a level deeper
         -- is answerable too.
         """
         if (self.active_profile, *trail) not in self.file.withheld:
@@ -639,10 +680,11 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
     Every credential uses ``env:`` indirection: the generated file is a map of
     where secrets live, never a copy of them.
 
-    One key on the product block, and aliases that carry only ``api_name``: a
-    key can cover every deployment in the organisation, so a key per alias is
-    the exception -- for an organisation whose deployments hold separate keys --
-    rather than the shape to start from.
+    No ``platform_key`` and no ``deployments`` table on purpose: a platform key
+    is optional and an ``env:`` reference to an unset variable is a `config
+    doctor` problem, and one deployment key normally covers the organisation,
+    so a per-deployment key is the exception rather than the shape to start
+    from.
     """
     return {
         "cloud-us": {
@@ -655,7 +697,6 @@ def starter_profiles() -> dict[str, dict[str, Any]]:
                 "org_id": "",
                 "api_key": "env:UNSTRACT_DEPLOYMENT_KEY",
             },
-            "deployments": {"example": {"api_name": "your-api-deployment-name"}},
         },
         "cloud-eu": {
             LLMWHISPERER: {
@@ -688,6 +729,7 @@ __all__ = [
     "LLMWHISPERER",
     "PRODUCTS",
     "PROJECT_CONFIG_NAME",
+    "SECRET_SETTINGS",
     "UNTRUSTED_PROJECT_KEYS",
     "ConfigError",
     "ConfigFile",

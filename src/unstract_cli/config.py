@@ -20,6 +20,7 @@ import stat
 import sys
 import tempfile
 import tomllib
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -314,8 +315,18 @@ def _restored_profiles(cfg: ConfigFile, target: Path) -> dict[str, Any]:
     return profiles
 
 
-def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
-    """Write the config file with owner-only permissions."""
+def save_config(
+    cfg: ConfigFile,
+    path: Path | None = None,
+    *,
+    on_unconfirmed: Callable[[], None] | None = None,
+) -> Path:
+    """Write the config file with owner-only permissions.
+
+    The file is in place when this returns. ``on_unconfirmed`` is called when
+    the directory entry could not be synced as well, so the write may not
+    survive a crash; the warning alone reaches only stderr.
+    """
     target = path or cfg.path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -375,6 +386,8 @@ def save_config(cfg: ConfigFile, path: Path | None = None) -> Path:
                     f"could not be synced ({exc.strerror}); the write may not "
                     "survive a crash."
                 )
+                if on_unconfirmed is not None:
+                    on_unconfirmed()
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
+import pytest
+
 from unstract_cli import app
+from unstract_cli import config as config_module
 from unstract_cli.__main__ import main
 from unstract_cli.app import cli, command_tree
 from unstract_cli.core.errors import ExitCode
@@ -109,6 +114,45 @@ def test_set_then_get_round_trip(capsys, tmp_path, monkeypatch):
     code, payload, _ = run(capsys, "config", "get", "docstudio", "org_id")
     assert code == 0
     assert payload["data"]["value"] == "org_A"
+
+
+def _failing_directory_sync(monkeypatch):
+    """The file syncs, the directory does not: the shape of a write that is in
+    place but not yet known to survive a crash."""
+    real_fsync = os.fsync
+
+    def fsync(fd):
+        if os.fstat(fd).st_mode & stat.S_IFDIR:
+            raise OSError(errno.EINVAL, "Invalid argument")
+        real_fsync(fd)
+
+    monkeypatch.setattr(config_module.os, "fsync", fsync)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no directory handles")
+@pytest.mark.parametrize("command", [("set", "docstudio", "org_id", "org_A"), ("init",)])
+def test_a_write_that_may_not_survive_a_crash_says_so_in_meta(
+    capsys, tmp_path, monkeypatch, command
+):
+    """The warning goes to stderr, which a JSON consumer does not read: the
+    envelope has to carry it too, or `ok: true` promises what the disk has
+    not confirmed."""
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+    _failing_directory_sync(monkeypatch)
+
+    code, payload, err = run(capsys, "config", *command)
+
+    assert code == 0 and payload["ok"] is True
+    assert payload["meta"]["durability"] == "unconfirmed"
+    assert "could not be synced" in err
+
+
+def test_a_confirmed_write_claims_nothing_about_durability(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+
+    _, payload, _ = run(capsys, "config", "set", "docstudio", "org_id", "org_A")
+
+    assert "durability" not in payload["meta"]
 
 
 def test_set_refuses_a_setting_the_product_does_not_have(capsys, tmp_path, monkeypatch):

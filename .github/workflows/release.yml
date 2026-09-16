@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version_bump:
-        description: "Version bump type. `none` publishes the version already in the repo, which is what the first release needs."
+        description: "Version bump type."
         required: true
         default: "patch"
         type: choice
@@ -12,9 +12,8 @@ on:
           - patch
           - minor
           - major
-          - none
       pre_release:
-        description: "Publish a release candidate (`<version>rcN`) instead of the version itself. Dispatch again with this off to promote the same version to stable."
+        description: "Publish a release candidate (`<version>rcN`) instead of the version itself. Dispatch again with the same bump and this off to promote it to stable."
         required: false
         default: false
         type: boolean
@@ -31,8 +30,8 @@ jobs:
   release-and-publish:
     runs-on: ubuntu-latest
     # Dispatchable from any branch by anyone who can dispatch it, and a
-    # candidate or a `none` bump reaches PyPI without a commit to review: the
-    # published artefact must come from the reviewed branch.
+    # candidate reaches PyPI without a commit to review: the published artefact
+    # must come from the reviewed branch.
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
@@ -150,9 +149,8 @@ jobs:
 
       # Publishing is the one step that cannot be undone, so it runs last, and
       # the release is created as a draft so a publish that fails leaves
-      # nothing public. What a failure before the publish leaves behind, in
-      # cleanup order: the draft release, the tag, the release branch, and the
-      # bump commit on main.
+      # nothing public. Until then the bump commit exists only in the tag, so
+      # a failed publish leaves main untouched.
       - name: Commit version bump and create draft release
         env:
           RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
@@ -160,15 +158,12 @@ jobs:
         run: |
           NEW_VERSION="${{ steps.version.outputs.version }}"
 
-          # A pre-release leaves the committed version alone, and `none`
-          # publishes the version already in the file, so both reach here with
-          # nothing to commit.
+          # A pre-release leaves the committed version alone.
           if [ "${{ github.event.inputs.pre_release }}" = "true" ]; then
             git checkout -- src/unstract_cli/__init__.py
           elif ! git diff --quiet; then
             git add src/unstract_cli/__init__.py
             git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
-            git push origin main
           fi
 
           git tag "v$NEW_VERSION"
@@ -193,6 +188,31 @@ jobs:
 
       - name: Publish to PyPI
         run: uv publish
+
+      # Everything the run created before the publish, so a rerun after the
+      # cause is fixed starts clean rather than on the tag guard. Each removal
+      # tolerates its target being absent: the failure may have come partway
+      # through creating them.
+      - name: Remove the tag and draft release a failed publish leaves behind
+        if: failure() && steps.version.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.version }}"
+          # The wheel and the sdist upload separately, so a failed publish can
+          # still have put the version on PyPI; then the tag has to stay.
+          if curl -fsS -o /dev/null "https://pypi.org/pypi/unstract-cli/$NEW_VERSION/json"; then
+            echo "PyPI serves $NEW_VERSION; keeping the tag and draft release." >&2
+            exit 0
+          fi
+          gh release delete "v$NEW_VERSION" --yes || true
+          git push origin ":refs/tags/v$NEW_VERSION" || true
+
+      # If this fails the published version is on PyPI and in the tag but not
+      # on main; `git push origin v<version>:main` finishes the job by hand.
+      - name: Push version bump
+        if: github.event.inputs.pre_release != 'true'
+        run: git push origin main
 
       - name: Publish release
         env:

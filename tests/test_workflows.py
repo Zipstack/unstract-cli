@@ -130,3 +130,39 @@ def test_the_release_goes_public_only_once_the_package_is_on_pypi() -> None:
     assert creates.count("gh release create") == creates.count("--draft")
     assert "--draft=false" in by_name["Publish release"]["run"]
     assert names.index("Publish release") > names.index("Publish to PyPI")
+
+
+def _release_steps() -> list[dict]:
+    return _load(Path(__file__).resolve().parents[1] / ".github/workflows/release.yml")[
+        "jobs"
+    ]["release-and-publish"]["steps"]
+
+
+def test_main_moves_only_once_the_package_is_on_pypi() -> None:
+    """A bump commit pushed before the publish is the one leftover of a failed
+    run that cannot be deleted without rewriting main."""
+    steps = _release_steps()
+    names = [step.get("name", "") for step in steps]
+    by_name = {step.get("name", ""): step for step in steps}
+
+    assert (
+        "git push origin main"
+        not in by_name["Commit version bump and create draft release"]["run"]
+    )
+    assert names.index("Push version bump") > names.index("Publish to PyPI")
+
+
+def test_a_failed_publish_removes_what_it_created_and_nothing_published() -> None:
+    """The cleanup runs on failure and sits directly after the publish: a step
+    that fails later, with the version already on PyPI, must not delete the
+    tag that names it."""
+    steps = _release_steps()
+    names = [step.get("name", "") for step in steps]
+    cleanup = "Remove the tag and draft release a failed publish leaves behind"
+
+    assert "failure()" in steps[names.index(cleanup)]["if"]
+    assert names.index(cleanup) == names.index("Publish to PyPI") + 1
+    run = steps[names.index(cleanup)]["run"]
+    assert "gh release delete" in run
+    assert ":refs/tags/" in run
+    assert run.index("pypi.org/pypi/unstract-cli/") < run.index("gh release delete")

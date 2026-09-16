@@ -458,6 +458,9 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
         for segment in path[:-1]:
             table = table.get(segment, {})
         table.pop(path[-1], None)
+        # An entry left with no key is still listed as a deployment the profile holds.
+        if path[0] == "deployments" and not table:
+            block["deployments"].pop(path[1], None)
     noticed: set[str] = set()
     for credential, _flag, _label, (product, key) in _CREDENTIALS:
         if not keys[credential]:

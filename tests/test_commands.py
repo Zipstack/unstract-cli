@@ -2654,6 +2654,7 @@ def test_login_drops_the_keys_a_host_change_leaves_unchecked(
     assert 'base_url = "https://moved.example/"' in text
     assert "DEPLOYMENT-KEY-AAAA" not in text
     assert "ENTRY-KEY-BBBB" not in text
+    assert "invoices" not in text
 
 
 def test_login_aborts_rather_than_drop_keys_the_answer_declined(

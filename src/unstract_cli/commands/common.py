@@ -117,6 +117,8 @@ def wait_options(
         )
         @click.option(
             "--wait-timeout",
+            "--timeout",
+            "wait_timeout",
             type=int,
             default=timeout_default,
             show_default=True,
@@ -135,8 +137,25 @@ def wait_options(
             default=None,
             help="Save the result to a file once complete.",
         )
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            return func(*args, **kwargs)
+        def wrapper(
+            *args: Any,
+            wait_timeout: int = DEFAULT_TIMEOUT,
+            interval: int = DEFAULT_INTERVAL,
+            **kwargs: Any,
+        ) -> Any:
+            if interval < MIN_INTERVAL:
+                raise CLIError(
+                    f"Interval must be at least {MIN_INTERVAL} second(s).",
+                    ExitCode.USAGE,
+                )
+            if wait_timeout <= 0:
+                raise CLIError(
+                    "Timeout must be greater than 0.",
+                    ExitCode.USAGE,
+                )
+            return func(
+                *args, wait_timeout=wait_timeout, interval=interval, **kwargs
+            )
 
         return wrapper  # type: ignore[return-value]
 
@@ -191,7 +210,10 @@ __all__ = [
     "DEFAULT_INTERVAL",
     "DEFAULT_TIMEOUT",
     "MIN_INTERVAL",
+    "common_options",
     "finish",
     "raw_fields",
+    "require_file",
+    "text_only_option",
     "wait_options",
 ]

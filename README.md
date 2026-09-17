@@ -1,60 +1,132 @@
 # unstract-cli
 
-`unstract` — one CLI for the Unstract suite: extract a document with
-LLMWhisperer, run it through a Document Studio API deployment, get structured
-JSON back. It also clones one organization's resources into another.
+`unstract` runs LLMWhisperer text extraction and Unstract API deployments from
+the terminal. Pass `-o json` and every command prints one JSON envelope, so a
+shell script or a coding agent can drive it.
+
+Full reference: <https://docs.unstract.com/unstract/unstract_platform/cli/unstract_cli/>
+
+## Install
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/Zipstack/unstract-cli/main/install.sh | sh
-unstract auth login                   # asks for your keys, checks them, stores them
-unstract docstudio deployment ls      # what can I run?
 ```
 
-For an agent or CI, no prompts and no file — the environment is the profile:
+The installer fetches [`uv`](https://docs.astral.sh/uv/) if it is missing and
+installs the CLI with it; `uv` brings its own Python. With `uv` or `pip`
+already there:
 
 ```bash
-export UNSTRACT_ORG_ID=... UNSTRACT_DEPLOYMENT_KEY=... LLMWHISPERER_API_KEY=...
-unstract -o json whisper extract ./doc.pdf
-unstract -o json docstudio deployment run invoice-parser ./doc.pdf
+uv tool install --prerelease allow unstract-cli   # or: pip install --pre unstract-cli
+unstract --version
 ```
 
-The installer fetches `uv` if it is missing and installs the CLI with it; `uv`
-brings its own Python, so nothing on the machine has to match. Already have
-`uv`? `uv tool install git+https://github.com/Zipstack/unstract-cli` is the same
-thing. Set `UNSTRACT_CLI_SOURCE` to install a branch or a local checkout
-instead.
+Only release candidates are on PyPI so far, hence the pre-release flag.
 
-Or run it without installing: `uvx --from git+https://github.com/Zipstack/unstract-cli unstract --discover groups`.
+## Get your keys
 
-## Output
+| Key | Where it is minted | What it does |
+| --- | --- | --- |
+| **Platform key** | An organisation admin, under **Settings → Platform API Keys** in the Unstract UI | Identifies the organisation and lists what is in it (`auth whoami`, `deployment ls`); cannot run a deployment |
+| **Deployment key** | The API deployment's own page in the Unstract UI; an organisation admin mints one covering every deployment in the organisation under **Settings → Global API Deployment Keys** | Runs deployments (`deployment run`, `deployment status`) |
+| **LLMWhisperer key** | The LLMWhisperer console | Extracts text (`whisper …`) |
 
-`unstract` prints a table by default — in a terminal and in a pipe alike, so
-what you see while trying something is what a script sees running it.
+You need only the keys for what you run. A platform key and a deployment key
+together cover the whole Unstract side.
+
+## Set up
+
+```bash
+unstract auth login
+```
+
+The wizard asks, in order:
+
+1. `docstudio base URL [https://us-central.unstract.com]:` — Enter keeps the
+   cloud host. Self-hosted? Type your own, e.g. `https://unstract.example.com`.
+2. `llmwhisperer base URL [https://llmwhisperer-api.us-central.unstract.com/api/v2]:`
+   — the same for LLMWhisperer.
+3. Platform key, deployment key, LLMWhisperer key — hidden input, Enter skips
+   one; at least one is needed.
+
+It checks the platform key and the LLMWhisperer key against their services
+(a deployment key has nothing side-effect-free to call, so it is stored as
+given), resolves your organisation, and writes `~/.unstract/config.toml`
+owner-only. Run it again to rotate a key; a login that stores a different host
+asks before dropping keys that were checked against the old one.
+
+Then verify:
+
+```bash
+unstract auth whoami             # which organisation the platform key belongs to
+unstract config doctor --probe   # where each setting resolved from, keys checked
+```
+
+## Without a terminal: CI, containers, agents
+
+No prompts and no file — the environment is the profile:
+
+```bash
+export UNSTRACT_PLATFORM_KEY=...      # optional: auth whoami, deployment ls
+export UNSTRACT_DEPLOYMENT_KEY=...    # deployment run / status
+export UNSTRACT_ORG_ID=...            # the organisation id auth whoami reports
+export LLMWHISPERER_API_KEY=...       # whisper …
+export UNSTRACT_BASE_URL=https://unstract.example.com   # self-hosted only
+export LLMWHISPERER_BASE_URL=https://whisperer.example.com/api/v2   # self-hosted only
+
+unstract -o json auth whoami
+```
+
+Or store them once, non-interactively — keys as flags, any one of them `-` to
+read from stdin, and `--base-url` for a self-hosted host:
+
+```bash
+printf '%s' "$UNSTRACT_PLATFORM_KEY" | unstract auth login \
+  --platform-key - \
+  --deployment-key "$UNSTRACT_DEPLOYMENT_KEY" \
+  --llmwhisperer-key "$LLMWHISPERER_API_KEY"
+```
+
+`unstract config init` writes a starter file that references those variables
+(`api_key = "env:UNSTRACT_DEPLOYMENT_KEY"`) instead of holding secrets, so it is
+safe to commit. Every setting resolves **flag > environment > profile >
+built-in default**.
+
+## Use it
+
+```bash
+# Extract text from a document (path or URL); waits for the result
+unstract whisper extract invoice.pdf -o raw > invoice.txt
+
+# What deployments can I run?
+unstract docstudio deployment ls
+
+# Run one and wait for the structured result
+unstract docstudio deployment run invoice-parser invoice.pdf
+
+# Long job: submit, then check later
+unstract docstudio deployment run invoice-parser invoice.pdf --no-wait
+unstract docstudio deployment status invoice-parser <execution_id>
+```
+
+`--help` on any command lists its options; `unstract --discover full` prints
+the whole command tree, every flag and the exit-code table as JSON.
+
+## Output for scripts and agents
 
 **Parsing anything? Pass `-o json`.** stdout then carries exactly one envelope,
-on success and on failure alike:
+on success and on failure alike, and diagnostics go to stderr:
 
 ```json
 {"ok": true, "data": {...}, "error": null, "meta": {"contract_version": 1}}
 ```
 
-`-o json` output depends on nothing but the command and its arguments — not the
-terminal, not the config, not the environment. `-o raw` prints one field
-unwrapped, for piping a document's text somewhere else. Diagnostics, warnings
-and progress always go to stderr.
+Ignore fields you do not recognise; refuse a `meta.contract_version` above the
+one you were written against. `-o raw` prints one field unwrapped. When a
+coding agent is driving (detected from the environment it sets) json is the
+default; `--agent yes|no` forces that, and an explicit `-o` wins over both.
 
-Consuming the JSON: ignore fields you do not recognise, and refuse a
-`meta.contract_version` above the one you were written against. `unstract
---discover full` publishes the whole contract alongside every command and flag.
-
-If a coding agent is driving (detected from the environment it sets), the
-*default* becomes json. `--agent yes|no` forces that either way, and an explicit
-`-o` always wins over both.
-
-Failures exit non-zero with a stable code. The codes are this CLI's own
-convention, not a service's — they are the `ExitCode` enum in
-`core/errors.py`, and `--discover full` publishes the table so a caller does not
-have to copy it:
+Failures exit non-zero with a stable code:
 
 | Code | Meaning |
 |------|---------|
@@ -71,111 +143,45 @@ have to copy it:
 | 10 | the result was read but could not be saved — it is in `error.details` |
 | 130 | interrupted (128 + SIGINT) — the user stopped it, not a failure |
 
-## Credentials
-
-Three keys, each for one job:
-
-- **LLMWhisperer key** — extracts text (`whisper …`). Minted in the LLMWhisperer
-  console.
-- **Deployment key** — runs deployments (`deployment run`, `deployment status`).
-  Shown on the API deployment's own page in the Unstract UI; one an
-  organisation admin mints under **Settings → Global API Deployment Keys**
-  covers every deployment in the organisation.
-- **Platform key** — identifies the organisation and lists what is in it
-  (`auth whoami`, `deployment ls`). Minted by an organisation admin under
-  **Settings → Platform API Keys**.
-
-`auth login` takes whichever of the three you have, checks the two it can
-(`whoami` for the platform key, the usage endpoint for the LLMWhisperer key; a
-deployment key has nothing side-effect-free to call and is stored as given) and
-writes them to one profile. Run it again to rotate a key. A login that stores a
-different host drops the profile's other keys rather than leave them beside a
-server that never accepted them: it asks first, or without a terminal fails
-until `--force`. Without a terminal pass them as flags — `--platform-key`, `--deployment-key`, `--llmwhisperer-key`,
-any one of them `-` to read from stdin.
-
 ## Configuration
 
-`~/.unstract/config.toml`, or a project-local `.unstract.toml` found by upward
-search, or `$UNSTRACT_CONFIG`, or `--config`. Every setting resolves
-**flag > env > profile > built-in default**, and the CLI is fully usable with no
-config file at all. The flag tier is the connection options on each product
-group — `--base-url`, `--api-key`, `--org-id` and `--platform-key` on
-`docstudio`, `--base-url`/`--api-key` on `whisper`, `--base-url`/`--platform-key`
-on `auth` — which override the profile for that one invocation without writing
-anything.
+`~/.unstract/config.toml`, or `$UNSTRACT_CONFIG`, or `--config`, or a
+project-local `.unstract.toml` found by upward search (which may select a
+profile and an `org_id` but may not supply a key or a host — name the file
+explicitly and it is honoured in full).
 
 ```toml
 default_profile = "cloud-us"
+
+[profiles.cloud-us.docstudio]
+base_url = "https://us-central.unstract.com"
+org_id = "org_ABC123"
+platform_key = "env:UNSTRACT_PLATFORM_KEY"
+api_key = "env:UNSTRACT_DEPLOYMENT_KEY"
 
 [profiles.cloud-us.llmwhisperer]
 base_url = "https://llmwhisperer-api.us-central.unstract.com/api/v2"
 api_key = "env:LLMWHISPERER_API_KEY"
 
-[profiles.cloud-us.docstudio]
-base_url = "https://us-central.unstract.com"
-org_id = "org_ABC123"
-api_key = "env:UNSTRACT_DEPLOYMENT_KEY"
-platform_key = "env:UNSTRACT_PLATFORM_KEY"
-
-# Only for a deployment whose key differs from the one above.
+# Only for a deployment whose key differs from the profile's.
 [profiles.cloud-us.deployments."invoice-parser"]
 api_key = "env:INVOICE_PARSER_KEY"
 ```
 
-`deployment run` and `deployment status` take the API name as `deployment ls`
-prints it. `ls` itself authenticates with the platform key and refuses
-`--api-key`, which on `docstudio` means a deployment key. The key for a run resolves `--api-key` > `$UNSTRACT_DEPLOYMENT_KEY` >
-the deployment's own entry > the profile's `api_key`, so most profiles need no
-`deployments` section at all; `config set docstudio api_key <key> --deployment
-<api_name>` writes one. `org_id` lives on the `docstudio` block — `auth login`
-and `auth whoami` write the one the platform key resolves there. `config init`
-writes this shape minus `platform_key` and the `deployments` entry — both are
-the exception, not the starting point — plus a `cloud-eu` profile and an
-`onprem-example` shape to copy for a self-hosted install; only the *active*
-profile is ever resolved.
+`auth login` writes keys literally; `env:VAR_NAME` keeps them out of the file.
+The connection flags on each group (`--base-url`, `--api-key`, `--org-id`,
+`--platform-key`) override the profile for one invocation without writing
+anything. `config doctor` reports where each setting resolved from without
+echoing a value, and exits non-zero when one of its checks fails.
 
-Either form works for a credential. `auth login` writes keys literally, having
-checked them at the moment it writes. `env:VAR_NAME` indirection — what `config
-init` writes and what the example above uses — keeps the secret out of the file,
-so it stays safe to copy or commit; that is the form for a shared machine or a
-CI checkout. Either way the file is created `0600`, and `config doctor` warns
-when its mode is wider than that.
-
-`unstract config doctor` reports where each setting resolved from — including
-whether an `env:` reference is actually set in the current process — without
-echoing any value. `--probe` also checks the two keys that can be
-checked — the platform key and the LLMWhisperer key, the same two `auth login`
-checks — and, with a platform key, warns about a `deployments` entry the
-organisation no longer has. It exits non-zero when one of its own checks failed, so a setup script can
-branch on it.
-
-A project-local `.unstract.toml` **found by upward search** may not supply a
-key or `base_url`. Those are ignored, with a warning; everything else in it —
-profile selection, `org_id` — applies as usual. A checkout you did not write is
-not trusted to name the host your key is sent to. Name the file explicitly
-(`--config` or `$UNSTRACT_CONFIG`) and it is honoured in full.
-
-What that protects is the key and the host, not the routing: `org_id` and
-profile selection stay repo-controllable by design, so a project file can still
-decide *which* organisation a command runs against on a host you trust. Read
-one before you run inside a checkout you did not write.
-
-`clone` is the exception, and it is an operator command: a human moving one
-organisation's resources into another, holding two admin Platform keys. It is
-not part of the document-processing path the rest of this CLI wraps, so an agent
-serving a user request should not reach for it unasked. It talks to two
-deployments at once, which no single profile describes, so it takes both
-endpoints as flags and both keys from `UNSTRACT_SRC_PLATFORM_KEY` /
-`UNSTRACT_TGT_PLATFORM_KEY` — two keys for two organisations, so it reads
-neither the profile's `platform_key` nor `$UNSTRACT_PLATFORM_KEY`. It exits 0
-when nothing failed, which is not the same as everything having moved: oversize
-and unsupported documents are skipped by design, and `data.skipped` counts them.
+`clone` moves one organisation's resources into another, holding two admin
+platform keys as `UNSTRACT_SRC_PLATFORM_KEY` / `UNSTRACT_TGT_PLATFORM_KEY`. It
+is an operator command, not part of the document-processing path.
 
 ## Development
 
 ```bash
-uv venv && uv pip install -e '.[dev]'
+uv sync --extra dev
 uv run pytest   # offline; no network, no credentials
 uv run ruff check .
 ```

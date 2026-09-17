@@ -76,6 +76,7 @@ def resolve_format(
     explicit: str | None,
     agent: str = AgentMode.AUTO,
     env: Mapping[str, str] | None = None,
+    text_only: bool = False,
 ) -> OutputFormat:
     """The format to render in.
 
@@ -83,9 +84,11 @@ def resolve_format(
     default: two runs of ``-o json`` in different environments render the same
     bytes, which is the property a script is relying on.
     """
+    if text_only:
+        return OutputFormat.RAW
     if explicit:
         try:
-            return OutputFormat(explicit)
+            return OutputFormat.RAW if explicit == "raw" else OutputFormat(explicit)
         except ValueError:
             raise CLIError(
                 f"Unknown output format {explicit!r}.",

@@ -1,96 +1,128 @@
-"""Pieces every product command shares: the wait flags and result emission."""
+"""CLI helpers shared across subcommand groups.
+
+Keeping option decorators, state checks and error mappings here keeps individual
+command files short and focused on their own flow.
+"""
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
 
 import click
 
-from unstract_cli.app import Context
-from unstract_cli.core.output import emit_result
+from unstract_cli.core.context import Context
+from unstract_cli.core.errors import CLIError, ExitCode
+from unstract_cli.core.output import (
+    AgentMode,
+    OutputFormat,
+    emit_result,
+    resolve_format,
+)
 
-#: Poll interval and the ceiling on the whole wait. Both are flags.
-DEFAULT_INTERVAL = 3.0
-DEFAULT_TIMEOUT = 300.0
-
-#: Below this, polling is a busy loop against a metered service, not a wait.
-MIN_INTERVAL = 0.1
-
-F = Callable[..., Any]
-
-
-def wait_options(*, default: bool = True) -> Callable[[F], F]:
-    """`--wait` and its two knobs, plus common output flags.
-
-    ``--wait`` is a gate, not a duration: how long to wait is ``--timeout`` and
-    how often to check is ``--interval``, so neither has two spellings.
-    """
-
-    def decorate(func: F) -> F:
-        for option in reversed(
-            [
-                click.option(
-                    "--wait/--no-wait",
-                    default=default,
-                    help="Poll until the job reaches a terminal state.",
-                ),
-                click.option(
-                    "--interval",
-                    # Bounded below: an interval of zero polls a metered service
-                    # as fast as the loop can issue calls.
-                    type=click.FloatRange(min=MIN_INTERVAL),
-                    default=DEFAULT_INTERVAL,
-                    show_default=True,
-                    help="Seconds between polls.",
-                ),
-                click.option(
-                    "--timeout",
-                    "wait_timeout",
-                    # Zero is meaningful -- one poll, then give up -- but a
-                    # negative deadline has already passed.
-                    type=click.FloatRange(min=0),
-                    default=DEFAULT_TIMEOUT,
-                    show_default=True,
-                    help="Seconds to wait before giving up. The job keeps running.",
-                ),
-                click.option(
-                    "--save",
-                    type=click.Path(dir_okay=False),
-                    default=None,
-                    help="Write the result here before printing it.",
-                ),
-                click.option(
-                    "--text-only",
-                    is_flag=True,
-                    default=False,
-                    help="Output plain text only without extra formatting.",
-                ),
-            ]
-        ):
-            func = option(func)
-        return func
-
-    return decorate
+F = TypeVar("F", bound=Callable[..., Any])
 
 
-def raw_fields(*fields: str) -> Callable[[click.Command], click.Command]:
-    """Declare what `--output raw` prints for this command, best answer first.
+def common_options(func: F) -> F:
+    """Attach the flags every command shares: output format, profile, verbose."""
 
-    Several, because one command has several answers: a queued run replies with
-    a handle and no result, and a status read replies with a state until there
-    is a result. Raw prints the first of these the answer actually carries.
+    @click.option(
+        "-o",
+        "--output",
+        "explicit_format",
+        type=click.Choice([f.value for f in OutputFormat]),
+        default=None,
+        help="Format for stdout (json, table, raw). JSON emits the stdout contract.",
+    )
+    @click.option(
+        "--agent",
+        type=click.Choice([m.value for m in AgentMode]),
+        default=AgentMode.AUTO.value,
+        show_default=True,
+        help="Whether to detect coding-agent callers and default to -o json.",
+    )
+    @click.option(
+        "-p",
+        "--profile",
+        default=None,
+        help="Configuration profile to use.",
+    )
+    @click.option(
+        "-v",
+        "--verbose",
+        count=True,
+        help="Increase diagnostic noise on stderr.",
+    )
+    @click.option(
+        "-q",
+        "--quiet",
+        is_flag=True,
+        help="Suppress all diagnostic noise on stderr.",
+    )
+    def wrapper(
+        explicit_format: str | None,
+        agent: str,
+        profile: str | None,
+        verbose: int,
+        quiet: bool,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        # Build the context from global options
+        ctx = Context(
+            output=resolve_format(explicit_format, agent=agent),
+            profile_name=profile,
+            verbosity=verbose,
+            quiet=quiet,
+        )
 
-    Recorded on the command so `--discover full` can report the whole list: a
-    caller asking for raw output has to know what it is going to get, and one
-    field named there would be wrong for every other shape the command returns.
-    """
+        # Pass context as first positional parameter
+        return func(ctx, *args, **kwargs)
 
-    def decorate(command: click.Command) -> click.Command:
-        command.raw_fields = fields
-        return command
+    return wrapper  # type: ignore[return-value]
 
-    return decorate
+
+def text_only_option(func: F) -> F:
+    """Flag for commands whose output can be stripped to raw text."""
+
+    @click.option(
+        "--text-only",
+        is_flag=True,
+        help="Print only raw output strings without JSON envelopes or formatting.",
+    )
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return func(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
+
+def wait_options(func: F) -> F:
+    """Attach flags for long-running task polling."""
+
+    @click.option(
+        "--wait",
+        is_flag=True,
+        help="Block until the execution finishes.",
+    )
+    @click.option(
+        "--timeout",
+        type=int,
+        default=300,
+        show_default=True,
+        help="Maximum time to wait in seconds.",
+    )
+    @click.option(
+        "--poll-interval",
+        type=int,
+        default=5,
+        show_default=True,
+        help="Interval between polling status checks in seconds.",
+    )
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return func(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 def finish(
@@ -99,22 +131,29 @@ def finish(
     *,
     raw_fields: tuple[str, ...] = (),
     meta: dict[str, Any] | None = None,
+    text_only: bool = False,
 ) -> None:
     """Emit one result envelope, scrubbing any resolved credential from it."""
+    fmt = OutputFormat.RAW if text_only else ctx.output
     emit_result(
         data,
-        ctx.output,
+        fmt,
         meta=meta,
         raw_fields=raw_fields,
         secrets=ctx.secrets(),
     )
 
 
-__all__ = [
-    "DEFAULT_INTERVAL",
-    "DEFAULT_TIMEOUT",
-    "MIN_INTERVAL",
-    "finish",
-    "raw_fields",
-    "wait_options",
-]
+def require_file(path: str, description: str = "File") -> str:
+    """Ensure a required file exists and is readable."""
+    if not os.path.exists(path):
+        raise CLIError(
+            f"{description} not found at {path!r}.",
+            ExitCode.USAGE,
+        )
+    if not os.path.isfile(path):
+        raise CLIError(
+            f"{description} path {path!r} is a directory, not a file.",
+            ExitCode.USAGE,
+        )
+    return path

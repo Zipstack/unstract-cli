@@ -172,6 +172,16 @@ def _keys_from_flags(given: dict[str, str | None]) -> dict[str, str | None]:
     return keys
 
 
+def _hosts_from_prompts(resolved: ResolvedConfig) -> dict[str, str]:
+    """One visible prompt per product, Enter keeping the host the run resolved."""
+    return {
+        f"{product}.base_url": _prompt(
+            f"{product} base URL", default=resolved.get(product, "base_url")
+        ).strip()
+        for product in (DOCSTUDIO, LLMWHISPERER)
+    }
+
+
 def _keys_from_prompts() -> dict[str, str | None]:
     """One hidden, skippable prompt per credential, in the documented order."""
     keys: dict[str, str | None] = {}
@@ -189,7 +199,11 @@ def _keys_from_prompts() -> dict[str, str | None]:
 
 
 def _validation_config(
-    ctx: Context, cfg: ConfigFile, name: str, keys: dict[str, str | None]
+    ctx: Context,
+    cfg: ConfigFile,
+    name: str,
+    keys: dict[str, str | None],
+    hosts: dict[str, str] | None = None,
 ) -> ResolvedConfig:
     """The keys being stored, resolved as the profile they will land in.
 
@@ -198,7 +212,7 @@ def _validation_config(
     profile that does not exist yet resolves against nothing but the flags and
     the environment, so a stranger's host cannot be the one that answers.
     """
-    overrides = dict(ctx.overrides)
+    overrides = {**ctx.overrides, **(hosts or {})}
     for credential, _flag, _label, (product, key) in _CREDENTIALS:
         if keys.get(credential):
             overrides[f"{product}.{key}"] = keys[credential]
@@ -310,9 +324,11 @@ def _new_profile_name(cfg: ConfigFile, org_id: str, org_name: Any) -> str:
 def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -> None:
     """Store your keys in a profile, checking each one that can be checked.
 
-    At a terminal this asks for each key in turn -- platform, deployment,
-    LLMWhisperer -- and Enter skips one; at least one is needed. Without a
-    terminal, pass the keys as flags, one of them as `-` to read it from stdin.
+    At a terminal this first asks for each product's host, Enter keeping the
+    one shown, then for each key in turn -- platform, deployment, LLMWhisperer
+    -- and Enter skips one; at least one is needed. Without a terminal, pass
+    the keys as flags, one of them as `-` to read it from stdin, and the host
+    as `--base-url` if it is not the default.
 
     \b
     Examples:
@@ -333,13 +349,8 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
     """
     if given["platform"] is None:
         given["platform"] = ctx.overrides.get(f"{DOCSTUDIO}.platform_key")
-    if any(value is not None for value in given.values()):
-        keys = _keys_from_flags(given)
-        interactive = False
-    elif _interactive():
-        keys = _keys_from_prompts()
-        interactive = True
-    else:
+    interactive = not any(value is not None for value in given.values())
+    if interactive and not _interactive():
         raise CLIError(
             "No keys were given and stdin is not a terminal, so there is nothing "
             "to ask for them with.",
@@ -347,14 +358,6 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
             hint="Pass --platform-key, --deployment-key or --llmwhisperer-key, as a "
             "value or as `-` to read one of them from stdin.",
         )
-    if not any(keys.values()):
-        raise CLIError(
-            "No key was given; at least one is needed.", ExitCode.USAGE, hint=KEY_SOURCES
-        )
-    # A key given here is never read back through the config layer that
-    # registers one, so nothing else would scrub it out of an error payload.
-    for value in keys.values():
-        remember_secret(value)
 
     try:
         cfg = _writable_config()
@@ -366,7 +369,26 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
     except ConfigError as exc:
         raise CLIError(str(exc), ExitCode.USAGE) from exc
 
-    resolved = _validation_config(ctx, cfg, name, keys)
+    hosts: dict[str, str] = {}
+    if interactive:
+        click.echo(
+            "Welcome to Unstract -- let's connect this machine to your organisation.",
+            err=True,
+        )
+        hosts = _hosts_from_prompts(_validation_config(ctx, cfg, name, {}))
+        keys = _keys_from_prompts()
+    else:
+        keys = _keys_from_flags(given)
+    if not any(keys.values()):
+        raise CLIError(
+            "No key was given; at least one is needed.", ExitCode.USAGE, hint=KEY_SOURCES
+        )
+    # A key given here is never read back through the config layer that
+    # registers one, so nothing else would scrub it out of an error payload.
+    for value in keys.values():
+        remember_secret(value)
+
+    resolved = _validation_config(ctx, cfg, name, keys, hosts)
     timeout = getattr(ctx, "transport_timeout", None)
     result: dict[str, Any] = {"profile": name, "path": None}
     identity: dict[str, Any] = {}

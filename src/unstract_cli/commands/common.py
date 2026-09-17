@@ -12,7 +12,7 @@ from typing import Any, TypeVar
 
 import click
 
-from unstract_cli.core.context import Context
+from unstract_cli.app import Context
 from unstract_cli.core.errors import CLIError, ExitCode
 from unstract_cli.core.output import (
     AgentMode,
@@ -22,6 +22,10 @@ from unstract_cli.core.output import (
 )
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+DEFAULT_INTERVAL = 5
+DEFAULT_TIMEOUT = 300
+MIN_INTERVAL = 1
 
 
 def common_options(func: F) -> F:
@@ -97,32 +101,56 @@ def text_only_option(func: F) -> F:
     return wrapper  # type: ignore[return-value]
 
 
-def wait_options(func: F) -> F:
+def wait_options(
+    *,
+    timeout_default: int = DEFAULT_TIMEOUT,
+    interval_default: int = DEFAULT_INTERVAL,
+) -> Callable[[F], F]:
     """Attach flags for long-running task polling."""
 
-    @click.option(
-        "--wait",
-        is_flag=True,
-        help="Block until the execution finishes.",
-    )
-    @click.option(
-        "--timeout",
-        type=int,
-        default=300,
-        show_default=True,
-        help="Maximum time to wait in seconds.",
-    )
-    @click.option(
-        "--poll-interval",
-        type=int,
-        default=5,
-        show_default=True,
-        help="Interval between polling status checks in seconds.",
-    )
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        return func(*args, **kwargs)
+    def decorator(func: F) -> F:
+        @click.option(
+            "--wait/--no-wait",
+            default=True,
+            show_default=True,
+            help="Block until the execution finishes.",
+        )
+        @click.option(
+            "--wait-timeout",
+            type=int,
+            default=timeout_default,
+            show_default=True,
+            help="Maximum time to wait in seconds.",
+        )
+        @click.option(
+            "--interval",
+            type=int,
+            default=interval_default,
+            show_default=True,
+            help="Interval between polling status checks in seconds.",
+        )
+        @click.option(
+            "--save",
+            type=click.Path(),
+            default=None,
+            help="Save the result to a file once complete.",
+        )
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
 
-    return wrapper  # type: ignore[return-value]
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
+
+
+def raw_fields(*fields: str) -> Callable[[F], F]:
+    """Decorate a command to declare which payload fields raw format should pick."""
+
+    def decorator(func: F) -> F:
+        func._raw_fields = fields  # type: ignore[attr-defined]
+        return func
+
+    return decorator
 
 
 def finish(
@@ -157,3 +185,13 @@ def require_file(path: str, description: str = "File") -> str:
             ExitCode.USAGE,
         )
     return path
+
+
+__all__ = [
+    "DEFAULT_INTERVAL",
+    "DEFAULT_TIMEOUT",
+    "MIN_INTERVAL",
+    "finish",
+    "raw_fields",
+    "wait_options",
+]

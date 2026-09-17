@@ -172,14 +172,22 @@ def _keys_from_flags(given: dict[str, str | None]) -> dict[str, str | None]:
     return keys
 
 
+def _url(value: str) -> str:
+    parts = urlsplit(value.strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise click.UsageError(f"{value.strip()!r} is not an http(s) URL.")
+    return value.strip()
+
+
 def _hosts_from_prompts(resolved: ResolvedConfig) -> dict[str, str]:
-    """One visible prompt per product, Enter keeping the host the run resolved."""
-    return {
-        f"{product}.base_url": _prompt(
-            f"{product} base URL", default=resolved.get(product, "base_url")
-        ).strip()
-        for product in (DOCSTUDIO, LLMWHISPERER)
-    }
+    """One visible prompt per product; only a host typed over the one shown counts."""
+    hosts: dict[str, str] = {}
+    for product in (DOCSTUDIO, LLMWHISPERER):
+        shown = resolved.get(product, "base_url")
+        typed = _prompt(f"{product} base URL", default=shown, value_proc=_url)
+        if _host(typed) != _host(shown):
+            hosts[f"{product}.base_url"] = typed
+    return hosts
 
 
 def _keys_from_prompts() -> dict[str, str | None]:
@@ -486,6 +494,9 @@ def login(ctx: Context, profile: str | None, force: bool, **given: str | None) -
         # An entry left with no key is still listed as a deployment the profile holds.
         if path[0] == "deployments" and not table:
             block["deployments"].pop(path[1], None)
+    for product in PRODUCTS:
+        if f"{product}.base_url" in hosts:
+            block.setdefault(product, {})["base_url"] = hosts[f"{product}.base_url"]
     noticed: set[str] = set()
     for credential, _flag, _label, (product, key) in _CREDENTIALS:
         if not keys[credential]:

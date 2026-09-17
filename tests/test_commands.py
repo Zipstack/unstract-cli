@@ -2241,8 +2241,14 @@ def login_seams(monkeypatch, platform_client, tmp_path):
     def prompt(text, **kwargs):
         state["prompts"].append(text)
         state["defaults"].append(kwargs.get("default"))
-        answer = state["answers"].pop(0)
-        return kwargs["default"] if answer == "" and kwargs.get("default") else answer
+        while True:
+            answer = state["answers"].pop(0)
+            if answer == "" and kwargs.get("default"):
+                answer = kwargs["default"]
+            try:
+                return kwargs.get("value_proc", lambda value: value)(answer)
+            except click.UsageError as exc:
+                click.echo(f"Error: {exc.message}", err=True)
 
     def install(answers=(), *, confirm=False, tty=True, whoami=None, usage=None):
         state["answers"], state["prompts"], state["defaults"] = list(answers), [], []
@@ -2832,6 +2838,48 @@ def test_the_host_prompt_offers_the_profile_s_own_host(capsys, login_seams, tmp_
     assert code == int(ExitCode.SUCCESS)
     assert seams["defaults"][0] == "https://stored.example/"
     assert seams["confirms"] == []
+
+
+def test_a_host_typed_at_the_prompt_is_stored_without_a_key_for_it(
+    capsys, login_seams, tmp_path
+):
+    """A self-hosted LLMWhisperer whose key comes later: the host typed now must
+    not depend on a key being typed with it."""
+    login_seams(["", "https://whisper.example/", PK, "", ""])
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    text = _written(tmp_path)
+    assert "[profiles.cloud-us.llmwhisperer]" in text
+    assert 'base_url = "https://whisper.example/"' in text
+
+
+def test_the_host_prompt_refuses_anything_but_a_url(capsys, login_seams, tmp_path):
+    login_seams(["onprem.example", "", "", "", DK, ""])
+
+    code, _, err = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "'onprem.example' is not an http(s) URL" in err
+    assert 'base_url = "onprem.example"' not in _written(tmp_path)
+
+
+def test_enter_at_the_host_prompt_keeps_a_profile_s_variable_reference(
+    capsys, login_seams, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MY_HOST", "https://stored.example/")
+    (tmp_path / "config.toml").write_text(
+        STRANDING_CONFIG.replace('"https://stored.example/"', '"env:MY_HOST"'),
+        encoding="utf-8",
+    )
+    seams = login_seams(["", "", PK, "", ""])
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["defaults"][0] == "https://stored.example/"
+    assert 'base_url = "env:MY_HOST"' in _written(tmp_path)
 
 
 def test_a_host_typed_at_the_prompt_goes_through_the_stranding_guard(

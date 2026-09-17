@@ -1,4 +1,8 @@
 # unstract-cli
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/unstract-cli)](https://pypi.org/project/unstract-cli/)
+[![Python Version from PEP 621 TOML](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2FZipstack%2Funstract-cli%2Fmain%2Fpyproject.toml)
+](https://pypi.org/project/unstract-cli/)
+[![PyPI - Version](https://img.shields.io/pypi/v/unstract-cli)](https://pypi.org/project/unstract-cli/)
 
 `unstract` runs [LLMWhisperer](https://docs.unstract.com/llmwhisperer/) text
 extraction and [Unstract](https://docs.unstract.com/unstract/) API deployments
@@ -43,6 +47,26 @@ type your own) and API keys, then writes `~/.unstract/config.toml`. Then verify:
 unstract auth whoami             # which organisation the platform key belongs to
 unstract config doctor --probe   # where each setting resolved from, keys checked
 ```
+
+## Usage
+
+```bash
+# Extract text from a document (path or URL); waits for the result
+unstract whisper extract invoice.pdf -o raw > invoice.txt
+
+# What deployments can I run?
+unstract docstudio deployment ls
+
+# Run one and wait for the structured result
+unstract docstudio deployment run invoice-parser invoice.pdf
+
+# Long job: submit, then check later
+unstract docstudio deployment run invoice-parser invoice.pdf --no-wait
+unstract docstudio deployment status invoice-parser <execution_id>
+```
+
+`--help` on any command lists its options; `unstract --discover full` prints
+the whole command tree, every flag and the exit-code table as JSON.
 
 ## Configuration
 
@@ -91,29 +115,6 @@ export LLMWHISPERER_BASE_URL=...      # self-hosted only
 `--llmwhisperer-key`; `-` reads it from stdin) and the host as `--base-url`, so
 it runs without a terminal too.
 
-## Usage
-
-```bash
-# Extract text from a document (path or URL); waits for the result
-unstract whisper extract invoice.pdf -o raw > invoice.txt
-
-# What deployments can I run?
-unstract docstudio deployment ls
-
-# Run one and wait for the structured result
-unstract docstudio deployment run invoice-parser invoice.pdf
-
-# Long job: submit, then check later
-unstract docstudio deployment run invoice-parser invoice.pdf --no-wait
-unstract docstudio deployment status invoice-parser <execution_id>
-```
-
-`--help` on any command lists its options; `unstract --discover full` prints
-the whole command tree, every flag and the exit-code table as JSON.
-
-> **Note:** `clone` moves one organisation's resources into another using two
-> admin platform keys, `UNSTRACT_SRC_PLATFORM_KEY` and `UNSTRACT_TGT_PLATFORM_KEY`.
-
 ## Output for scripts and agents
 
 **Parsing anything? Pass `-o json`.** stdout then carries exactly one envelope,
@@ -137,12 +138,12 @@ Failures exit non-zero with a stable code:
 | 2 | usage error |
 | 3 | authentication failed |
 | 4 | not found |
-| 5 | validation failed — also a completed run in which a document failed; the full result, successful documents included, is in `error.details` |
+| 5 | validation failed, including a run in which a document failed |
 | 6 | rate limited |
-| 7 | timed out (the job handle is in the error payload — resume, do not resubmit) |
+| 7 | timed out; resume with the job handle in the error payload, do not resubmit |
 | 8 | server error |
-| 9 | result already consumed (one-shot read; use `--save` next time) |
-| 10 | the result was read but could not be saved — it is in `error.details` |
+| 9 | result already consumed (one-shot read); pass `--save` next time |
+| 10 | result read but not saved; it is in `error.details` |
 | 130 | interrupted (128 + SIGINT) — the user stopped it, not a failure |
 
 ## Development
@@ -152,3 +153,9 @@ uv sync --extra dev
 uv run pytest
 uv run ruff check .
 ```
+
+## Questions and Feedback
+
+On Slack, [join great conversations](https://join-slack.unstract.com/) around LLMs, their ecosystem and leveraging them to automate the previously unautomatable!
+
+[Unstract Cloud](https://unstract.com/): Signup and Try!

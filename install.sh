@@ -4,8 +4,7 @@
 #   UNSTRACT_CLI_SOURCE=/path/to/checkout sh install.sh
 set -eu
 
-# Flips to the bare PyPI name once the CLI is published there.
-SOURCE="${UNSTRACT_CLI_SOURCE:-git+https://github.com/Zipstack/unstract-cli@main}"
+SOURCE="${UNSTRACT_CLI_SOURCE:-unstract-cli}"
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "Installing uv..." >&2
@@ -22,12 +21,13 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # uv fetches its own interpreter, so the CLI's Python floor is not the user's problem.
-uv tool install --force "$SOURCE"
+# A pre-release is taken only while no stable release exists.
+uv tool install --force --prerelease if-necessary "$SOURCE"
 
 if command -v unstract >/dev/null 2>&1; then
     echo
     unstract --version 2>/dev/null || true
-    echo "Run 'unstract config init' to get started." >&2
+    echo "Run 'unstract auth login' to get started." >&2
     exit 0
 fi
 

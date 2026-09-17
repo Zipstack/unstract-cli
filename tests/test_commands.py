@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import socket
+import stat
+import sys
 
 import click
 import httpx
@@ -1576,6 +1578,13 @@ def test_whoami_reports_the_identity_the_service_returned(
     assert envelope(out)["data"] == IDENTITY
 
 
+def test_a_fresh_install_is_pointed_at_login_rather_than_at_a_file(capsys):
+    code, _, err = run(capsys, "auth", "whoami")
+
+    assert code == int(ExitCode.USAGE)
+    assert "run `unstract auth login`" in err
+
+
 def test_whoami_is_called_with_no_organisation(
     capsys, platform_client, monkeypatch, tmp_path
 ):
@@ -2231,10 +2240,18 @@ def login_seams(monkeypatch, platform_client, tmp_path):
 
     def prompt(text, **kwargs):
         state["prompts"].append(text)
-        return state["answers"].pop(0)
+        state["defaults"].append(kwargs.get("default"))
+        while True:
+            answer = state["answers"].pop(0)
+            if answer == "" and kwargs.get("default"):
+                answer = kwargs["default"]
+            try:
+                return kwargs.get("value_proc", lambda value: value)(answer)
+            except click.UsageError as exc:
+                click.echo(f"Error: {exc.message}", err=True)
 
     def install(answers=(), *, confirm=False, tty=True, whoami=None, usage=None):
-        state["answers"], state["prompts"] = list(answers), []
+        state["answers"], state["prompts"], state["defaults"] = list(answers), [], []
         monkeypatch.setattr(platform_cmd, "_interactive", lambda: tty)
         monkeypatch.setattr(platform_cmd, "_prompt", prompt)
         confirms = list(confirm) if isinstance(confirm, list) else None
@@ -2274,15 +2291,19 @@ def _written(tmp_path) -> str:
 def test_login_asks_for_each_key_in_turn_and_stores_them_as_literals(
     capsys, login_seams, tmp_path
 ):
-    """Interactive path: platform, deployment, LLMWhisperer, one hidden prompt
-    each. The two keys with a read-only endpoint are checked; the deployment
-    key is stored as given and said to be."""
-    seams = login_seams([PK, DK, LK])
+    """Interactive path: a visible host prompt per product, then platform,
+    deployment, LLMWhisperer, one hidden prompt each. The two keys with a
+    read-only endpoint are checked; the deployment key is stored as given and
+    said to be."""
+    seams = login_seams(["", "", PK, DK, LK])
 
     code, out, err = run(capsys, "auth", "login")
 
     assert code == int(ExitCode.SUCCESS)
+    assert err.startswith("Welcome to Unstract")
     assert [p.split(" (")[0] for p in seams["prompts"]] == [
+        "docstudio base URL",
+        "llmwhisperer base URL",
         "Platform key",
         "Deployment key",
         "LLMWhisperer key",
@@ -2310,7 +2331,7 @@ def test_login_asks_for_each_key_in_turn_and_stores_them_as_literals(
 
 
 def test_login_with_every_prompt_skipped_is_a_usage_error(capsys, login_seams, tmp_path):
-    login_seams(["", "", ""])
+    login_seams(["", "", "", "", ""])
 
     code, out, _ = run(capsys, "auth", "login")
 
@@ -2320,7 +2341,7 @@ def test_login_with_every_prompt_skipped_is_a_usage_error(capsys, login_seams, t
 
 
 def test_login_with_only_a_deployment_key_calls_nothing(capsys, login_seams, tmp_path):
-    seams = login_seams(["", DK, ""])
+    seams = login_seams(["", "", "", DK, ""])
 
     code, out, _ = run(capsys, "auth", "login")
 
@@ -2411,15 +2432,33 @@ def test_login_reads_at_most_one_key_from_stdin(capsys, login_seams, tmp_path):
     assert not (tmp_path / "config.toml").exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_login_creates_the_config_file_and_its_directory_owner_only(
+    capsys, login_seams, tmp_path, monkeypatch
+):
+    """A fresh install has no file and no directory; login is the first thing
+    documented to run, so it must not need `config init` before it."""
+    path = tmp_path / "fresh" / ".unstract" / "config.toml"
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(path))
+    login_seams([])
+
+    code, _, _ = run(capsys, "auth", "login", "--platform-key", PK)
+
+    assert code == int(ExitCode.SUCCESS)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert f'platform_key = "{PK}"' in path.read_text(encoding="utf-8")
+
+
 def test_login_takes_the_platform_key_from_the_group_flag_too(
     capsys, login_seams, tmp_path
 ):
     seams = login_seams([])
 
-    code, _, _ = run(capsys, "auth", "--platform-key", PK, "login")
+    code, _, err = run(capsys, "auth", "--platform-key", PK, "login")
 
     assert code == int(ExitCode.SUCCESS)
     assert seams["prompts"] == []
+    assert "Welcome" not in err
     assert f'platform_key = "{PK}"' in _written(tmp_path)
 
 
@@ -2442,7 +2481,7 @@ def test_login_writes_nothing_when_any_key_is_rejected(
         if rejected == "llmwhisperer"
         else None,
     }
-    login_seams([PK, DK, LK], **kwargs)
+    login_seams(["", "", PK, DK, LK], **kwargs)
 
     code, out, _ = run(capsys, "auth", "login")
 
@@ -2456,9 +2495,9 @@ def test_login_again_replaces_the_keys_given_and_keeps_the_rest(
 ):
     """Rotation: the same profile, updated in place, and a same-organisation
     re-run asks nothing."""
-    login_seams([PK, DK, LK])
+    login_seams(["", "", PK, DK, LK])
     run(capsys, "auth", "login")
-    seams = login_seams(["", "dk-rotated-000001", ""])
+    seams = login_seams(["", "", "", "dk-rotated-000001", ""])
 
     code, _, _ = run(capsys, "auth", "login")
 
@@ -2506,10 +2545,10 @@ def test_login_offers_a_new_profile_named_after_the_organisation(
 ):
     """Interactive: the profile the key belongs to is a new one, suggested
     from the organisation's display name, and the old profile is untouched."""
-    login_seams([PK, "", ""], whoami={**IDENTITY, "organization_id": "org_OLD"})
+    login_seams(["", "", PK, "", ""], whoami={**IDENTITY, "organization_id": "org_OLD"})
     run(capsys, "auth", "login")
     seams = login_seams(
-        [PK, "", "", "beta-corp"],
+        ["", "", PK, "", "", "beta-corp"],
         confirm=True,
         whoami={
             **IDENTITY,
@@ -2540,7 +2579,7 @@ def test_a_new_profile_offered_by_the_guard_keeps_the_host_the_key_was_checked_o
         encoding="utf-8",
     )
     seams = login_seams(
-        [PK, "", "", "beta"],
+        ["", "", PK, "", "", "beta"],
         confirm=True,
         whoami={**IDENTITY, "organization_id": "org_NEW"},
     )
@@ -2569,7 +2608,7 @@ def test_a_profile_chosen_at_the_guard_is_replaced_not_merged_into(
         encoding="utf-8",
     )
     seams = login_seams(
-        [PK, "", "", "beta"],
+        ["", "", PK, "", "", "beta"],
         confirm=True,
         whoami={**IDENTITY, "organization_id": "org_NEW"},
     )
@@ -2597,7 +2636,7 @@ def test_a_new_profile_name_that_belongs_to_a_third_organisation_is_confirmed(
         encoding="utf-8",
     )
     seams = login_seams(
-        [PK, "", "", "partner", "fresh"],
+        ["", "", PK, "", "", "partner", "fresh"],
         confirm=[True, False],
         whoami={**IDENTITY, "organization_id": "org_NEW"},
     )
@@ -2613,17 +2652,19 @@ def test_a_new_profile_name_that_belongs_to_a_third_organisation_is_confirmed(
 
 
 def test_login_overwrites_when_a_new_profile_is_declined(capsys, login_seams, tmp_path):
-    login_seams([PK, "", ""], whoami={**IDENTITY, "organization_id": "org_OLD"})
+    login_seams(["", "", PK, "", ""], whoami={**IDENTITY, "organization_id": "org_OLD"})
     run(capsys, "auth", "login")
     seams = login_seams(
-        [PK, "", ""], confirm=False, whoami={**IDENTITY, "organization_id": "org_NEW"}
+        ["", "", PK, "", ""],
+        confirm=False,
+        whoami={**IDENTITY, "organization_id": "org_NEW"},
     )
 
     code, out, _ = run(capsys, "auth", "login")
 
     assert code == int(ExitCode.SUCCESS)
     assert envelope(out)["data"]["profile"] == "cloud-us"
-    assert len(seams["prompts"]) == 3
+    assert len(seams["prompts"]) == 5
     assert 'org_id = "org_NEW"' in _written(tmp_path)
     assert "org_OLD" not in _written(tmp_path)
 
@@ -2643,7 +2684,7 @@ def test_login_drops_the_keys_a_host_change_leaves_unchecked(
     login that stores another one would send them somewhere they were never
     accepted."""
     (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
-    seams = login_seams([PK, "", ""], confirm=True)
+    seams = login_seams(["", "", PK, "", ""], confirm=True)
 
     code, _, _ = run(capsys, "auth", "--base-url", "https://moved.example/", "login")
 
@@ -2663,7 +2704,7 @@ def test_login_aborts_rather_than_drop_keys_the_answer_declined(
     """Declining is a decision about the whole login: the keys are worth more
     than the host change, so nothing is written at all."""
     (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
-    login_seams([PK, "", ""], confirm=False)
+    login_seams(["", "", PK, "", ""], confirm=False)
 
     code, _, _ = run(capsys, "auth", "--base-url", "https://moved.example/", "login")
 
@@ -2768,6 +2809,92 @@ def test_a_host_that_differs_beyond_spelling_still_strands_the_keys(
 
     assert code == int(ExitCode.USAGE)
     assert "deployment invoices" in err
+
+
+def test_a_host_typed_at_the_prompt_is_the_one_checked_and_stored(
+    capsys, login_seams, tmp_path
+):
+    """The on-premises path: Enter keeps the host the run resolved, anything
+    typed replaces it for the check and for the profile."""
+    seams = login_seams(["https://onprem.example/", "", PK, "", ""])
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["defaults"][:2] == [
+        "https://us-central.unstract.com",
+        "https://llmwhisperer-api.us-central.unstract.com/api/v2",
+    ]
+    assert seams["platform"].built_with["base_url"] == "https://onprem.example/"
+    assert 'base_url = "https://onprem.example/"' in _written(tmp_path)
+
+
+def test_the_host_prompt_offers_the_profile_s_own_host(capsys, login_seams, tmp_path):
+    (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
+    seams = login_seams(["", "", PK, "", ""])
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["defaults"][0] == "https://stored.example/"
+    assert seams["confirms"] == []
+
+
+def test_a_host_typed_at_the_prompt_is_stored_without_a_key_for_it(
+    capsys, login_seams, tmp_path
+):
+    """A self-hosted LLMWhisperer whose key comes later: the host typed now must
+    not depend on a key being typed with it."""
+    login_seams(["", "https://whisper.example/", PK, "", ""])
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    text = _written(tmp_path)
+    assert "[profiles.cloud-us.llmwhisperer]" in text
+    assert 'base_url = "https://whisper.example/"' in text
+
+
+def test_the_host_prompt_refuses_anything_but_a_url(capsys, login_seams, tmp_path):
+    login_seams(["onprem.example", "", "", "", DK, ""])
+
+    code, _, err = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "'onprem.example' is not an http(s) URL" in err
+    assert 'base_url = "onprem.example"' not in _written(tmp_path)
+
+
+def test_enter_at_the_host_prompt_keeps_a_profile_s_variable_reference(
+    capsys, login_seams, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MY_HOST", "https://stored.example/")
+    (tmp_path / "config.toml").write_text(
+        STRANDING_CONFIG.replace('"https://stored.example/"', '"env:MY_HOST"'),
+        encoding="utf-8",
+    )
+    seams = login_seams(["", "", PK, "", ""])
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seams["defaults"][0] == "https://stored.example/"
+    assert 'base_url = "env:MY_HOST"' in _written(tmp_path)
+
+
+def test_a_host_typed_at_the_prompt_goes_through_the_stranding_guard(
+    capsys, login_seams, tmp_path
+):
+    (tmp_path / "config.toml").write_text(STRANDING_CONFIG, encoding="utf-8")
+    seams = login_seams(["https://moved.example/", "", PK, "", ""], confirm=True)
+
+    code, _, _ = run(capsys, "auth", "login")
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "deployment invoices" in seams["confirms"][0]
+    text = _written(tmp_path)
+    assert 'base_url = "https://moved.example/"' in text
+    assert "ENTRY-KEY-BBBB" not in text
 
 
 def test_login_writes_the_profile_named_and_checks_against_its_own_host(

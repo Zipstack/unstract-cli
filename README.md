@@ -138,12 +138,12 @@ Failures exit non-zero with a stable code:
 | 2 | usage error |
 | 3 | authentication failed |
 | 4 | not found |
-| 5 | validation failed — also a completed run in which a document failed; the full result, successful documents included, is in `error.details` |
+| 5 | validation failed, including a run in which a document failed |
 | 6 | rate limited |
-| 7 | timed out (the job handle is in the error payload — resume, do not resubmit) |
+| 7 | timed out; the job handle is in the error payload |
 | 8 | server error |
-| 9 | result already consumed (one-shot read; use `--save` next time) |
-| 10 | the result was read but could not be saved — it is in `error.details` |
+| 9 | result already consumed |
+| 10 | result read but not saved; it is in `error.details` |
 | 130 | interrupted (128 + SIGINT) — the user stopped it, not a failure |
 
 ## Development

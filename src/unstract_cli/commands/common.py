@@ -21,7 +21,7 @@ F = Callable[..., Any]
 
 
 def wait_options(*, default: bool = True) -> Callable[[F], F]:
-    """`--wait` and its two knobs.
+    """`--wait` and its two knobs, plus common output flags.
 
     ``--wait`` is a gate, not a duration: how long to wait is ``--timeout`` and
     how often to check is ``--interval``, so neither has two spellings.
@@ -59,6 +59,12 @@ def wait_options(*, default: bool = True) -> Callable[[F], F]:
                     type=click.Path(dir_okay=False),
                     default=None,
                     help="Write the result here before printing it.",
+                ),
+                click.option(
+                    "--text-only",
+                    is_flag=True,
+                    default=False,
+                    help="Output plain text only without extra formatting.",
                 ),
             ]
         ):

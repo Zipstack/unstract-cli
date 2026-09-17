@@ -48,6 +48,26 @@ unstract auth whoami             # which organisation the platform key belongs t
 unstract config doctor --probe   # where each setting resolved from, keys checked
 ```
 
+## Usage
+
+```bash
+# Extract text from a document (path or URL); waits for the result
+unstract whisper extract invoice.pdf -o raw > invoice.txt
+
+# What deployments can I run?
+unstract docstudio deployment ls
+
+# Run one and wait for the structured result
+unstract docstudio deployment run invoice-parser invoice.pdf
+
+# Long job: submit, then check later
+unstract docstudio deployment run invoice-parser invoice.pdf --no-wait
+unstract docstudio deployment status invoice-parser <execution_id>
+```
+
+`--help` on any command lists its options; `unstract --discover full` prints
+the whole command tree, every flag and the exit-code table as JSON.
+
 ## Configuration
 
 `~/.unstract/config.toml`, or `$UNSTRACT_CONFIG`, or `--config`, or a
@@ -94,29 +114,6 @@ export LLMWHISPERER_BASE_URL=...      # self-hosted only
 `auth login` also takes each key as a flag (`--platform-key`, `--deployment-key`,
 `--llmwhisperer-key`; `-` reads it from stdin) and the host as `--base-url`, so
 it runs without a terminal too.
-
-## Usage
-
-```bash
-# Extract text from a document (path or URL); waits for the result
-unstract whisper extract invoice.pdf -o raw > invoice.txt
-
-# What deployments can I run?
-unstract docstudio deployment ls
-
-# Run one and wait for the structured result
-unstract docstudio deployment run invoice-parser invoice.pdf
-
-# Long job: submit, then check later
-unstract docstudio deployment run invoice-parser invoice.pdf --no-wait
-unstract docstudio deployment status invoice-parser <execution_id>
-```
-
-`--help` on any command lists its options; `unstract --discover full` prints
-the whole command tree, every flag and the exit-code table as JSON.
-
-> **Note:** `clone` moves one organisation's resources into another using two
-> admin platform keys, `UNSTRACT_SRC_PLATFORM_KEY` and `UNSTRACT_TGT_PLATFORM_KEY`.
 
 ## Output for scripts and agents
 

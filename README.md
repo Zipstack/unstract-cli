@@ -140,9 +140,9 @@ Failures exit non-zero with a stable code:
 | 4 | not found |
 | 5 | validation failed, including a run in which a document failed |
 | 6 | rate limited |
-| 7 | timed out; the job handle is in the error payload |
+| 7 | timed out; resume with the job handle in the error payload, do not resubmit |
 | 8 | server error |
-| 9 | result already consumed |
+| 9 | result already consumed (one-shot read); pass `--save` next time |
 | 10 | result read but not saved; it is in `error.details` |
 | 130 | interrupted (128 + SIGINT) — the user stopped it, not a failure |
 

@@ -21,8 +21,8 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # uv fetches its own interpreter, so the CLI's Python floor is not the user's problem.
-# Only release candidates are on PyPI so far; the prerelease flag goes with the first stable release.
-uv tool install --force --prerelease allow "$SOURCE"
+# A pre-release is taken only while no stable release exists.
+uv tool install --force --prerelease if-necessary "$SOURCE"
 
 if command -v unstract >/dev/null 2>&1; then
     echo

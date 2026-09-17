@@ -1576,6 +1576,13 @@ def test_whoami_reports_the_identity_the_service_returned(
     assert envelope(out)["data"] == IDENTITY
 
 
+def test_a_fresh_install_is_pointed_at_login_rather_than_at_a_file(capsys):
+    code, _, err = run(capsys, "auth", "whoami")
+
+    assert code == int(ExitCode.USAGE)
+    assert "run `unstract auth login`" in err
+
+
 def test_whoami_is_called_with_no_organisation(
     capsys, platform_client, monkeypatch, tmp_path
 ):

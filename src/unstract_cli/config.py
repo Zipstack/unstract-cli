@@ -537,6 +537,8 @@ class ResolvedConfig:
         # lands in shell history and in the process list.
         if key not in SECRET_SETTINGS:
             hints.append(f"or pass --{key.replace('_', '-')}")
+        if not self.file.exists:
+            hints.append("or run `unstract auth login` to set up interactively")
         raise ConfigError(
             f"Missing required setting {product}.{key}. To fix: {'; '.join(hints)}."
         )

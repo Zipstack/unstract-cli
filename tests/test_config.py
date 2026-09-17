@@ -123,6 +123,19 @@ def test_require_names_every_way_to_supply_the_setting():
     assert "--api-key" not in message
 
 
+def test_a_missing_setting_points_a_fresh_install_at_login(write_config):
+    """With no config file at all the hints name a file the reader has never
+    seen; `auth login` writes it. Once a file exists the hint would only
+    repeat what the file already shows."""
+    with pytest.raises(ConfigError, match="run `unstract auth login`"):
+        resolved().require(DOCSTUDIO, "api_key")
+
+    write_config('default_profile = "p"\n\n[profiles.p.docstudio]\norg_id = "x"\n')
+    with pytest.raises(ConfigError) as excinfo:
+        resolved().require(DOCSTUDIO, "api_key")
+    assert "auth login" not in str(excinfo.value)
+
+
 def test_placeholder_is_not_a_value(write_config):
     """`config init` writes `org_id = ""`, and that must not satisfy `require`."""
     write_config('default_profile = "p"\n\n[profiles.p.docstudio]\norg_id = ""\n')

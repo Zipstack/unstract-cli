@@ -23,6 +23,13 @@ dependencies = [
     "requests>=2.32.3",
 ]
 
+[project.urls]
+Homepage = "https://unstract.com"
+Documentation = "https://docs.unstract.com/unstract/unstract_platform/cli/unstract_cli/"
+Repository = "https://github.com/Zipstack/unstract-cli"
+Issues = "https://github.com/Zipstack/unstract-cli/issues"
+Changelog = "https://github.com/Zipstack/unstract-cli/releases"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",

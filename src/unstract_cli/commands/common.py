@@ -148,9 +148,9 @@ def wait_options(
                     f"Interval must be at least {MIN_INTERVAL} second(s).",
                     ExitCode.USAGE,
                 )
-            if wait_timeout <= 0:
+            if wait_timeout < 0:
                 raise CLIError(
-                    "Timeout must be greater than 0.",
+                    "Timeout must be at least 0.",
                     ExitCode.USAGE,
                 )
             return func(

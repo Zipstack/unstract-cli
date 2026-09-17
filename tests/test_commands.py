@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import socket
+import stat
+import sys
 
 import click
 import httpx
@@ -2422,6 +2424,23 @@ def test_login_reads_at_most_one_key_from_stdin(capsys, login_seams, tmp_path):
     assert code == int(ExitCode.USAGE)
     assert "stdin" in envelope(out)["error"]["message"]
     assert not (tmp_path / "config.toml").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_login_creates_the_config_file_and_its_directory_owner_only(
+    capsys, login_seams, tmp_path, monkeypatch
+):
+    """A fresh install has no file and no directory; login is the first thing
+    documented to run, so it must not need `config init` before it."""
+    path = tmp_path / "fresh" / ".unstract" / "config.toml"
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(path))
+    login_seams([])
+
+    code, _, _ = run(capsys, "auth", "login", "--platform-key", PK)
+
+    assert code == int(ExitCode.SUCCESS)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert f'platform_key = "{PK}"' in path.read_text(encoding="utf-8")
 
 
 def test_login_takes_the_platform_key_from_the_group_flag_too(

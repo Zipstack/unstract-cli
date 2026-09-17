@@ -119,6 +119,23 @@ def config_init(obj: Any, force: bool) -> None:
         default_profile="cloud-us", profiles=starter_profiles(), path=path, exists=True
     )
     written, meta = _saved(new, path)
+    variables = sorted(
+        {
+            value.removeprefix("env:")
+            for profile in new.profiles.values()
+            for block in profile.values()
+            for value in block.values()
+            if isinstance(value, str) and value.startswith("env:")
+        }
+    )
+    diagnostic(
+        f"Wrote {written}.\n"
+        f"Next: export {' and '.join(variables)}, or run `unstract auth login` "
+        "to store keys in the file instead.\n"
+        "Then `unstract config doctor` shows what resolved.",
+        quiet=getattr(obj, "quiet", False),
+        verbosity=getattr(obj, "verbosity", 0),
+    )
     emit_result(
         {
             "created": str(written),

@@ -224,6 +224,17 @@ def test_init_refuses_to_clobber_without_force(capsys, tmp_path, monkeypatch):
     assert run(capsys, "config", "init", "--force")[0] == 0
 
 
+def test_init_says_what_to_do_next_on_stderr(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+
+    code, payload, err = run(capsys, "config", "init")
+
+    assert code == 0 and payload["ok"] is True
+    assert "export LLMWHISPERER_API_KEY and UNSTRACT_DEPLOYMENT_KEY" in err
+    assert "`unstract auth login`" in err
+    assert "config doctor" in err
+
+
 def test_doctor_reports_sources_without_leaking_values(capsys, monkeypatch):
     monkeypatch.setenv("LLMWHISPERER_API_KEY", "super-secret-value")
     code, payload, _ = run(capsys, "config", "doctor")

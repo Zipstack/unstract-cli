@@ -1,4 +1,8 @@
 # unstract-cli
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/unstract-cli)](https://pypi.org/project/unstract-cli/)
+[![Python Version from PEP 621 TOML](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2FZipstack%2Funstract-cli%2Fmain%2Fpyproject.toml)
+](https://pypi.org/project/unstract-cli/)
+[![PyPI - Version](https://img.shields.io/pypi/v/unstract-cli)](https://pypi.org/project/unstract-cli/)
 
 `unstract` runs [LLMWhisperer](https://docs.unstract.com/llmwhisperer/) text
 extraction and [Unstract](https://docs.unstract.com/unstract/) API deployments
@@ -152,3 +156,9 @@ uv sync --extra dev
 uv run pytest
 uv run ruff check .
 ```
+
+## Questions and Feedback
+
+On Slack, [join great conversations](https://join-slack.unstract.com/) around LLMs, their ecosystem and leveraging them to automate the previously unautomatable!
+
+[Unstract Cloud](https://unstract.com/): Signup and Try!

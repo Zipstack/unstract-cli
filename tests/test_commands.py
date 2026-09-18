@@ -191,6 +191,33 @@ def test_the_v1_commands_are_registered():
     assert set(tree["auth"]["commands"]) == {"login", "whoami"}
 
 
+@pytest.mark.parametrize(
+    ("command", "flag"),
+    [
+        (("whisper", "extract"), "--derotate-threshold"),
+        (("whisper", "extract"), "--min-table-width"),
+        (("whisper", "extract"), "--ignore-vertical-text"),
+        (("docstudio", "deployment", "run"), "--use-file-history"),
+    ],
+)
+def test_a_withdrawn_option_is_unknown_to_the_shipped_command(capsys, command, flag):
+    """The services stopped publishing these; a caller still passing one must
+    learn that before the request, not from a silently ignored setting."""
+    code, out, _ = run(capsys, *command, "x.pdf", flag)
+    assert code == int(ExitCode.USAGE)
+    assert f"No such option '{flag}'" in envelope(out)["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [("--output-mode", "line-printer"), ("--mode", "excel")],
+)
+def test_a_withdrawn_choice_is_refused_by_the_shipped_command(capsys, flag, value):
+    code, out, _ = run(capsys, "whisper", "extract", "x.pdf", flag, value)
+    assert code == int(ExitCode.USAGE)
+    assert f"'{value}' is not one of" in envelope(out)["error"]["message"]
+
+
 # --------------------------------------------------------------------------- #
 # whisper extract
 # --------------------------------------------------------------------------- #

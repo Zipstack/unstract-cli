@@ -3862,3 +3862,24 @@ def test_a_trailing_profile_flag_still_reaches_the_leaf(capsys, tmp_path, monkey
 
     assert code == int(ExitCode.SUCCESS)
     assert "[profiles.eu" in (tmp_path / "c.toml").read_text()
+
+
+def test_a_trailing_config_path_reads_the_same_file_as_leading(capsys, tmp_path):
+    path = tmp_path / "elsewhere.toml"
+    path.write_text(
+        'default_profile = "p"\n[profiles.p.docstudio]\norg_id = "org_A"\n',
+        encoding="utf-8",
+    )
+
+    leading = main(
+        ["-o", "json", "--config", str(path), "config", "get", "docstudio", "org_id"]
+    )
+    leading_out = capsys.readouterr().out
+    trailing = main(
+        ["-o", "json", "config", "get", "docstudio", "org_id", "--config", str(path)]
+    )
+    trailing_out = capsys.readouterr().out
+
+    assert leading == trailing == int(ExitCode.SUCCESS)
+    assert leading_out == trailing_out
+    assert envelope(trailing_out)["data"]["value"] == "org_A"

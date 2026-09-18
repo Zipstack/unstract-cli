@@ -36,14 +36,16 @@ def _option_from_argv(argv: list[str], *spellings: str) -> str | None:
     return None
 
 
-#: The root group's output flags. `-p` is deliberately absent: leaf commands
+#: The root group's options. `-p` is deliberately absent: leaf commands
 #: declare their own `-p` with a different meaning.
-_GLOBAL_VALUED = frozenset({"-o", "--output", "--agent"})
-_GLOBAL_FLAG = re.compile(r"^(-o.+|--output=.*|--agent=.*|-[qv]+|--quiet|--verbose)$")
+_GLOBAL_VALUED = frozenset({"-o", "--output", "--agent", "--config"})
+_GLOBAL_FLAG = re.compile(
+    r"^(-o.+|--output=.*|--agent=.*|--config=.*|-[qv]+|--quiet|--verbose)$"
+)
 
 
 def _hoist_globals(argv: list[str]) -> list[str]:
-    """Move the root group's output flags ahead of the subcommand.
+    """Move the root group's options ahead of the subcommand.
 
     Click stops accepting group options once it has read the subcommand name,
     but `-o json` is as natural at the end of a line as at the start.

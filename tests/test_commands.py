@@ -3810,3 +3810,170 @@ def test_a_zero_poll_interval_is_refused(capsys, whisper_client, tmp_path):
     code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
     assert code == int(ExitCode.USAGE)
     assert "interval" in envelope(out)["error"]["message"].lower()
+
+
+# --- Global flags after the subcommand -------------------------------------
+
+
+def _capture_context(monkeypatch):
+    """Hand back the Context the entry point builds, to read the parsed globals."""
+    import unstract_cli.__main__ as entry
+    from unstract_cli.app import Context
+
+    seen = []
+
+    def build(**kwargs):
+        seen.append(Context(**kwargs))
+        return seen[-1]
+
+    monkeypatch.setattr(entry, "Context", build)
+    return seen
+
+
+def test_trailing_output_flag_prints_the_same_as_leading(capsys, whisper_client):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    leading = main(["-q", "-o", "raw", "whisper", "retrieve", "h1"])
+    leading_out = capsys.readouterr().out
+    trailing = main(["whisper", "retrieve", "h1", "-o", "raw", "-q"])
+    trailing_out = capsys.readouterr().out
+
+    assert leading == trailing == int(ExitCode.SUCCESS)
+    assert leading_out == trailing_out == "hello\n"
+
+
+@pytest.mark.parametrize("spelling", [["-o", "json"], ["--output=json"], ["-ojson"]])
+def test_trailing_json_on_a_nested_command_is_parsed(capsys, deployment_client, spelling):
+    deployment_client(
+        check_execution_status={"status_code": 200, "execution_status": "COMPLETED"}
+    )
+
+    code = main(["docstudio", "deployment", "status", "my-api", "e1", *spelling])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["execution_status"] == "COMPLETED"
+
+
+def test_verbose_split_around_the_subcommand_still_counts_both(
+    capsys, whisper_client, monkeypatch
+):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+    seen = _capture_context(monkeypatch)
+
+    code = main(["-v", "whisper", "retrieve", "h1", "-v", "-o", "json"])
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seen[0].verbosity == 2
+
+
+def test_a_double_dash_stops_the_hoisting(capsys, whisper_client):
+    """A positional that happens to look like a global flag stays where the
+    caller put it once `--` has been given."""
+    client = whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    code = main(["-o", "json", "whisper", "retrieve", "--", "-o"])
+
+    assert code == int(ExitCode.SUCCESS)
+    name, args, kwargs = client.calls[0]
+    assert name == "whisper_retrieve" and "-o" in (*args, *kwargs.values())
+
+
+def test_a_trailing_profile_flag_still_reaches_the_leaf(capsys, tmp_path, monkeypatch):
+    """`config set -p` names the profile to write, not the root's profile to
+    read, so it is not hoisted."""
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+
+    code = main(
+        ["-o", "json", "config", "set", "docstudio", "org_id", "org_A", "-p", "eu"]
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "[profiles.eu" in (tmp_path / "c.toml").read_text()
+
+
+def test_a_trailing_config_path_reads_the_same_file_as_leading(capsys, tmp_path):
+    path = tmp_path / "elsewhere.toml"
+    path.write_text(
+        'default_profile = "p"\n[profiles.p.docstudio]\norg_id = "org_A"\n',
+        encoding="utf-8",
+    )
+
+    leading = main(
+        ["-o", "json", "--config", str(path), "config", "get", "docstudio", "org_id"]
+    )
+    leading_out = capsys.readouterr().out
+    trailing = main(
+        ["-o", "json", "config", "get", "docstudio", "org_id", "--config", str(path)]
+    )
+    trailing_out = capsys.readouterr().out
+
+    assert leading == trailing == int(ExitCode.SUCCESS)
+    assert leading_out == trailing_out
+    assert envelope(trailing_out)["data"]["value"] == "org_A"
+
+
+@pytest.mark.parametrize(
+    ("leading", "trailing", "quiet", "verbosity"),
+    [
+        (["-qojson"], ["-qojson"], True, 0),
+        (["-vo", "json"], ["-vo", "json"], False, 1),
+        (["-qvo", "json"], ["-qvo", "json"], True, 1),
+    ],
+)
+def test_a_cluster_ending_in_o_is_hoisted_whole(
+    capsys, whisper_client, monkeypatch, leading, trailing, quiet, verbosity
+):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+    seen = _capture_context(monkeypatch)
+
+    first = main([*leading, "whisper", "retrieve", "h1"])
+    first_out = capsys.readouterr().out
+    second = main(["whisper", "retrieve", "h1", *trailing])
+    second_out = capsys.readouterr().out
+
+    assert first == second == int(ExitCode.SUCCESS)
+    assert first_out == second_out
+    assert envelope(second_out)["data"] == {"result_text": "hello"}
+    assert (seen[1].quiet, seen[1].verbosity) == (quiet, verbosity)
+
+
+@pytest.mark.parametrize("dangling", ["-o", "--config", "-vo"])
+def test_a_dangling_valued_option_is_a_usage_error(capsys, whisper_client, dangling):
+    """Hoisted alone it would swallow the subcommand name as its value."""
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    code = main(["-o", "json", "whisper", "retrieve", "h1", dangling])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.USAGE)
+    assert "requires an argument" in envelope(out)["error"]["message"]
+
+
+def test_a_cluster_carrying_p_is_left_where_it_is(capsys, whisper_client):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    code = main(["-o", "json", "whisper", "retrieve", "h1", "-qp", "x"])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.USAGE)
+    assert "No such option" in envelope(out)["error"]["message"]
+
+
+@pytest.mark.parametrize("joined", ["-ojson", "-qojson"])
+def test_a_pre_parse_failure_still_renders_in_a_joined_format(capsys, joined):
+    """The envelope format is read from argv before Click parses, so a joined
+    spelling has to be understood there as well."""
+    code = main(["whisper", "retrieve", "h1", joined, "-o"])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.USAGE)
+    assert envelope(out)["error"]["message"] == "Option '-o' requires an argument."
+
+
+def test_the_pre_parse_format_scan_stops_at_a_double_dash(capsys):
+    code = main(["nosuch", "--", "-ojson"])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.USAGE)
+    assert "No such command" in out and not out.startswith("{")

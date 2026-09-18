@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
 
 import click
@@ -35,11 +36,54 @@ def _option_from_argv(argv: list[str], *spellings: str) -> str | None:
     return None
 
 
+#: The root group's options, including `-o` at the end of a `-qv` cluster.
+#: `-p` is deliberately absent: leaf commands declare their own `-p` with a
+#: different meaning.
+_GLOBAL_VALUED = re.compile(r"^(-[qv]*o|--output|--agent|--config)$")
+_GLOBAL_FLAG = re.compile(
+    r"^(-[qv]*o.+|--output=.*|--agent=.*|--config=.*|-[qv]+|--quiet|--verbose)$"
+)
+
+
+def _hoist_globals(argv: list[str]) -> list[str]:
+    """Move the root group's options ahead of the subcommand.
+
+    Click stops accepting group options once it has read the subcommand name,
+    but `-o json` is as natural at the end of a line as at the start.
+    """
+    hoisted: list[str] = []
+    rest: list[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            rest.extend(argv[i:])
+            break
+        if _GLOBAL_VALUED.match(arg):
+            if i + 1 == len(argv):
+                raise click.BadOptionUsage(arg, f"Option '{arg}' requires an argument.")
+            hoisted.extend(argv[i : i + 2])
+            i += 1
+        elif _GLOBAL_FLAG.match(arg):
+            hoisted.append(arg)
+        else:
+            rest.append(arg)
+        i += 1
+    return hoisted + rest
+
+
 def _format_from_argv(argv: list[str]) -> OutputFormat:
     """Resolve the format the same way the parsed run would."""
+    if "--" in argv:
+        argv = argv[: argv.index("--")]
+    # `-qojson` is `-o json` to Click; unfold it so the scan sees it too.
+    flat: list[str] = []
+    for arg in argv:
+        joined = re.fullmatch(r"-[qv]*o(.+)", arg)
+        flat.extend(["-o", joined[1]] if joined else [arg])
     try:
         return resolve_format(
-            _option_from_argv(argv, "--output", "-o"),
+            _option_from_argv(flat, "--output", "-o"),
             _option_from_argv(argv, "--agent") or AgentMode.AUTO,
         )
     except CLIError:
@@ -54,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     # parsing has to render in the format the run actually resolved.
     ctx = Context(output=_format_from_argv(args))
     try:
-        cli.main(args=args, standalone_mode=False, obj=ctx)
+        cli.main(args=_hoist_globals(args), standalone_mode=False, obj=ctx)
     except CLIError as exc:
         return int(emit_error(exc, ctx.output))
     except ConfigError as exc:

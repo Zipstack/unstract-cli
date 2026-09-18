@@ -3930,3 +3930,14 @@ def test_a_cluster_carrying_p_is_left_where_it_is(capsys, whisper_client):
 
     assert code == int(ExitCode.USAGE)
     assert "No such option" in envelope(out)["error"]["message"]
+
+
+@pytest.mark.parametrize("joined", ["-ojson", "-qojson"])
+def test_a_pre_parse_failure_still_renders_in_a_joined_format(capsys, joined):
+    """The envelope format is read from argv before Click parses, so a joined
+    spelling has to be understood there as well."""
+    code = main(["whisper", "retrieve", "h1", joined, "-o"])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.USAGE)
+    assert envelope(out)["error"]["message"] == "Option '-o' requires an argument."

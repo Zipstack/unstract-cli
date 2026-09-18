@@ -74,9 +74,14 @@ def _hoist_globals(argv: list[str]) -> list[str]:
 
 def _format_from_argv(argv: list[str]) -> OutputFormat:
     """Resolve the format the same way the parsed run would."""
+    # `-qojson` is `-o json` to Click; unfold it so the scan sees it too.
+    flat: list[str] = []
+    for arg in argv:
+        joined = re.fullmatch(r"-[qv]*o(.+)", arg)
+        flat.extend(["-o", joined[1]] if joined else [arg])
     try:
         return resolve_format(
-            _option_from_argv(argv, "--output", "-o"),
+            _option_from_argv(flat, "--output", "-o"),
             _option_from_argv(argv, "--agent") or AgentMode.AUTO,
         )
     except CLIError:

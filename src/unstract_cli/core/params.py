@@ -121,13 +121,18 @@ def _from_schema(
     )
 
 
+def _hidden(node: dict[str, Any]) -> bool:
+    return bool(node.get("deprecated") or node.get("x-internal"))
+
+
 def operation_params(product: str, operation_id: str) -> list[Param]:
     """Every parameter one operation accepts: query, then request body.
 
     Path parameters are excluded: they are the route, supplied by the command
     from configuration, not by the caller as a flag. So are deprecated ones: a
     superseded spelling the client still accepts would otherwise become a second
-    flag for the same value.
+    flag for the same value. And so are internal ones (`x-internal`): the server
+    accepts them and the clients keep them, but they are not offered.
     """
     operation = find_operation(product, operation_id)
     params = [
@@ -138,7 +143,7 @@ def operation_params(product: str, operation_id: str) -> list[Param]:
             required=bool(p.get("required")),
         )
         for p in operation.get("parameters", [])
-        if p.get("in") == "query" and not p.get("deprecated")
+        if p.get("in") == "query" and not _hidden(p)
     ]
 
     body = operation.get("requestBody", {}).get("content", {})
@@ -151,7 +156,7 @@ def operation_params(product: str, operation_id: str) -> list[Param]:
             schema = _resolve_ref(product, ref)
         mandatory = set(schema.get("required") or ())
         for name, prop in (schema.get("properties") or {}).items():
-            if prop.get("deprecated"):
+            if _hidden(prop):
                 continue
             params.append(
                 _from_schema(

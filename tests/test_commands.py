@@ -205,7 +205,8 @@ def test_a_withdrawn_option_is_unknown_to_the_shipped_command(capsys, command, f
     learn that before the request, not from a silently ignored setting."""
     code, out, _ = run(capsys, *command, "x.pdf", flag)
     assert code == int(ExitCode.USAGE)
-    assert f"No such option '{flag}'" in envelope(out)["error"]["message"]
+    message = envelope(out)["error"]["message"]
+    assert "No such option" in message and flag in message
 
 
 @pytest.mark.parametrize(

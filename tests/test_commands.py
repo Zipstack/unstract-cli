@@ -3941,3 +3941,11 @@ def test_a_pre_parse_failure_still_renders_in_a_joined_format(capsys, joined):
 
     assert code == int(ExitCode.USAGE)
     assert envelope(out)["error"]["message"] == "Option '-o' requires an argument."
+
+
+def test_the_pre_parse_format_scan_stops_at_a_double_dash(capsys):
+    code = main(["nosuch", "--", "-ojson"])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.USAGE)
+    assert "No such command" in out and not out.startswith("{")

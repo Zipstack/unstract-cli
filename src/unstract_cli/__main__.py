@@ -74,6 +74,8 @@ def _hoist_globals(argv: list[str]) -> list[str]:
 
 def _format_from_argv(argv: list[str]) -> OutputFormat:
     """Resolve the format the same way the parsed run would."""
+    if "--" in argv:
+        argv = argv[: argv.index("--")]
     # `-qojson` is `-o json` to Click; unfold it so the scan sees it too.
     flat: list[str] = []
     for arg in argv:

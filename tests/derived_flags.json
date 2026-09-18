@@ -33,17 +33,6 @@
       "choices": [],
       "short": null
     },
-    "--derotate-threshold": {
-      "name": "derotate_threshold",
-      "type": "number",
-      "default": null,
-      "description": "The page rotation in degrees beyond which the page is straightened and re-read.",
-      "array": false,
-      "nullable": false,
-      "required": false,
-      "choices": [],
-      "short": null
-    },
     "--file-name": {
       "name": "file_name",
       "type": "string",
@@ -71,17 +60,6 @@
       "type": "number",
       "default": 1.0,
       "description": "The horizontal stretch factor.",
-      "array": false,
-      "nullable": false,
-      "required": false,
-      "choices": [],
-      "short": null
-    },
-    "--ignore-vertical-text": {
-      "name": "ignore_vertical_text",
-      "type": "boolean",
-      "default": null,
-      "description": "Whether to drop vertically oriented text instead of extracting it.",
       "array": false,
       "nullable": false,
       "required": false,
@@ -169,17 +147,6 @@
       "choices": [],
       "short": null
     },
-    "--min-table-width": {
-      "name": "min_table_width",
-      "type": "number",
-      "default": null,
-      "description": "The minimum width a table must span, as a fraction of the page width, to be extracted as a table.",
-      "array": false,
-      "nullable": false,
-      "required": false,
-      "choices": [],
-      "short": null
-    },
     "--mode": {
       "name": "mode",
       "type": "string",
@@ -189,8 +156,6 @@
       "nullable": false,
       "required": false,
       "choices": [
-        "document_insights",
-        "excel",
         "form",
         "high_quality",
         "low_cost",
@@ -208,9 +173,7 @@
       "nullable": false,
       "required": false,
       "choices": [
-        "dump-text",
         "layout_preserving",
-        "line-printer",
         "text"
       ],
       "short": null
@@ -444,17 +407,6 @@
       "type": "integer",
       "default": -1,
       "description": "Execution mode \u2014 ``0`` or below queues the execution and returns immediately; above it the call runs synchronously.",
-      "array": false,
-      "nullable": false,
-      "required": false,
-      "choices": [],
-      "short": null
-    },
-    "--use-file-history": {
-      "name": "use_file_history",
-      "type": "boolean",
-      "default": false,
-      "description": "Reuse a previous result for the same file.",
       "array": false,
       "nullable": false,
       "required": false,

@@ -172,7 +172,7 @@ wheels = [
 
 [[package]]
 name = "llmwhisperer-client"
-version = "2.9.0"
+version = "2.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -180,9 +180,9 @@ dependencies = [
     { name = "requests" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/25/c7/d8c822ac12837073d07b9c4c3b4e3967ac6b6f8c91737899ca192e1f24fa/llmwhisperer_client-2.9.0.tar.gz", hash = "sha256:8db10ba2c3a9a8351f22bce809535489154bdc7531e7a54f7c04c7601b0cd784", size = 3317195, upload-time = "2026-09-01T10:15:39.042Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/8e/87d568d5ddf2c6494c11bedc7844e9ed150e90afe228f77867705bfd3d38/llmwhisperer_client-2.9.1.tar.gz", hash = "sha256:74dbced5a1a481ca5192c3d817a9f9e12bad4d9c3aaac64751ffb0e9b6182f35", size = 3319616, upload-time = "2026-09-18T10:56:06.901Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b3/7b/b192239d0b31e6979ba4d47336585de0fe437847d6839ff936bb9cb0310d/llmwhisperer_client-2.9.0-py3-none-any.whl", hash = "sha256:a2895053b21819fed2a6c85bc15ba05c74b883071b980360e32be537a285836a", size = 69257, upload-time = "2026-09-01T10:15:37.751Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/41/2f221e4ac210dd8a9307849cf0ac35ff87cdd8b344594524d15a52c8f115/llmwhisperer_client-2.9.1-py3-none-any.whl", hash = "sha256:9e9ad402f16562da4dad9d406e06e6c42c077bf8846670040f40e8605c5c82e4", size = 69186, upload-time = "2026-09-18T10:56:05.114Z" },
 ]
 
 [[package]]
@@ -396,19 +396,19 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1,<9" },
-    { name = "llmwhisperer-client", specifier = "==2.9.0" },
+    { name = "llmwhisperer-client", specifier = "==2.9.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "tomli-w", specifier = ">=1.0" },
-    { name = "unstract-client", specifier = "==1.7.0" },
+    { name = "unstract-client", specifier = "==1.7.1" },
 ]
 provides-extras = ["dev"]
 
 [[package]]
 name = "unstract-client"
-version = "1.7.0"
+version = "1.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -418,9 +418,9 @@ dependencies = [
     { name = "rich" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d9/10/ef55a061b55b9ce5fc036a33d7f13ac8abf32d96c8a5d2f29db03248802e/unstract_client-1.7.0.tar.gz", hash = "sha256:39e989e2f9c999f9fe355cb91549cd228b3cc9c48ab4dceb65cd19dfdceb6c86", size = 222590, upload-time = "2026-09-10T12:59:42.268Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/d0/d0a6704436baca70e5b261058c0cd9a3a4853556bf6ade9fe201eb3f4b88/unstract_client-1.7.1.tar.gz", hash = "sha256:d192295a8eba9f25268915e60cb0435683a1eb000eaf51bc4f87db0e6e9f1288", size = 222809, upload-time = "2026-09-18T10:56:05.187Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/92/c1d2f64061f7cb09a53f4a8336b34a9b45e7d5bd8f0af7388453fbc3e6e9/unstract_client-1.7.0-py3-none-any.whl", hash = "sha256:d56c5908b03156ac775e4cd9117d78aa39455a32805c49f4fc3ea77d39b6f542", size = 127958, upload-time = "2026-09-10T12:59:40.847Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/7b/10584cb0c1cefd075990c2dac0f5e1cdbe05aebc9de41c4ef55c6f73f936/unstract_client-1.7.1-py3-none-any.whl", hash = "sha256:82125d4fb5876fcd872595205d30ad6a1ba544a2d49ea1d3177910bc34877274", size = 127922, upload-time = "2026-09-18T10:56:03.928Z" },
 ]
 
 [[package]]

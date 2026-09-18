@@ -1,16 +1,16 @@
 {
   "docstudio.json": {
-    "client": "unstract-client==1.7.0",
+    "client": "unstract-client==1.7.1",
     "repo": "https://github.com/Zipstack/unstract",
-    "commit": "520b98d7acf5a6d138b24d9787bd788b89150b76",
+    "commit": "5d46c66ccff8ae1ac3c31a3c3d5d64206e329002",
     "path": "specs/docstudio-oss.json",
-    "sha256": "68a31eaf72e54daf8173ae3ef42e4174b257c93b1afc608114582a81be135bd1"
+    "sha256": "c0de3a14254600f436483561ebb737feac4023fdef2fd46d6abf15dcd2182ad9"
   },
   "llmwhisperer.json": {
-    "client": "llmwhisperer-client==2.9.0",
+    "client": "llmwhisperer-client==2.9.1",
     "repo": "https://github.com/Zipstack/unstract-llm-whisperer",
-    "commit": "750f941ee229e12cc05d8bd85edaab6a337a8758",
+    "commit": "fa6cf651a594227f2249dfe0990f80f1ff780398",
     "path": "specs/llmwhisperer.json",
-    "sha256": "88ecc01e92443ba5ba6079db7f57cf3038f97670cb796f13c326268a3d79f366"
+    "sha256": "c015d035b9e06f58e80aabdb5190fbb582dc1b4b8ee48c3a6924fe4392edc650"
   }
 }

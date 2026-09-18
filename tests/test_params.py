@@ -273,7 +273,7 @@ def test_choices_come_from_the_spec_unless_the_overlay_narrows_them():
     """A wrong value must fail before the request, not after -- and the list it
     is checked against is the service's own, not a copy that can fall behind."""
     spec_declared = _by_name(operation_params("llmwhisperer", "extract"))["mode"]
-    assert "excel" in spec_declared.choices
+    assert "form" in spec_declared.choices
     assert click_option(spec_declared, {}).type.choices == spec_declared.choices
 
     option = click_option(spec_declared, {"mode": {"choices": ["form", "table"]}})

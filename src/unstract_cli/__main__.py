@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
 
 import click
@@ -35,6 +36,37 @@ def _option_from_argv(argv: list[str], *spellings: str) -> str | None:
     return None
 
 
+#: The root group's output flags. `-p` is deliberately absent: leaf commands
+#: declare their own `-p` with a different meaning.
+_GLOBAL_VALUED = frozenset({"-o", "--output", "--agent"})
+_GLOBAL_FLAG = re.compile(r"^(-o.+|--output=.*|--agent=.*|-[qv]+|--quiet|--verbose)$")
+
+
+def _hoist_globals(argv: list[str]) -> list[str]:
+    """Move the root group's output flags ahead of the subcommand.
+
+    Click stops accepting group options once it has read the subcommand name,
+    but `-o json` is as natural at the end of a line as at the start.
+    """
+    hoisted: list[str] = []
+    rest: list[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            rest.extend(argv[i:])
+            break
+        if arg in _GLOBAL_VALUED:
+            hoisted.extend(argv[i : i + 2])
+            i += 1
+        elif _GLOBAL_FLAG.match(arg):
+            hoisted.append(arg)
+        else:
+            rest.append(arg)
+        i += 1
+    return hoisted + rest
+
+
 def _format_from_argv(argv: list[str]) -> OutputFormat:
     """Resolve the format the same way the parsed run would."""
     try:
@@ -49,7 +81,7 @@ def _format_from_argv(argv: list[str]) -> OutputFormat:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
+    args = _hoist_globals(list(sys.argv[1:] if argv is None else argv))
     # Guessed from argv, then corrected by the root callback: a failure after
     # parsing has to render in the format the run actually resolved.
     ctx = Context(output=_format_from_argv(args))

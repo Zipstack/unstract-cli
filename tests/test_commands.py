@@ -3782,3 +3782,83 @@ def test_a_zero_poll_interval_is_refused(capsys, whisper_client, tmp_path):
     code, out, _ = run(capsys, "whisper", "extract", str(doc), "--interval", "0")
     assert code == int(ExitCode.USAGE)
     assert "interval" in envelope(out)["error"]["message"].lower()
+
+
+# --- Global flags after the subcommand -------------------------------------
+
+
+def _capture_context(monkeypatch):
+    """Hand back the Context the entry point builds, to read the parsed globals."""
+    import unstract_cli.__main__ as entry
+    from unstract_cli.app import Context
+
+    seen = []
+
+    def build(**kwargs):
+        seen.append(Context(**kwargs))
+        return seen[-1]
+
+    monkeypatch.setattr(entry, "Context", build)
+    return seen
+
+
+def test_trailing_output_flag_prints_the_same_as_leading(capsys, whisper_client):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    leading = main(["-q", "-o", "raw", "whisper", "retrieve", "h1"])
+    leading_out = capsys.readouterr().out
+    trailing = main(["whisper", "retrieve", "h1", "-o", "raw", "-q"])
+    trailing_out = capsys.readouterr().out
+
+    assert leading == trailing == int(ExitCode.SUCCESS)
+    assert leading_out == trailing_out == "hello\n"
+
+
+@pytest.mark.parametrize("spelling", [["-o", "json"], ["--output=json"], ["-ojson"]])
+def test_trailing_json_on_a_nested_command_is_parsed(capsys, deployment_client, spelling):
+    deployment_client(
+        check_execution_status={"status_code": 200, "execution_status": "COMPLETED"}
+    )
+
+    code = main(["docstudio", "deployment", "status", "my-api", "e1", *spelling])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.SUCCESS)
+    assert envelope(out)["data"]["execution_status"] == "COMPLETED"
+
+
+def test_verbose_split_around_the_subcommand_still_counts_both(
+    capsys, whisper_client, monkeypatch
+):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+    seen = _capture_context(monkeypatch)
+
+    code = main(["-v", "whisper", "retrieve", "h1", "-v", "-o", "json"])
+
+    assert code == int(ExitCode.SUCCESS)
+    assert seen[0].verbosity == 2
+
+
+def test_a_double_dash_stops_the_hoisting(capsys, whisper_client):
+    """A positional that happens to look like a global flag stays where the
+    caller put it once `--` has been given."""
+    client = whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    code = main(["-o", "json", "whisper", "retrieve", "--", "-o"])
+
+    assert code == int(ExitCode.SUCCESS)
+    name, args, kwargs = client.calls[0]
+    assert name == "whisper_retrieve" and "-o" in (*args, *kwargs.values())
+
+
+def test_a_trailing_profile_flag_still_reaches_the_leaf(capsys, tmp_path, monkeypatch):
+    """`config set -p` names the profile to write, not the root's profile to
+    read, so it is not hoisted."""
+    monkeypatch.setenv("UNSTRACT_CONFIG", str(tmp_path / "c.toml"))
+
+    code = main(
+        ["-o", "json", "config", "set", "docstudio", "org_id", "org_A", "-p", "eu"]
+    )
+
+    assert code == int(ExitCode.SUCCESS)
+    assert "[profiles.eu" in (tmp_path / "c.toml").read_text()

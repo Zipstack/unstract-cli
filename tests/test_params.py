@@ -8,6 +8,7 @@ offered that the client cannot accept.
 from __future__ import annotations
 
 import click
+import click.testing
 import pytest
 from unstract.api_deployments.client import APIDeploymentsClient
 from unstract.llmwhisperer.client_v2 import LLMWhispererClientV2
@@ -68,6 +69,65 @@ def test_the_uploaded_document_is_not_a_flag():
     argument."""
     assert "body" not in _by_name(operation_params("llmwhisperer", "extract"))
     assert find_operation("llmwhisperer", "extract")["method"] == "post"
+
+
+#: A spec carrying the marker on one query parameter and one body property.
+MARKED_SPEC = {
+    "paths": {
+        "/run": {
+            "post": {
+                "operationId": "run",
+                "parameters": [
+                    {"name": "mode", "in": "query", "schema": {"type": "string"}},
+                    {
+                        "name": "trace",
+                        "in": "query",
+                        "schema": {"type": "boolean"},
+                        "x-internal": True,
+                    },
+                ],
+                "requestBody": {
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "properties": {
+                                    "timeout": {"type": "integer"},
+                                    "use_file_history": {
+                                        "type": "boolean",
+                                        "default": False,
+                                        "x-internal": True,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+
+def test_an_internal_parameter_is_not_offered(monkeypatch):
+    """The server accepts it and the generated clients keep it, so it stays in
+    the spec; the marker is the only thing saying it is not for callers."""
+    monkeypatch.setattr(params_module, "load_spec", lambda product: MARKED_SPEC)
+
+    assert {p.name for p in operation_params("docstudio", "run")} == {"mode", "timeout"}
+
+
+def test_an_internal_parameter_is_unknown_to_the_parser(monkeypatch):
+    monkeypatch.setattr(params_module, "load_spec", lambda product: MARKED_SPEC)
+    command = click.Command(
+        "run",
+        params=[click_option(p, {}) for p in operation_params("docstudio", "run")],
+        callback=lambda **_: None,
+    )
+
+    for flag in ("--trace", "--use-file-history"):
+        result = click.testing.CliRunner().invoke(command, [flag])
+        assert result.exit_code == 2, flag
+        assert "No such option" in result.output, flag
 
 
 def test_an_unknown_operation_names_itself():

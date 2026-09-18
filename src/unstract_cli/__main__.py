@@ -36,11 +36,12 @@ def _option_from_argv(argv: list[str], *spellings: str) -> str | None:
     return None
 
 
-#: The root group's options. `-p` is deliberately absent: leaf commands
-#: declare their own `-p` with a different meaning.
-_GLOBAL_VALUED = frozenset({"-o", "--output", "--agent", "--config"})
+#: The root group's options, including `-o` at the end of a `-qv` cluster.
+#: `-p` is deliberately absent: leaf commands declare their own `-p` with a
+#: different meaning.
+_GLOBAL_VALUED = re.compile(r"^(-[qv]*o|--output|--agent|--config)$")
 _GLOBAL_FLAG = re.compile(
-    r"^(-o.+|--output=.*|--agent=.*|--config=.*|-[qv]+|--quiet|--verbose)$"
+    r"^(-[qv]*o.+|--output=.*|--agent=.*|--config=.*|-[qv]+|--quiet|--verbose)$"
 )
 
 
@@ -58,7 +59,9 @@ def _hoist_globals(argv: list[str]) -> list[str]:
         if arg == "--":
             rest.extend(argv[i:])
             break
-        if arg in _GLOBAL_VALUED:
+        if _GLOBAL_VALUED.match(arg):
+            if i + 1 == len(argv):
+                raise click.BadOptionUsage(arg, f"Option '{arg}' requires an argument.")
             hoisted.extend(argv[i : i + 2])
             i += 1
         elif _GLOBAL_FLAG.match(arg):
@@ -83,12 +86,12 @@ def _format_from_argv(argv: list[str]) -> OutputFormat:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _hoist_globals(list(sys.argv[1:] if argv is None else argv))
+    args = list(sys.argv[1:] if argv is None else argv)
     # Guessed from argv, then corrected by the root callback: a failure after
     # parsing has to render in the format the run actually resolved.
     ctx = Context(output=_format_from_argv(args))
     try:
-        cli.main(args=args, standalone_mode=False, obj=ctx)
+        cli.main(args=_hoist_globals(args), standalone_mode=False, obj=ctx)
     except CLIError as exc:
         return int(emit_error(exc, ctx.output))
     except ConfigError as exc:

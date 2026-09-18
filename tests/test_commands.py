@@ -3883,3 +3883,50 @@ def test_a_trailing_config_path_reads_the_same_file_as_leading(capsys, tmp_path)
     assert leading == trailing == int(ExitCode.SUCCESS)
     assert leading_out == trailing_out
     assert envelope(trailing_out)["data"]["value"] == "org_A"
+
+
+@pytest.mark.parametrize(
+    ("leading", "trailing", "quiet", "verbosity"),
+    [
+        (["-qojson"], ["-qojson"], True, 0),
+        (["-vo", "json"], ["-vo", "json"], False, 1),
+        (["-qvo", "json"], ["-qvo", "json"], True, 1),
+    ],
+)
+def test_a_cluster_ending_in_o_is_hoisted_whole(
+    capsys, whisper_client, monkeypatch, leading, trailing, quiet, verbosity
+):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+    seen = _capture_context(monkeypatch)
+
+    first = main([*leading, "whisper", "retrieve", "h1"])
+    first_out = capsys.readouterr().out
+    second = main(["whisper", "retrieve", "h1", *trailing])
+    second_out = capsys.readouterr().out
+
+    assert first == second == int(ExitCode.SUCCESS)
+    assert first_out == second_out
+    assert envelope(second_out)["data"] == {"result_text": "hello"}
+    assert (seen[1].quiet, seen[1].verbosity) == (quiet, verbosity)
+
+
+@pytest.mark.parametrize("dangling", ["-o", "--config", "-vo"])
+def test_a_dangling_valued_option_is_a_usage_error(capsys, whisper_client, dangling):
+    """Hoisted alone it would swallow the subcommand name as its value."""
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    code = main(["-o", "json", "whisper", "retrieve", "h1", dangling])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.USAGE)
+    assert "requires an argument" in envelope(out)["error"]["message"]
+
+
+def test_a_cluster_carrying_p_is_left_where_it_is(capsys, whisper_client):
+    whisper_client(whisper_retrieve={"extraction": {"result_text": "hello"}})
+
+    code = main(["-o", "json", "whisper", "retrieve", "h1", "-qp", "x"])
+    out = capsys.readouterr().out
+
+    assert code == int(ExitCode.USAGE)
+    assert "No such option" in envelope(out)["error"]["message"]

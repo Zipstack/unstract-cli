@@ -7,10 +7,10 @@
     "sha256": "c0de3a14254600f436483561ebb737feac4023fdef2fd46d6abf15dcd2182ad9"
   },
   "llmwhisperer.json": {
-    "client": "llmwhisperer-client==2.9.1",
+    "client": "llmwhisperer-client==2.10.0",
     "repo": "https://github.com/Zipstack/unstract-llm-whisperer",
-    "commit": "fa6cf651a594227f2249dfe0990f80f1ff780398",
+    "commit": "9fe7085b44da6ca37e635fba3ab082c725ef8aef",
     "path": "specs/llmwhisperer.json",
-    "sha256": "c015d035b9e06f58e80aabdb5190fbb582dc1b4b8ee48c3a6924fe4392edc650"
+    "sha256": "4d758a3e3a8dbe972c7031bf5db813450c8855ca112fbc5bc1d42ac296a44d34"
   }
 }

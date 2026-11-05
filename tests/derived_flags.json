@@ -66,6 +66,17 @@
       "choices": [],
       "short": null
     },
+    "--include-cell-borders": {
+      "name": "include_cell_borders",
+      "type": "boolean",
+      "default": null,
+      "description": "Whether an Excel workbook's own cell borders are drawn into the extracted text as box-drawing characters. Turning it off drops every border, leaving columns aligned and no cell value lost, which costs fewer tokens downstream. This keys off the uploaded file type, not the mode: it applies to any XLS or XLSX upload whatever mode was requested, the default \"form\" mode included, and is ignored for every other kind of document.",
+      "array": false,
+      "nullable": false,
+      "required": false,
+      "choices": [],
+      "short": null
+    },
     "--include-line-confidence": {
       "name": "include_line_confidence",
       "type": "boolean",
